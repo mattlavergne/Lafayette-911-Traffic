@@ -1664,6 +1664,19 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
   }};
 
   let lastFiltered = [];
+  let renderTimer = null;
+
+  function scheduleRender(mapObj, delayMs) {{
+    const delay = Number.isFinite(delayMs) ? delayMs : 0;
+    if (renderTimer) {{
+      clearTimeout(renderTimer);
+      renderTimer = null;
+    }}
+    renderTimer = setTimeout(function() {{
+      renderTimer = null;
+      renderAll(mapObj);
+    }}, delay);
+  }}
 
   function clearLayers(mapObj) {{
     for (const k of Object.keys(layers)) {{
@@ -1884,7 +1897,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     els.clearBtn.addEventListener("click", function() {{
       clearAll();
       setDateSelectState();
-      renderAll(mapObj);
+      scheduleRender(mapObj, 0);
     }});
 
     const ids = [
@@ -1902,13 +1915,13 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
         if (id === "chkTodayOnly") {{
           setDateSelectState();
         }}
-        renderAll(mapObj);
+        scheduleRender(mapObj, 0);
       }});
     }}
 
     mapObj.on("moveend zoomend", function(evt) {{
       if (evt && evt.type === "zoomend") {{
-        renderAll(mapObj);
+        scheduleRender(mapObj, 120);
       }} else {{
         updateInViewOnly(mapObj);
       }}
@@ -1936,7 +1949,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     wireUI(mapObj);
 
     if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
-    renderAll(mapObj);
+    scheduleRender(mapObj, 0);
   }});
 }})();
 </script>
