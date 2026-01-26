@@ -1259,6 +1259,20 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
            occLine;
   }}
 
+  function popupGroupHtml(rows) {{
+    if (!rows || rows.length === 0) return "";
+    if (rows.length === 1) return popupHtml(rows[0]);
+    let html = "<div><strong>Incidents at this location (" + rows.length + ")</strong></div>";
+    html += "<div class='popup-list'>";
+    rows.forEach((row, idx) => {{
+      html += "<div class='popup-entry'><div><strong>#" + (idx + 1) + "</strong></div>";
+      html += popupHtml(row);
+      html += "</div>";
+    }});
+    html += "</div>";
+    return html;
+  }}
+
   function parseReported(reported) {{
     if (!reported) return null;
     const s = String(reported).trim();
@@ -1325,6 +1339,18 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       m.set(key, v);
     }}
     return Array.from(m.values()).sort((a, b) => b.count - a.count);
+  }}
+
+  function groupByExactPoints(points) {{
+    const map = new Map();
+    for (const row of points) {{
+      const key = row[0].toFixed(6) + "," + row[1].toFixed(6);
+      if (!map.has(key)) {{
+        map.set(key, {{ lat: row[0], lng: row[1], rows: [] }});
+      }}
+      map.get(key).rows.push(row);
+    }}
+    return Array.from(map.values());
   }}
 
   function getCenterFromData() {{
@@ -1559,9 +1585,10 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
     if (showPoints) {{
       const layer = L.layerGroup().addTo(mapObj);
-      for (const row of filtered) {{
-        const mk = L.circleMarker([row[0], row[1]], {{ radius: 5, renderer: renderer }});
-        mk.bindPopup(popupHtml(row), {{ maxWidth: 320 }});
+      const grouped = groupByExactPoints(filtered);
+      for (const group of grouped) {{
+        const mk = L.circleMarker([group.lat, group.lng], {{ radius: 5, renderer: renderer }});
+        mk.bindPopup(popupGroupHtml(group.rows), {{ maxWidth: 320 }});
         mk.addTo(layer);
       }}
       layers.points = layer;
