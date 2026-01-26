@@ -42,6 +42,17 @@ LAF_LON_MAX = -91.90
 OSM_PAD_DEG = 0.02
 OSM_INTERSECTION_MIN_STREETS = 3
 
+LAFAYETTE_PARISH_PLACES = {
+    "Lafayette",
+    "Lafayette Parish",
+    "Carencro",
+    "Broussard",
+    "Youngsville",
+    "Scott",
+    "Duson",
+    "Milton",
+}
+
 
 def _file_mtime_int(path: str) -> int:
     try:
@@ -107,6 +118,17 @@ def _normalize_location(s: str) -> str:
     s = str(s or "").strip().upper()
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+def _has_allowed_lafayette_place(address_components) -> bool:
+    if not address_components:
+        return False
+    allowed = {name.strip().casefold() for name in LAFAYETTE_PARISH_PLACES}
+    for comp in address_components:
+        long_name = (comp.get("long_name") or "").strip().casefold()
+        if long_name in allowed:
+            return True
+    return False
 
 
 def fetch_traffic_data():
@@ -183,8 +205,7 @@ def geocode_with_google(address, api_key):
 
         # Enforce Lafayette Parish using address components (best-effort)
         comps = result.get("address_components", []) or []
-        long_names = {c.get("long_name", "") for c in comps}
-        if ("Lafayette Parish" not in long_names) and ("Lafayette" not in long_names):
+        if not _has_allowed_lafayette_place(comps):
             print(f"Geocode rejected (not Lafayette Parish): {address}")
             return None, None
 
