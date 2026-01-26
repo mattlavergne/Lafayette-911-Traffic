@@ -991,6 +991,47 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     transform: translateY(1px);
   }}
 
+  .incident-nav {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }}
+
+  .incident-nav button {{
+    padding: 4px 8px;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.2);
+    background: rgba(255,255,255,0.95);
+    line-height: 1;
+  }}
+
+  .incident-nav button:disabled {{
+    opacity: 0.4;
+    cursor: not-allowed;
+  }}
+
+  .incident-count {{
+    font-size: 12px;
+    font-weight: 600;
+  }}
+
+  .incident-count-marker {{
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    background: #2b2b2b;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 12px;
+    border: 2px solid #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  }}
+
   #insights {{
     border-top: 1px solid rgba(0,0,0,0.08);
     padding-top: 10px;
@@ -1263,6 +1304,59 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
            occLine;
   }}
 
+  function createIncidentPopup(rows) {{
+    let idx = 0;
+    const container = document.createElement("div");
+    if (typeof L !== "undefined" && L.DomEvent) {{
+      L.DomEvent.disableClickPropagation(container);
+    }}
+
+    function render() {{
+      const row = rows[idx];
+      const hasNav = rows.length > 1;
+      container.innerHTML =
+        (hasNav
+          ? (
+            "<div class='incident-nav'>" +
+              "<button class='incident-prev' type='button' aria-label='Previous incident'>&larr;</button>" +
+              "<div class='incident-count'>Incident " + (idx + 1) + " of " + rows.length + "</div>" +
+              "<button class='incident-next' type='button' aria-label='Next incident'>&rarr;</button>" +
+            "</div>"
+          )
+          : ""
+        ) +
+        "<div class='incident-details'>" + popupHtml(row) + "</div>";
+
+      if (hasNav) {{
+        const prevBtn = container.querySelector(".incident-prev");
+        const nextBtn = container.querySelector(".incident-next");
+        prevBtn.disabled = idx <= 0;
+        nextBtn.disabled = idx >= rows.length - 1;
+
+        prevBtn.addEventListener("click", function(e) {{
+          e.preventDefault();
+          e.stopPropagation();
+          if (idx > 0) {{
+            idx -= 1;
+            render();
+          }}
+        }});
+
+        nextBtn.addEventListener("click", function(e) {{
+          e.preventDefault();
+          e.stopPropagation();
+          if (idx < rows.length - 1) {{
+            idx += 1;
+            render();
+          }}
+        }});
+      }}
+    }}
+
+    render();
+    return container;
+  }}
+
   function parseReported(reported) {{
     if (!reported) return null;
     const s = String(reported).trim();
@@ -1329,6 +1423,24 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       m.set(key, v);
     }}
     return Array.from(m.values()).sort((a, b) => b.count - a.count);
+  }}
+
+  function groupByExactLocation(points) {{
+    const m = new Map();
+    for (const row of points) {{
+      const lat = row[0];
+      const lng = row[1];
+      const key = lat.toFixed(6) + "," + lng.toFixed(6);
+      const v = m.get(key) || {{
+        key,
+        lat,
+        lng,
+        rows: []
+      }};
+      v.rows.push(row);
+      m.set(key, v);
+    }}
+    return Array.from(m.values());
   }}
 
   function getCenterFromData() {{
@@ -1591,9 +1703,30 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
     if (showPoints) {{
       const layer = L.layerGroup().addTo(mapObj);
-      for (const row of filtered) {{
-        const mk = L.circleMarker([row[0], row[1]], {{ radius: 5, renderer: renderer }});
-        mk.bindPopup(popupHtml(row), {{ maxWidth: 320 }});
+      const grouped = groupByExactLocation(filtered);
+      for (const group of grouped) {{
+        let mk = null;
+        if (group.rows.length > 1) {{
+          const count = group.rows.length;
+          const icon = L.divIcon({{
+            className: "",
+            html: "<div class='incident-count-marker'>" + count + "</div>",
+            iconSize: [28, 28],
+            iconAnchor: [14, 14]
+          }});
+          mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
+          mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320 }});
+        }} else {{
+          mk = L.circleMarker([group.lat, group.lng], {{
+            radius: 5,
+            renderer: renderer,
+            color: "#1f1f1f",
+            weight: 1,
+            fillColor: "#4a4a4a",
+            fillOpacity: 0.9
+          }});
+          mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320 }});
+        }}
         mk.addTo(layer);
       }}
       layers.points = layer;
