@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_4e41bcfd268797fee31fa03e54143795 {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+
+            <style>html, body {
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+            }
+            </style>
+
+            <style>#map {
+                position:absolute;
+                top:0;
+                bottom:0;
+                right:0;
+                left:0;
+                }
+            </style>
+
+            <script>
+                L_NO_TOUCH = false;
+                L_DISABLE_3D = false;
+            </script>
+
+        
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<script src="traffic_data.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+</head>
+<body>
+    
+    
+            <div class="folium-map" id="map_4e41bcfd268797fee31fa03e54143795" ></div>
+        
+
+<style>
+  :root {
+    --panel-bg: rgba(255,255,255,0.92);
+    --panel-border: rgba(0,0,0,0.12);
+    --shadow: 0 10px 30px rgba(0,0,0,0.18);
+    --radius: 14px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  #controlPanel {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 9999999;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    font-family: var(--font);
+    font-size: 13px;
+    width: 380px;
+    max-height: 82vh;
+    overflow: hidden;
+    box-sizing: border-box;
+    backdrop-filter: blur(10px);
+  }
+
+  #panelHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+  }
+
+  #panelTitle {
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  #panelSubtitle {
+    font-size: 12px;
+    color: rgba(0,0,0,0.62);
+    margin-top: 2px;
+  }
+
+  #panelCountBar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.05);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  #panelBody {
+    padding: 10px 12px 12px 12px;
+    overflow: auto;
+    max-height: calc(82vh - 98px);
+  }
+
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .row label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 6px;
+    white-space: nowrap;
+  }
+
+  select, button {
+    font-family: var(--font);
+    font-size: 13px;
+  }
+
+  select {
+    padding: 6px 8px;
+    border-radius: 10px;
+    border: 1px solid rgba(0,0,0,0.14);
+    background: rgba(255,255,255,0.95);
+    outline: none;
+  }
+
+  button {
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(0,0,0,0.14);
+    background: rgba(255,255,255,0.95);
+  }
+
+  button:active {
+    transform: translateY(1px);
+  }
+
+  #insights {
+    border-top: 1px solid rgba(0,0,0,0.08);
+    padding-top: 10px;
+    margin-top: 10px;
+  }
+
+  #insightsBody {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  #osmNote {
+    margin-top: 8px;
+    font-size: 11px;
+    color: rgba(0,0,0,0.62);
+  }
+
+  @media (max-width: 520px) {
+    #controlPanel {
+      left: 0;
+      top: auto;
+      bottom: 0;
+      width: 100%;
+      max-height: 92vh;
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -10px 30px rgba(0,0,0,0.22);
+    }
+
+    #panelBody {
+      max-height: calc(92vh - 98px);
+    }
+
+    #mobileHandle {
+      display: block;
+      width: 44px;
+      height: 5px;
+      border-radius: 999px;
+      background: rgba(0,0,0,0.18);
+      margin: 8px auto 0 auto;
+    }
+
+    #panelHeader {
+      padding-top: 6px;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+    }
+
+    #panelActions {
+      width: 100%;
+      display: flex;
+      gap: 10px;
+    }
+
+    #panelActions button {
+      flex: 1;
+      padding: 12px 10px;
+      font-size: 15px;
+      border-radius: 14px;
+    }
+
+    select {
+      padding: 12px 12px;
+      font-size: 16px;
+      border-radius: 14px;
+    }
+
+    .pill {
+      font-size: 13px;
+      padding: 8px 12px;
+    }
+
+    #controlPanel.collapsed {
+      max-height: 120px;
+    }
+  }
+
+  #mobileHandle {
+    display: none;
+  }
+</style>
+
+<div id="controlPanel" class="collapsed">
+  <div id="mobileHandle"></div>
+
+  <div id="panelHeader">
+    <div>
+      <div id="panelTitle">Traffic Incidents</div>
+      <div id="panelSubtitle">Lafayette bounds enforced</div>
+    </div>
+    <div id="panelActions">
+      <button id="panelToggleBtn" type="button">Filters</button>
+      <button id="clearBtn" type="button">Clear</button>
+    </div>
+  </div>
+
+  <div id="panelCountBar">
+    <div class="pill"><span>Total:</span><span id="countTotal">0</span></div>
+    <div class="pill"><span>Filtered:</span><span id="countFiltered">0</span></div>
+    <div class="pill"><span>In view:</span><span id="countInView">0</span></div>
+  </div>
+
+  <div id="panelBody">
+
+    <div class="row">
+      <label>Type:
+        <select id="causeSelect">
+          <option value="__ALL__">All</option>
+        </select>
+      </label>
+
+      <label style="margin-left:auto;">
+        <input type="checkbox" id="chkInViewOnly">
+        In view only
+      </label>
+    </div>
+
+    <div class="row">
+      <label>Month:
+        <select id="monthSelect">
+          <option value="">--</option>
+          <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
+          <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
+          <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
+          <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+        </select>
+      </label>
+
+      <label>Day:
+        <select id="daySelect">
+          <option value="">--</option>
+          <option value="01">1</option><option value="02">2</option><option value="03">3</option><option value="04">4</option><option value="05">5</option><option value="06">6</option><option value="07">7</option><option value="08">8</option><option value="09">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option><option value="21">21</option><option value="22">22</option><option value="23">23</option><option value="24">24</option><option value="25">25</option><option value="26">26</option><option value="27">27</option><option value="28">28</option><option value="29">29</option><option value="30">30</option><option value="31">31</option>
+        </select>
+      </label>
+
+      <label>Year:
+        <select id="yearSelect">
+          <option value="">--</option><option value="2024">2024</option><option value="2025">2025</option><option value="2026">2026</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row">
+      <label>Day type:
+        <select id="dayTypeSelect">
+          <option value="all">All</option>
+          <option value="weekday">Weekdays</option>
+          <option value="weekend">Weekends</option>
+        </select>
+      </label>
+
+      <label>Time block:
+        <select id="timeBlockSelect">
+          <option value="all">All</option>
+          <option value="morning">Morning (06-10)</option>
+          <option value="midday">Midday (10-15)</option>
+          <option value="evening">Evening (15-19)</option>
+          <option value="night">Night (19-24)</option>
+          <option value="latenight">Late night (00-06)</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row">
+      <label><input type="checkbox" id="chkPoints" checked> Points</label>
+      <label><input type="checkbox" id="chkHeat"> Heat</label>
+      <label><input type="checkbox" id="chkIntersections"> Rounded</label>
+      <label><input type="checkbox" id="chkOsmIntersections"> OSM</label>
+      <label><input type="checkbox" id="chkMicro"> Micro</label>
+      <label><input type="checkbox" id="chkRings"> Rings</label>
+    </div>
+
+    <div class="row">
+      <label>Top N:
+        <select id="topNSelect">
+          <option value="5">5</option>
+          <option value="10" selected>10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+        </select>
+      </label>
+
+      <label>Rounded precision:
+        <select id="precIntersections">
+          <option value="3" selected>~100m</option>
+          <option value="4">~10m</option>
+        </select>
+      </label>
+
+      <label>Micro precision:
+        <select id="precMicro">
+          <option value="4" selected>~10m</option>
+          <option value="5">~1m</option>
+        </select>
+      </label>
+    </div>
+
+    <div id="insights">
+      <div style="font-weight:700; margin-bottom:6px;">Insights</div>
+      <div id="insightsBody"></div>
+      <div id="osmNote"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function() {
+  const INCIDENTS = window.INCIDENTS_DATA || [];
+  const OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
+  const renderer = L.canvas({ padding: 0.5 });
+
+  const els = {
+    panel: document.getElementById("controlPanel"),
+    toggleBtn: document.getElementById("panelToggleBtn"),
+    clearBtn: document.getElementById("clearBtn"),
+
+    countTotal: document.getElementById("countTotal"),
+    countFiltered: document.getElementById("countFiltered"),
+    countInView: document.getElementById("countInView"),
+
+    causeSelect: document.getElementById("causeSelect"),
+    chkInViewOnly: document.getElementById("chkInViewOnly"),
+
+    monthSelect: document.getElementById("monthSelect"),
+    daySelect: document.getElementById("daySelect"),
+    yearSelect: document.getElementById("yearSelect"),
+    dayTypeSelect: document.getElementById("dayTypeSelect"),
+    timeBlockSelect: document.getElementById("timeBlockSelect"),
+
+    chkPoints: document.getElementById("chkPoints"),
+    chkHeat: document.getElementById("chkHeat"),
+    chkIntersections: document.getElementById("chkIntersections"),
+    chkOsmIntersections: document.getElementById("chkOsmIntersections"),
+    chkMicro: document.getElementById("chkMicro"),
+    chkRings: document.getElementById("chkRings"),
+
+    topNSelect: document.getElementById("topNSelect"),
+    precIntersections: document.getElementById("precIntersections"),
+    precMicro: document.getElementById("precMicro"),
+
+    insightsBody: document.getElementById("insightsBody"),
+    osmNote: document.getElementById("osmNote"),
+  };
+
+  function esc(s) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  }
+
+  function popupHtml(row) {
+    const occurrences = (row.length >= 8 && row[7] != null) ? parseInt(row[7], 10) : 1;
+    const occLine = (occurrences && occurrences > 1) ? ("<br>Occurrences: " + occurrences) : "";
+    return "Location: " + esc(row[3]) +
+           "<br>Type: " + esc(row[4]) +
+           "<br>Reported: " + esc(row[2]) +
+           "<br>Assisting: " + esc(row[5]) +
+           occLine;
+  }
+
+  function parseReported(reported) {
+    if (!reported) return null;
+    const s = String(reported).trim();
+    const m1 = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?/);
+    if (!m1) return null;
+
+    const mm = m1[1].padStart(2, "0");
+    const dd = m1[2].padStart(2, "0");
+    const yy = m1[3];
+
+    let hh = null;
+    let mi = null;
+
+    if (m1[4] != null && m1[5] != null) {
+      hh = parseInt(m1[4], 10);
+      mi = parseInt(m1[5], 10);
+      const ap = m1[6] ? String(m1[6]).toLowerCase() : null;
+      if (ap === "pm" && hh < 12) hh += 12;
+      if (ap === "am" && hh === 12) hh = 0;
+      if (hh < 0 || hh > 23) hh = null;
+    }
+
+    const dt = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh || 0, mi || 0, 0, 0);
+    return { mm, dd, yy, hh, mi, dt };
+  }
+
+  function dayTypeOf(dt) {
+    const d = dt.getDay();
+    return (d === 0 || d === 6) ? "weekend" : "weekday";
+  }
+
+  function timeBlockOf(hh) {
+    if (hh == null) return "unknown";
+    if (hh >= 6 && hh < 10) return "morning";
+    if (hh >= 10 && hh < 15) return "midday";
+    if (hh >= 15 && hh < 19) return "evening";
+    if (hh >= 19 && hh <= 23) return "night";
+    if (hh >= 0 && hh < 6) return "latenight";
+    return "unknown";
+  }
+
+  function haversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const toRad = (x) => x * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  function groupByRounded(points, decimals) {
+    const m = new Map();
+    for (const row of points) {
+      const key = row[0].toFixed(decimals) + "," + row[1].toFixed(decimals);
+      const v = m.get(key) || {
+        key,
+        lat: parseFloat(row[0].toFixed(decimals)),
+        lng: parseFloat(row[1].toFixed(decimals)),
+        count: 0,
+        sample: row
+      };
+      v.count += 1;
+      m.set(key, v);
+    }
+    return Array.from(m.values()).sort((a, b) => b.count - a.count);
+  }
+
+  function getCenterFromData() {
+    if (INCIDENTS.length === 0) return [30.2241, -92.0198];
+    let sLat = 0, sLng = 0, n = 0;
+    for (const r of INCIDENTS) {
+      sLat += r[0];
+      sLng += r[1];
+      n += 1;
+    }
+    return [sLat / n, sLng / n];
+  }
+
+  function buildCauseDropdown() {
+    if (!els.causeSelect) return;
+    const set = new Set();
+    for (const r of INCIDENTS) {
+      const c = String(r[4] || "").trim();
+      if (c) set.add(c);
+    }
+    const causes = Array.from(set.values()).sort((a,b) => a.localeCompare(b));
+    while (els.causeSelect.options.length > 1) {
+      els.causeSelect.remove(1);
+    }
+    for (const c of causes) {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      els.causeSelect.appendChild(opt);
+    }
+  }
+
+  function matchesCause(row, selected) {
+    if (!selected || selected === "__ALL__") return true;
+    return String(row[4] || "").trim() === selected;
+  }
+
+  function matchesDateFilter(row, f) {
+    if (!f.mm && !f.dd && !f.yy) return true;
+    const pr = parseReported(row[2]);
+    if (!pr) return false;
+    if (f.yy && pr.yy !== f.yy) return false;
+    if (f.mm && pr.mm !== f.mm) return false;
+    if (f.dd && pr.dd !== f.dd) return false;
+    return true;
+  }
+
+  function matchesDayType(row, dayType) {
+    if (dayType === "all") return true;
+    const pr = parseReported(row[2]);
+    if (!pr || !pr.dt) return false;
+    return dayTypeOf(pr.dt) === dayType;
+  }
+
+  function matchesTimeBlock(row, block) {
+    if (block === "all") return true;
+    const pr = parseReported(row[2]);
+    if (!pr) return false;
+    const tb = timeBlockOf(pr.hh);
+    if (tb === "unknown") return false;
+    return tb === block;
+  }
+
+  function currentFilterObj() {
+    const mm = (els.monthSelect.value || "").trim();
+    const dd = (els.daySelect.value || "").trim();
+    const yy = (els.yearSelect.value || "").trim();
+    const dayType = (els.dayTypeSelect.value || "all").trim();
+    const timeBlock = (els.timeBlockSelect.value || "all").trim();
+    const cause = (els.causeSelect.value || "__ALL__").trim();
+    const inViewOnly = !!els.chkInViewOnly.checked;
+    return { mm: mm || "", dd: dd || "", yy: yy || "", dayType, timeBlock, cause, inViewOnly };
+  }
+
+  function filteredIncidents(filterObj, mapObj) {
+    const out = [];
+    const bounds = (filterObj.inViewOnly && mapObj) ? mapObj.getBounds() : null;
+
+    for (const row of INCIDENTS) {
+      if (!matchesCause(row, filterObj.cause)) continue;
+      if (!matchesDateFilter(row, filterObj)) continue;
+      if (!matchesDayType(row, filterObj.dayType)) continue;
+      if (!matchesTimeBlock(row, filterObj.timeBlock)) continue;
+
+      if (bounds) {
+        const latlng = L.latLng(row[0], row[1]);
+        if (!bounds.contains(latlng)) continue;
+      }
+
+      out.push(row);
+    }
+    return out;
+  }
+
+  function computeInViewCount(rows, mapObj) {
+    if (!mapObj) return 0;
+    const b = mapObj.getBounds();
+    let c = 0;
+    for (const row of rows) {
+      if (b.contains(L.latLng(row[0], row[1]))) c += 1;
+    }
+    return c;
+  }
+
+  function renderInsights(filtered, centerLat, centerLng) {
+    if (!els.insightsBody) return;
+
+    const topN = parseInt(els.topNSelect.value || "10", 10);
+    const dInter = parseInt(els.precIntersections.value || "3", 10);
+    const dMicro = parseInt(els.precMicro.value || "4", 10);
+
+    const intersections = groupByRounded(filtered, dInter).slice(0, topN);
+    const micro = groupByRounded(filtered, dMicro).slice(0, topN);
+
+    const bins = [
+      { name: "0-1 km", lo: 0, hi: 1, c: 0 },
+      { name: "1-2 km", lo: 1, hi: 2, c: 0 },
+      { name: "2-3 km", lo: 2, hi: 3, c: 0 },
+      { name: "3-5 km", lo: 3, hi: 5, c: 0 },
+      { name: "5-8 km", lo: 5, hi: 8, c: 0 },
+      { name: "8+ km", lo: 8, hi: 1e9, c: 0 }
+    ];
+
+    for (const row of filtered) {
+      const d = haversineKm(centerLat, centerLng, row[0], row[1]);
+      for (const b of bins) {
+        if (d >= b.lo && d < b.hi) {
+          b.c += 1;
+          break;
+        }
+      }
+    }
+
+    let html = "";
+    html += "<div style='margin-bottom:8px;'><span style='font-weight:700;'>Top rounded intersections</span></div>";
+    if (intersections.length === 0) {
+      html += "<div>None</div>";
+    } else {
+      html += "<ol style='margin:6px 0 10px 18px; padding:0;'>";
+      for (const it of intersections) {
+        html += "<li>" + esc(it.key) + " (" + it.count + ")</li>";
+      }
+      html += "</ol>";
+    }
+
+    html += "<div style='margin-top:10px; margin-bottom:8px;'><span style='font-weight:700;'>Micro-hotspots</span></div>";
+    if (micro.length === 0) {
+      html += "<div>None</div>";
+    } else {
+      html += "<ol style='margin:6px 0 10px 18px; padding:0;'>";
+      for (const it of micro) {
+        html += "<li>" + esc(it.key) + " (" + it.count + ")</li>";
+      }
+      html += "</ol>";
+    }
+
+    html += "<div style='margin-top:10px; margin-bottom:6px;'><span style='font-weight:700;'>Distance from center</span></div>";
+    html += "<ul style='margin:6px 0 0 18px; padding:0;'>";
+    for (const b of bins) {
+      html += "<li>" + esc(b.name) + ": " + b.c + "</li>";
+    }
+    html += "</ul>";
+
+    els.insightsBody.innerHTML = html;
+
+    if (els.osmNote) {
+      if (!OSM_INTERSECTIONS || OSM_INTERSECTIONS.length === 0) {
+        els.osmNote.textContent = "OSM hotspots unavailable. Install osmnx, then rebuild the map once.";
+      } else {
+        els.osmNote.textContent = "OSM hotspots enabled (OpenStreetMap road geometry).";
+      }
+    }
+  }
+
+  let layers = {
+    points: null,
+    heat: null,
+    intersections: null,
+    osmIntersections: null,
+    micro: null,
+    rings: null
+  };
+
+  let lastFiltered = [];
+
+  function clearLayers(mapObj) {
+    for (const k of Object.keys(layers)) {
+      if (layers[k]) {
+        try { mapObj.removeLayer(layers[k]); } catch (e) {}
+        layers[k] = null;
+      }
+    }
+  }
+
+  function renderAll(mapObj) {
+    const f = currentFilterObj();
+    clearLayers(mapObj);
+
+    const showPoints = !!els.chkPoints.checked;
+    const showHeat = !!els.chkHeat.checked;
+    const showInter = !!els.chkIntersections.checked;
+    const showOsmInter = !!els.chkOsmIntersections.checked;
+    const showMicro = !!els.chkMicro.checked;
+    const showRings = !!els.chkRings.checked;
+
+    const topN = parseInt(els.topNSelect.value || "10", 10);
+    const dInter = parseInt(els.precIntersections.value || "3", 10);
+    const dMicro = parseInt(els.precMicro.value || "4", 10);
+
+    const filtered = filteredIncidents(f, mapObj);
+    lastFiltered = filtered;
+
+    if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
+    if (els.countFiltered) els.countFiltered.textContent = String(filtered.length);
+
+    const inView = computeInViewCount(filtered, mapObj);
+    if (els.countInView) els.countInView.textContent = String(inView);
+
+    if (showPoints) {
+      const layer = L.layerGroup().addTo(mapObj);
+      for (const row of filtered) {
+        const mk = L.circleMarker([row[0], row[1]], { radius: 5, renderer: renderer });
+        mk.bindPopup(popupHtml(row), { maxWidth: 320 });
+        mk.addTo(layer);
+      }
+      layers.points = layer;
+    }
+
+    if (showHeat && typeof L.heatLayer === "function") {
+      const heatPts = filtered.map(r => [r[0], r[1], (r.length >= 7 ? (parseFloat(r[6]) || 1.0) : 1.0)]);
+      const heat = L.heatLayer(heatPts, { radius: 18, blur: 14, maxZoom: 17 });
+      heat.addTo(mapObj);
+      layers.heat = heat;
+    }
+
+    if (showInter) {
+      const groups = groupByRounded(filtered, dInter).slice(0, topN);
+      const layer = L.layerGroup().addTo(mapObj);
+      for (const g of groups) {
+        const radius = Math.max(7, Math.min(30, 4 + Math.sqrt(g.count) * 3));
+        const c = L.circleMarker([g.lat, g.lng], { radius: radius, renderer: renderer });
+        c.bindPopup(
+          "Rounded intersection<br>Key: " + esc(g.key) + "<br>Count: " + g.count + "<br><br>" + popupHtml(g.sample),
+          { maxWidth: 340 }
+        );
+        c.addTo(layer);
+      }
+      layers.intersections = layer;
+    }
+
+    if (showOsmInter) {
+      const layer = L.layerGroup().addTo(mapObj);
+      if (!OSM_INTERSECTIONS || OSM_INTERSECTIONS.length === 0) {
+        const center = getCenterFromData();
+        const mk = L.circleMarker([center[0], center[1]], { radius: 8, renderer: renderer });
+        mk.bindPopup("OSM hotspots unavailable.<br>Install osmnx and rebuild once.");
+        mk.addTo(layer);
+      } else {
+        const top = OSM_INTERSECTIONS.slice(0, topN);
+        for (const it of top) {
+          const lat = it[0], lng = it[1], cnt = it[2], nodeId = it[3];
+          const radius = Math.max(8, Math.min(34, 4 + Math.sqrt(cnt) * 3));
+          const c = L.circleMarker([lat, lng], { radius: radius, renderer: renderer });
+          c.bindPopup("OSM hotspot<br>Count: " + cnt + "<br>Node: " + esc(nodeId), { maxWidth: 320 });
+          c.addTo(layer);
+        }
+      }
+      layers.osmIntersections = layer;
+    }
+
+    if (showMicro) {
+      const groups = groupByRounded(filtered, dMicro).slice(0, topN);
+      const layer = L.layerGroup().addTo(mapObj);
+      for (const g of groups) {
+        const radius = Math.max(6, Math.min(26, 3 + Math.sqrt(g.count) * 2.5));
+        const c = L.circleMarker([g.lat, g.lng], { radius: radius, renderer: renderer });
+        c.bindPopup(
+          "Micro-hotspot<br>Key: " + esc(g.key) + "<br>Count: " + g.count + "<br><br>" + popupHtml(g.sample),
+          { maxWidth: 340 }
+        );
+        c.addTo(layer);
+      }
+      layers.micro = layer;
+    }
+
+    const center = getCenterFromData();
+    const centerLat = center[0];
+    const centerLng = center[1];
+
+    if (showRings) {
+      const ringLayer = L.layerGroup().addTo(mapObj);
+      const radiiKm = [1, 2, 3, 5, 8];
+      for (const rk of radiiKm) {
+        const circle = L.circle([centerLat, centerLng], { radius: rk * 1000, weight: 1, fill: false });
+        circle.addTo(ringLayer);
+      }
+      const centerMarker = L.circleMarker([centerLat, centerLng], { radius: 7, renderer: renderer });
+      centerMarker.bindPopup("Dataset center<br>" + centerLat.toFixed(5) + ", " + centerLng.toFixed(5));
+      centerMarker.addTo(ringLayer);
+      layers.rings = ringLayer;
+    }
+
+    renderInsights(filtered, centerLat, centerLng);
+  }
+
+  function updateInViewOnly(mapObj) {
+    if (!mapObj) return;
+    const f = currentFilterObj();
+
+    let rows = lastFiltered;
+
+    if (f.inViewOnly) {
+      rows = filteredIncidents(f, mapObj);
+      lastFiltered = rows;
+      if (els.countFiltered) els.countFiltered.textContent = String(rows.length);
+    }
+
+    const inView = computeInViewCount(rows, mapObj);
+    if (els.countInView) els.countInView.textContent = String(inView);
+  }
+
+  function clearAll() {
+    els.causeSelect.value = "__ALL__";
+    els.chkInViewOnly.checked = false;
+
+    els.monthSelect.value = "";
+    els.daySelect.value = "";
+    els.yearSelect.value = "";
+
+    els.dayTypeSelect.value = "all";
+    els.timeBlockSelect.value = "all";
+
+    els.chkPoints.checked = true;
+    els.chkHeat.checked = false;
+    els.chkIntersections.checked = false;
+    els.chkOsmIntersections.checked = false;
+    els.chkMicro.checked = false;
+    els.chkRings.checked = false;
+
+    els.topNSelect.value = "10";
+    els.precIntersections.value = "3";
+    els.precMicro.value = "4";
+  }
+
+  function wireUI(mapObj) {
+    function setBtnText() {
+      if (els.panel.classList.contains("collapsed")) els.toggleBtn.textContent = "Filters";
+      else els.toggleBtn.textContent = "Hide";
+    }
+
+    els.toggleBtn.addEventListener("click", function() {
+      els.panel.classList.toggle("collapsed");
+      setBtnText();
+    });
+    setBtnText();
+
+    els.clearBtn.addEventListener("click", function() {
+      clearAll();
+      renderAll(mapObj);
+    });
+
+    const ids = [
+      "causeSelect","chkInViewOnly",
+      "monthSelect","daySelect","yearSelect",
+      "dayTypeSelect","timeBlockSelect",
+      "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings",
+      "topNSelect","precIntersections","precMicro"
+    ];
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.addEventListener("change", function() {
+        renderAll(mapObj);
+      });
+    }
+
+    mapObj.on("moveend zoomend", function() {
+      updateInViewOnly(mapObj);
+    });
+  }
+
+  function getMapWhenReady(cb) {
+    let tries = 0;
+    const t = setInterval(function() {
+      tries++;
+      if (typeof window.map_4e41bcfd268797fee31fa03e54143795 !== "undefined" && window.map_4e41bcfd268797fee31fa03e54143795) {
+        clearInterval(t);
+        cb(window.map_4e41bcfd268797fee31fa03e54143795);
+      }
+      if (tries > 200) {
+        clearInterval(t);
+      }
+    }, 50);
+  }
+
+  getMapWhenReady(function(mapObj) {
+    buildCauseDropdown();
+    wireUI(mapObj);
+
+    if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
+    renderAll(mapObj);
+  });
+})();
+</script>
+
+</body>
+<script>
+    
+    
+            var map_4e41bcfd268797fee31fa03e54143795 = L.map(
+                "map_4e41bcfd268797fee31fa03e54143795",
+                {
+                    center: [30.207556940366487, -92.0389400865622],
+                    crs: L.CRS.EPSG3857,
+                    ...{
+  "zoom": 12,
+  "zoomControl": true,
+  "preferCanvas": false,
+}
+
+                }
+            );
+            L.control.scale().addTo(map_4e41bcfd268797fee31fa03e54143795);
+
+            
+
+        
+    
+            var tile_layer_a80645ce659ccd2dae0602d534c623ea = L.tileLayer(
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {
+  "minZoom": 0,
+  "maxZoom": 19,
+  "maxNativeZoom": 19,
+  "noWrap": false,
+  "attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors",
+  "subdomains": "abc",
+  "detectRetina": false,
+  "tms": false,
+  "opacity": 1,
+}
+
+            );
+        
+    
+            tile_layer_a80645ce659ccd2dae0602d534c623ea.addTo(map_4e41bcfd268797fee31fa03e54143795);
+        
+</script>
+</html>
