@@ -1033,11 +1033,41 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     max-height: calc(82vh - 98px);
   }}
 
+  .section {{
+    padding: 8px 0 6px 0;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+  }}
+
+  .section:last-child {{
+    border-bottom: none;
+  }}
+
+  .section-title {{
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(0,0,0,0.5);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }}
+
   .row {{
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     margin-bottom: 10px;
+  }}
+
+  .row-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+  }}
+
+  .row-checks {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
   }}
 
   .row label {{
@@ -1059,6 +1089,11 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     border: 1px solid rgba(0,0,0,0.14);
     background: rgba(255,255,255,0.95);
     outline: none;
+  }}
+
+  input[type="checkbox"] {{
+    width: 16px;
+    height: 16px;
   }}
 
   select:disabled {{
@@ -1183,6 +1218,11 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       border-radius: 14px;
     }}
 
+    input[type="checkbox"] {{
+      width: 20px;
+      height: 20px;
+    }}
+
     .pill {{
       font-size: 13px;
       padding: 8px 12px;
@@ -1220,108 +1260,112 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
   <div id="panelBody">
 
-    <div class="row">
-      <label>Group:
-        <select id="causeGroupSelect">
-          <option value="__ALL__">All</option>
-        </select>
-      </label>
+    <div class="section">
+      <div class="section-title">Filters</div>
+      <div class="row row-grid">
+        <label>Group:
+          <select id="causeGroupSelect">
+            <option value="__ALL__">All</option>
+          </select>
+        </label>
 
-      <label>Type:
-        <select id="causeSelect">
-          <option value="__ALL__">All</option>
-        </select>
-      </label>
+        <label>Type:
+          <select id="causeSelect">
+            <option value="__ALL__">All</option>
+          </select>
+        </label>
+      </div>
 
-      <label style="margin-left:auto;">
-        <input type="checkbox" id="chkInViewOnly">
-        In view only
-      </label>
+      <div class="row row-grid">
+        <label>Month:
+          <select id="monthSelect">
+            <option value="">--</option>
+            <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
+            <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
+            <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
+            <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+          </select>
+        </label>
+
+        <label>Day:
+          <select id="daySelect">
+            <option value="">--</option>
+            {''.join([f'<option value="{str(i).zfill(2)}">{i}</option>' for i in range(1, 32)])}
+          </select>
+        </label>
+
+        <label>Year:
+          <select id="yearSelect">
+            {year_options}
+          </select>
+        </label>
+      </div>
+
+      <div class="row row-grid">
+        <label>Day type:
+          <select id="dayTypeSelect">
+            <option value="all">All</option>
+            <option value="weekday">Weekdays</option>
+            <option value="weekend">Weekends</option>
+          </select>
+        </label>
+
+        <label>Time block:
+          <select id="timeBlockSelect">
+            <option value="all">All</option>
+            <option value="morning">Morning (06-10)</option>
+            <option value="midday">Midday (10-15)</option>
+            <option value="evening">Evening (15-19)</option>
+            <option value="night">Night (19-24)</option>
+            <option value="latenight">Late night (00-06)</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row row-checks">
+        <label><input type="checkbox" id="chkInViewOnly"> In view only</label>
+        <label><input type="checkbox" id="chkTodayOnly"> Today only</label>
+      </div>
     </div>
 
-    <div class="row">
-      <label>Month:
-        <select id="monthSelect">
-          <option value="">--</option>
-          <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
-          <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
-          <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
-          <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
-        </select>
-      </label>
-
-      <label>Day:
-        <select id="daySelect">
-          <option value="">--</option>
-          {''.join([f'<option value="{str(i).zfill(2)}">{i}</option>' for i in range(1, 32)])}
-        </select>
-      </label>
-
-      <label>Year:
-        <select id="yearSelect">
-          {year_options}
-        </select>
-      </label>
-
-      <label style="margin-left:auto;">
-        <input type="checkbox" id="chkTodayOnly">
-        Today only
-      </label>
+    <div class="section">
+      <div class="section-title">Layers</div>
+      <div class="row row-checks">
+        <label><input type="checkbox" id="chkPoints" checked> Points</label>
+        <label><input type="checkbox" id="chkHeat"> Heat</label>
+        <label><input type="checkbox" id="chkIntersections"> Rounded</label>
+        <label><input type="checkbox" id="chkOsmIntersections"> OSM</label>
+        <label><input type="checkbox" id="chkMicro"> Micro</label>
+        <label><input type="checkbox" id="chkRings"> Rings</label>
+      </div>
     </div>
 
-    <div class="row">
-      <label>Day type:
-        <select id="dayTypeSelect">
-          <option value="all">All</option>
-          <option value="weekday">Weekdays</option>
-          <option value="weekend">Weekends</option>
-        </select>
-      </label>
+    <div class="section">
+      <div class="section-title">Precision</div>
+      <div class="row row-grid">
+        <label>Top N:
+          <select id="topNSelect">
+            <option value="5">5</option>
+            <option value="10" selected>10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
 
-      <label>Time block:
-        <select id="timeBlockSelect">
-          <option value="all">All</option>
-          <option value="morning">Morning (06-10)</option>
-          <option value="midday">Midday (10-15)</option>
-          <option value="evening">Evening (15-19)</option>
-          <option value="night">Night (19-24)</option>
-          <option value="latenight">Late night (00-06)</option>
-        </select>
-      </label>
-    </div>
+        <label>Rounded precision:
+          <select id="precIntersections">
+            <option value="3" selected>~100m</option>
+            <option value="4">~10m</option>
+          </select>
+        </label>
 
-    <div class="row">
-      <label><input type="checkbox" id="chkPoints" checked> Points</label>
-      <label><input type="checkbox" id="chkHeat"> Heat</label>
-      <label><input type="checkbox" id="chkIntersections"> Rounded</label>
-      <label><input type="checkbox" id="chkOsmIntersections"> OSM</label>
-      <label><input type="checkbox" id="chkMicro"> Micro</label>
-      <label><input type="checkbox" id="chkRings"> Rings</label>
-    </div>
-
-    <div class="row">
-      <label>Top N:
-        <select id="topNSelect">
-          <option value="5">5</option>
-          <option value="10" selected>10</option>
-          <option value="20">20</option>
-          <option value="50">50</option>
-        </select>
-      </label>
-
-      <label>Rounded precision:
-        <select id="precIntersections">
-          <option value="3" selected>~100m</option>
-          <option value="4">~10m</option>
-        </select>
-      </label>
-
-      <label>Micro precision:
-        <select id="precMicro">
-          <option value="4" selected>~10m</option>
-          <option value="5">~1m</option>
-        </select>
-      </label>
+        <label>Micro precision:
+          <select id="precMicro">
+            <option value="4" selected>~10m</option>
+            <option value="5">~1m</option>
+          </select>
+        </label>
+      </div>
     </div>
 
     <div id="insights">
@@ -1338,6 +1382,8 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
   const INCIDENTS = window.INCIDENTS_DATA || [];
   const OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
   const renderer = L.canvas({{ padding: 0.5 }});
+  const isCoarsePointer = window.matchMedia ? window.matchMedia("(pointer: coarse)").matches : false;
+  const isTouch = (L && L.Browser && L.Browser.touch) || isCoarsePointer;
 
   const els = {{
     panel: document.getElementById("controlPanel"),
@@ -1752,6 +1798,10 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
   let lastFiltered = [];
   let renderTimer = null;
+  let pointMarkers = {{
+    singles: [],
+    counts: []
+  }};
 
   function scheduleRender(mapObj, delayMs) {{
     const delay = Number.isFinite(delayMs) ? delayMs : 0;
@@ -1774,21 +1824,46 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     }}
   }}
 
-  function getPointRadius(mapObj) {{
+  function getPointSizing(mapObj) {{
     const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
-    const radius = 2.6 + (zoom - 10) * 0.55 + 2;
-    return Math.max(4.4, Math.min(8.2, radius));
+    const inverse = 12 - zoom;
+    let radius = 5.6 + inverse * 0.7;
+    radius = Math.max(3.6, Math.min(10.8, radius));
+    if (isTouch) {{
+      radius = Math.min(13.5, radius * 1.35 + 1.2);
+    }}
+    const countSize = Math.max(18, Math.round(radius * 2.4 + (isTouch ? 6 : 4)));
+    const countFont = Math.max(10, Math.round(countSize * 0.55));
+    return {{ radius, countSize, countFont }};
   }}
 
-  function getPointRadius(mapObj) {{
-    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
-    const radius = 2.6 + (zoom - 10) * 0.55;
-    return Math.max(2.4, Math.min(6.2, radius));
+  function updatePointSizing(mapObj) {{
+    if (!mapObj) return;
+    const sizing = getPointSizing(mapObj);
+    for (const mk of pointMarkers.singles) {{
+      if (mk && mk.setRadius) {{
+        mk.setRadius(sizing.radius);
+      }}
+    }}
+    for (const mk of pointMarkers.counts) {{
+      if (!mk || !mk.setIcon) continue;
+      const count = mk.__count || 1;
+      const size = sizing.countSize;
+      const fontSize = sizing.countFont;
+      const icon = L.divIcon({{
+        className: "",
+        html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2]
+      }});
+      mk.setIcon(icon);
+    }}
   }}
 
   function renderAll(mapObj) {{
     const f = currentFilterObj();
     clearLayers(mapObj);
+    pointMarkers = {{ singles: [], counts: [] }};
 
     const showPoints = !!els.chkPoints.checked;
     const showHeat = !!els.chkHeat.checked;
@@ -1813,12 +1888,13 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     if (showPoints) {{
       const layer = L.layerGroup().addTo(mapObj);
       const grouped = groupByExactLocation(filtered);
+      const sizing = getPointSizing(mapObj);
       for (const group of grouped) {{
         let mk = null;
         if (group.rows.length > 1) {{
           const count = group.rows.length;
-          const size = Math.round(getPointRadius(mapObj) * 2);
-          const fontSize = Math.max(9, Math.round(size * 0.7));
+          const size = sizing.countSize;
+          const fontSize = sizing.countFont;
           const icon = L.divIcon({{
             className: "",
             html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
@@ -1826,17 +1902,20 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
             iconAnchor: [size / 2, size / 2]
           }});
           mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
+          mk.__count = count;
+          pointMarkers.counts.push(mk);
           mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320 }});
         }} else {{
-          const radius = getPointRadius(mapObj);
+          const radius = sizing.radius;
           mk = L.circleMarker([group.lat, group.lng], {{
             radius: radius,
             renderer: renderer,
             color: "#2b6cb0",
-            weight: 1.4,
+            weight: isTouch ? 2.2 : 1.4,
             fillColor: "#cfe1ff",
-            fillOpacity: 0.6
+            fillOpacity: 0.65
           }});
+          pointMarkers.singles.push(mk);
           mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320 }});
         }}
         mk.addTo(layer);
@@ -2006,9 +2085,18 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       }});
     }}
 
-    mapObj.on("moveend zoomend", function(evt) {{
-      if (evt && evt.type === "zoomend") {{
-        scheduleRender(mapObj, 120);
+    mapObj.on("moveend", function() {{
+      if (els.chkInViewOnly.checked) {{
+        scheduleRender(mapObj, 80);
+      }} else {{
+        updateInViewOnly(mapObj);
+      }}
+    }});
+
+    mapObj.on("zoomend", function() {{
+      updatePointSizing(mapObj);
+      if (els.chkInViewOnly.checked) {{
+        scheduleRender(mapObj, 80);
       }} else {{
         updateInViewOnly(mapObj);
       }}
