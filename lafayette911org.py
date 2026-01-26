@@ -972,6 +972,12 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     border: 1px solid rgba(0,0,0,0.14);
     background: rgba(255,255,255,0.95);
     outline: none;
+    width: 100%;
+    box-sizing: border-box;
+  }}
+
+  select[multiple] {{
+    min-height: 140px;
   }}
 
   button {{
@@ -1052,6 +1058,10 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       border-radius: 14px;
     }}
 
+    select[multiple] {{
+      min-height: 180px;
+    }}
+
     .pill {{
       font-size: 13px;
       padding: 8px 12px;
@@ -1090,15 +1100,20 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
   <div id="panelBody">
 
     <div class="row">
-      <label>Type:
-        <select id="causeSelect">
-          <option value="__ALL__">All</option>
+      <label style="flex:1;">Type (multi-select):
+        <select id="causeSelect" multiple size="6">
+          <option value="__ALL__">All incidents</option>
+          <option value="__GROUP__FIRE">All fires</option>
+          <option value="__GROUP__ACCIDENT">All accidents</option>
+          <option value="__GROUP__MEDICAL">All medical</option>
         </select>
       </label>
+    </div>
 
-      <label style="margin-left:auto;">
-        <input type="checkbox" id="chkInViewOnly">
-        In view only
+    <div class="row">
+      <label>
+        <input type="checkbox" id="chkTodayOnly">
+        Today only
       </label>
     </div>
 
@@ -1207,7 +1222,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     countInView: document.getElementById("countInView"),
 
     causeSelect: document.getElementById("causeSelect"),
-    chkInViewOnly: document.getElementById("chkInViewOnly"),
+    chkTodayOnly: document.getElementById("chkTodayOnly"),
 
     monthSelect: document.getElementById("monthSelect"),
     daySelect: document.getElementById("daySelect"),
@@ -1331,8 +1346,8 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       if (c) set.add(c);
     }}
     const causes = Array.from(set.values()).sort((a,b) => a.localeCompare(b));
-    while (els.causeSelect.options.length > 1) {{
-      els.causeSelect.remove(1);
+    while (els.causeSelect.options.length > 4) {{
+      els.causeSelect.remove(4);
     }}
     for (const c of causes) {{
       const opt = document.createElement("option");
@@ -1342,9 +1357,28 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     }}
   }}
 
+  function causeGroupMatches(cause, group) {{
+    const v = String(cause || "").toUpperCase();
+    if (group === "__GROUP__FIRE") return /(FIRE|SMOKE|BURN)/.test(v);
+    if (group === "__GROUP__ACCIDENT") return /(ACCIDENT|CRASH|COLLISION|WRECK)/.test(v);
+    if (group === "__GROUP__MEDICAL") return /(MEDICAL|EMS|AMBULANCE|INJURY)/.test(v);
+    return false;
+  }}
+
+  function getSelectedCauses() {{
+    const selected = Array.from(els.causeSelect.selectedOptions || []).map((opt) => opt.value);
+    if (!selected.length || selected.includes("__ALL__")) return ["__ALL__"];
+    return selected;
+  }}
+
   function matchesCause(row, selected) {{
-    if (!selected || selected === "__ALL__") return true;
-    return String(row[4] || "").trim() === selected;
+    if (!selected || selected.length === 0 || selected.includes("__ALL__")) return true;
+    const cause = String(row[4] || "").trim();
+    return selected.some((choice) => {{
+      if (choice.startsWith("__GROUP__")) return causeGroupMatches(cause, choice);
+      return cause === choice;
+    }});
+  }}
   }}
 
   function matchesDateFilter(row, f) {{
@@ -1379,25 +1413,20 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     const yy = (els.yearSelect.value || "").trim();
     const dayType = (els.dayTypeSelect.value || "all").trim();
     const timeBlock = (els.timeBlockSelect.value || "all").trim();
-    const cause = (els.causeSelect.value || "__ALL__").trim();
-    const inViewOnly = !!els.chkInViewOnly.checked;
-    return {{ mm: mm || "", dd: dd || "", yy: yy || "", dayType, timeBlock, cause, inViewOnly }};
+    const causes = getSelectedCauses();
+    const todayOnly = !!els.chkTodayOnly.checked;
+    return {{ mm: mm || "", dd: dd || "", yy: yy || "", dayType, timeBlock, causes, todayOnly }};
   }}
 
   function filteredIncidents(filterObj, mapObj) {{
     const out = [];
-    const bounds = (filterObj.inViewOnly && mapObj) ? mapObj.getBounds() : null;
 
     for (const row of INCIDENTS) {{
-      if (!matchesCause(row, filterObj.cause)) continue;
+      if (!matchesCause(row, filterObj.causes)) continue;
       if (!matchesDateFilter(row, filterObj)) continue;
       if (!matchesDayType(row, filterObj.dayType)) continue;
       if (!matchesTimeBlock(row, filterObj.timeBlock)) continue;
-
-      if (bounds) {{
-        const latlng = L.latLng(row[0], row[1]);
-        if (!bounds.contains(latlng)) continue;
-      }}
+      if (filterObj.todayOnly && !matchesToday(row)) continue;
 
       out.push(row);
     }}
@@ -1617,23 +1646,16 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
   function updateInViewOnly(mapObj) {{
     if (!mapObj) return;
-    const f = currentFilterObj();
-
-    let rows = lastFiltered;
-
-    if (f.inViewOnly) {{
-      rows = filteredIncidents(f, mapObj);
-      lastFiltered = rows;
-      if (els.countFiltered) els.countFiltered.textContent = String(rows.length);
-    }}
-
+    const rows = lastFiltered;
     const inView = computeInViewCount(rows, mapObj);
     if (els.countInView) els.countInView.textContent = String(inView);
   }}
 
   function clearAll() {{
-    els.causeSelect.value = "__ALL__";
-    els.chkInViewOnly.checked = false;
+    for (const opt of els.causeSelect.options) {{
+      opt.selected = opt.value === "__ALL__";
+    }}
+    els.chkTodayOnly.checked = false;
 
     els.monthSelect.value = "";
     els.daySelect.value = "";
@@ -1654,6 +1676,28 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     els.precMicro.value = "4";
   }}
 
+  function matchesToday(row) {{
+    const pr = parseReported(row[2]);
+    if (!pr || !pr.dt) return false;
+    const now = new Date();
+    return pr.dt.getFullYear() === now.getFullYear()
+      && pr.dt.getMonth() === now.getMonth()
+      && pr.dt.getDate() === now.getDate();
+  }}
+
+  function normalizeCauseSelection() {{
+    const selected = Array.from(els.causeSelect.selectedOptions || []).map((opt) => opt.value);
+    if (!selected.length) {{
+      els.causeSelect.options[0].selected = true;
+      return;
+    }}
+    if (selected.includes("__ALL__") && selected.length > 1) {{
+      for (const opt of els.causeSelect.options) {{
+        opt.selected = opt.value === "__ALL__";
+      }}
+    }}
+  }}
+
   function wireUI(mapObj) {{
     function setBtnText() {{
       if (els.panel.classList.contains("collapsed")) els.toggleBtn.textContent = "Filters";
@@ -1672,7 +1716,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     }});
 
     const ids = [
-      "causeSelect","chkInViewOnly",
+      "causeSelect","chkTodayOnly",
       "monthSelect","daySelect","yearSelect",
       "dayTypeSelect","timeBlockSelect",
       "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings",
@@ -1682,6 +1726,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       const el = document.getElementById(id);
       if (!el) continue;
       el.addEventListener("change", function() {{
+        if (id === "causeSelect") normalizeCauseSelection();
         renderAll(mapObj);
       }});
     }}
