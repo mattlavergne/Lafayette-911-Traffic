@@ -1194,7 +1194,8 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     }}
 
     #panelBody {{
-      max-height: calc(92vh - 160px);
+      max-height: calc(92vh - 120px);
+      padding-top: 8px;
     }}
 
     #mobileHandle {{
@@ -1227,9 +1228,9 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     }}
 
     select {{
-      padding: 12px 12px;
-      font-size: 16px;
-      border-radius: 14px;
+      padding: 10px 12px;
+      font-size: 15px;
+      border-radius: 12px;
     }}
 
     input[type="checkbox"] {{
@@ -1240,6 +1241,31 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     .pill {{
       font-size: 13px;
       padding: 8px 12px;
+    }}
+
+    #panelCountBar {{
+      padding: 8px 12px 4px 12px;
+    }}
+
+    #panelQuickFilters {{
+      padding-bottom: 6px;
+    }}
+
+    .section {{
+      padding: 4px 0;
+    }}
+
+    .row {{
+      gap: 6px;
+      margin-bottom: 6px;
+    }}
+
+    .row-grid {{
+      gap: 8px;
+    }}
+
+    .row-checks {{
+      gap: 6px;
     }}
 
     #controlPanel.collapsed {{
@@ -1788,6 +1814,15 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     }}
   }}
 
+  function focusMarker(mapObj, marker) {{
+    if (!mapObj || !marker || !marker.getLatLng) return;
+    const latlng = marker.getLatLng();
+    const currentZoom = mapObj.getZoom ? mapObj.getZoom() : 12;
+    const targetZoom = Math.max(currentZoom, 15);
+    mapObj.setView(latlng, targetZoom, {{ animate: true, duration: 0.35 }});
+    if (marker.openPopup) marker.openPopup();
+  }}
+
   function renderAll(mapObj) {{
     const f = currentFilterObj();
     clearLayers(mapObj);
@@ -1832,7 +1867,10 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
           mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
           mk.__count = count;
           pointMarkers.counts.push(mk);
-          mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320 }});
+          mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320, autoPan: false }});
+          mk.on("click", function() {{
+            focusMarker(mapObj, mk);
+          }});
         }} else {{
           const radius = sizing.radius;
           mk = L.circleMarker([group.lat, group.lng], {{
@@ -1844,7 +1882,10 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
             fillOpacity: 0.65
           }});
           pointMarkers.singles.push(mk);
-          mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320 }});
+          mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320, autoPan: false }});
+          mk.on("click", function() {{
+            focusMarker(mapObj, mk);
+          }});
         }}
         mk.addTo(layer);
       }}
