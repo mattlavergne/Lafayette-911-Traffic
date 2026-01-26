@@ -3,7 +3,9 @@ import re
 import time
 import json
 import math
+import csv
 import hashlib
+import sqlite3
 from datetime import datetime
 
 import requests
@@ -17,6 +19,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FILENAME = os.path.join(BASE_DIR, "traffic_incidents.csv")
 MAPNAME = os.path.join(BASE_DIR, "traffic_map.html")
 DATAJS = os.path.join(BASE_DIR, "traffic_data.js")
+INDEX_DB = os.path.join(BASE_DIR, "incident_index.sqlite")
 
 # Cache for OpenStreetMap road graph + derived intersections
 OSM_CACHE_DIR = os.path.join(BASE_DIR, "osm_cache")
@@ -88,20 +91,83 @@ def _write_jsonjs_if_changed(path: str, incidents, osm_intersections) -> bool:
     return _write_text_if_changed(path, s)
 
 
-def _read_existing_incident_numbers(filename):
+def _seed_index_from_csv(conn, filename):
     if not os.path.exists(filename):
-        return set()
+        return
+
     try:
-        s = pd.read_csv(
-            filename,
-            usecols=["incident_number"],
-            dtype={"incident_number": str},
-            engine="c",
-        )["incident_number"]
-        return set(s.dropna().astype(str).tolist())
+        with open(filename, "r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header:
+                return
+            try:
+                idx = [h.strip() for h in header].index("incident_number")
+            except ValueError:
+                return
+
+            batch = []
+            for row in reader:
+                if idx >= len(row):
+                    continue
+                incident = row[idx].strip()
+                if not incident:
+                    continue
+                batch.append((incident,))
+                if len(batch) >= 1000:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO incident_index (incident_number) VALUES (?)",
+                        batch,
+                    )
+                    batch = []
+
+            if batch:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO incident_index (incident_number) VALUES (?)",
+                    batch,
+                )
+        conn.commit()
     except Exception as e:
-        print(f"Warning: failed reading incident_number column: {e}")
-        return set()
+        print(f"Warning: failed seeding incident index: {e}")
+
+
+def _ensure_incident_index(db_path, csv_path):
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS incident_index (incident_number TEXT PRIMARY KEY)"
+    )
+    conn.commit()
+    try:
+        count = conn.execute("SELECT COUNT(1) FROM incident_index").fetchone()[0]
+    except Exception:
+        count = 0
+    if count == 0:
+        _seed_index_from_csv(conn, csv_path)
+    return conn
+
+
+def _filter_new_incidents(incidents, conn, batch_size=900):
+    if incidents is None or incidents.empty:
+        return incidents
+
+    ids = incidents["incident_number"].astype(str).fillna("").tolist()
+    existing = set()
+
+    for i in range(0, len(ids), batch_size):
+        chunk = ids[i : i + batch_size]
+        if not chunk:
+            continue
+        placeholders = ",".join("?" for _ in chunk)
+        query = f"SELECT incident_number FROM incident_index WHERE incident_number IN ({placeholders})"
+        try:
+            rows = conn.execute(query, chunk).fetchall()
+            existing.update(r[0] for r in rows if r and r[0] is not None)
+        except Exception as e:
+            print(f"Warning: incident index lookup failed: {e}")
+            return incidents
+
+    return incidents[~incidents["incident_number"].astype(str).isin(existing)].copy()
 
 
 
@@ -2000,7 +2066,7 @@ def _in_lafayette_bounds_series(df, lat_col, lon_col):
 def main():
     ensure_csv_exists(FILENAME)
 
-    existing_ids = _read_existing_incident_numbers(FILENAME)
+    conn = _ensure_incident_index(INDEX_DB, FILENAME)
     last_csv_mtime = _file_mtime_int(FILENAME)
 
     while True:
@@ -2013,7 +2079,7 @@ def main():
         if json_data:
             incidents = parse_traffic_data(json_data)
             if not incidents.empty:
-                new_incidents = incidents[~incidents["incident_number"].isin(existing_ids)].copy()
+                new_incidents = _filter_new_incidents(incidents, conn)
 
                 if new_incidents.empty:
                     print("No new incidents found. CSV not changed.")
@@ -2022,9 +2088,22 @@ def main():
                     new_incidents = geocode_new_incidents(new_incidents, GOOGLE_API_KEY)
                     ok = save_new_to_csv(new_incidents, FILENAME)
                     if ok:
-                        # Update in-memory set only after successful append
-                        for x in new_incidents["incident_number"].dropna().astype(str).tolist():
-                            existing_ids.add(x)
+                        # Persist incident IDs after successful append
+                        try:
+                            ids_to_add = (
+                                new_incidents["incident_number"]
+                                .dropna()
+                                .astype(str)
+                                .tolist()
+                            )
+                            if ids_to_add:
+                                conn.executemany(
+                                    "INSERT OR IGNORE INTO incident_index (incident_number) VALUES (?)",
+                                    [(x,) for x in ids_to_add],
+                                )
+                                conn.commit()
+                        except Exception as e:
+                            print(f"Warning: failed to persist incident index: {e}")
                         csv_changed = (_file_mtime_int(FILENAME) != csv_mtime_before)
             else:
                 print("No incidents parsed.")
