@@ -1018,18 +1018,15 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
   }}
 
   .incident-count-marker {{
-    width: 28px;
-    height: 28px;
     border-radius: 999px;
-    background: #2b2b2b;
-    color: #fff;
+    background: rgba(255,255,255,0.8);
+    color: #1f1f1f;
     display: flex;
     align-items: center;
     justify-content: center;
     font-weight: 700;
-    font-size: 12px;
-    border: 2px solid #fff;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+    border: 2px solid #1f1f1f;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.18);
   }}
 
   #insights {{
@@ -1677,6 +1674,18 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     }}
   }}
 
+  function getPointRadius(mapObj) {{
+    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+    const radius = 2.6 + (zoom - 10) * 0.55;
+    return Math.max(2.4, Math.min(6.2, radius));
+  }}
+
+  function getCountMarkerSize(mapObj) {{
+    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+    const size = 16 + (zoom - 10) * 2;
+    return Math.max(16, Math.min(26, size));
+  }}
+
   function renderAll(mapObj) {{
     const f = currentFilterObj();
     clearLayers(mapObj);
@@ -1708,22 +1717,25 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
         let mk = null;
         if (group.rows.length > 1) {{
           const count = group.rows.length;
+          const size = getCountMarkerSize(mapObj);
+          const fontSize = Math.max(9, Math.round(size * 0.45));
           const icon = L.divIcon({{
             className: "",
-            html: "<div class='incident-count-marker'>" + count + "</div>",
-            iconSize: [28, 28],
-            iconAnchor: [14, 14]
+            html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
+            iconSize: [size, size],
+            iconAnchor: [size / 2, size / 2]
           }});
           mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
           mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320 }});
         }} else {{
+          const radius = getPointRadius(mapObj);
           mk = L.circleMarker([group.lat, group.lng], {{
-            radius: 5,
+            radius: radius,
             renderer: renderer,
             color: "#1f1f1f",
-            weight: 1,
-            fillColor: "#4a4a4a",
-            fillOpacity: 0.9
+            weight: 1.4,
+            fillColor: "#d9d9d9",
+            fillOpacity: 0.4
           }});
           mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320 }});
         }}
@@ -1894,8 +1906,12 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       }});
     }}
 
-    mapObj.on("moveend zoomend", function() {{
-      updateInViewOnly(mapObj);
+    mapObj.on("moveend zoomend", function(evt) {{
+      if (evt && evt.type === "zoomend") {{
+        renderAll(mapObj);
+      }} else {{
+        updateInViewOnly(mapObj);
+      }}
     }});
   }}
 
