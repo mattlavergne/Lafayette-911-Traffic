@@ -7,3 +7,4 @@ pycache/
 .env
 
 *.log
+osm_cache/
