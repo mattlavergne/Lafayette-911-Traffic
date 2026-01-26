@@ -1019,13 +1019,13 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
   .incident-count-marker {{
     border-radius: 999px;
-    background: rgba(255,255,255,0.8);
-    color: #1f1f1f;
+    background: rgba(212, 230, 255, 0.9);
+    color: #1a365d;
     display: flex;
     align-items: center;
     justify-content: center;
     font-weight: 700;
-    border: 2px solid #1f1f1f;
+    border: 2px solid #2b6cb0;
     box-shadow: 0 1px 4px rgba(0,0,0,0.18);
   }}
 
@@ -1680,12 +1680,6 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     return Math.max(2.4, Math.min(6.2, radius));
   }}
 
-  function getCountMarkerSize(mapObj) {{
-    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
-    const size = 16 + (zoom - 10) * 2;
-    return Math.max(16, Math.min(26, size));
-  }}
-
   function renderAll(mapObj) {{
     const f = currentFilterObj();
     clearLayers(mapObj);
@@ -1717,8 +1711,8 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
         let mk = null;
         if (group.rows.length > 1) {{
           const count = group.rows.length;
-          const size = getCountMarkerSize(mapObj);
-          const fontSize = Math.max(9, Math.round(size * 0.45));
+          const size = Math.round(getPointRadius(mapObj) * 2);
+          const fontSize = Math.max(9, Math.round(size * 0.7));
           const icon = L.divIcon({{
             className: "",
             html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
@@ -1732,10 +1726,10 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
           mk = L.circleMarker([group.lat, group.lng], {{
             radius: radius,
             renderer: renderer,
-            color: "#1f1f1f",
+            color: "#2b6cb0",
             weight: 1.4,
-            fillColor: "#d9d9d9",
-            fillOpacity: 0.4
+            fillColor: "#cfe1ff",
+            fillOpacity: 0.6
           }});
           mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320 }});
         }}
