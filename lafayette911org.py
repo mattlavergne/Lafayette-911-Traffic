@@ -1008,21 +1008,6 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     color: rgba(0,0,0,0.62);
   }}
 
-  .popup-list {{
-    max-height: 180px;
-    overflow: auto;
-    padding-right: 6px;
-  }}
-
-  .popup-entry {{
-    padding: 6px 0;
-    border-bottom: 1px solid rgba(0,0,0,0.08);
-  }}
-
-  .popup-entry:last-child {{
-    border-bottom: none;
-  }}
-
   @media (max-width: 520px) {{
     #controlPanel {{
       left: 0;
