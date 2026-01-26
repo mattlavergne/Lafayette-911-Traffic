@@ -1077,6 +1077,10 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       min-height: 180px;
     }}
 
+    select[multiple] {{
+      min-height: 180px;
+    }}
+
     .pill {{
       font-size: 13px;
       padding: 8px 12px;
@@ -1420,6 +1424,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       return cause === choice;
     }});
   }}
+  }}
 
   function matchesDateFilter(row, f) {{
     if (!f.mm && !f.dd && !f.yy) return true;
@@ -1715,6 +1720,28 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     els.topNSelect.value = "10";
     els.precIntersections.value = "3";
     els.precMicro.value = "4";
+  }}
+
+  function matchesToday(row) {{
+    const pr = parseReported(row[2]);
+    if (!pr || !pr.dt) return false;
+    const now = new Date();
+    return pr.dt.getFullYear() === now.getFullYear()
+      && pr.dt.getMonth() === now.getMonth()
+      && pr.dt.getDate() === now.getDate();
+  }}
+
+  function normalizeCauseSelection() {{
+    const selected = Array.from(els.causeSelect.selectedOptions || []).map((opt) => opt.value);
+    if (!selected.length) {{
+      els.causeSelect.options[0].selected = true;
+      return;
+    }}
+    if (selected.includes("__ALL__") && selected.length > 1) {{
+      for (const opt of els.causeSelect.options) {{
+        opt.selected = opt.value === "__ALL__";
+      }}
+    }}
   }}
 
   function matchesToday(row) {{
