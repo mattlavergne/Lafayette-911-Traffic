@@ -8,4 +8,8 @@ pycache/
 
 *.log
 osm_cache/
-osm_cache/
+*.csv
+
+*.js
+
+*.html
