@@ -1017,6 +1017,21 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     font-weight: 600;
   }}
 
+  .incident-count-marker {{
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    background: #2b2b2b;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 12px;
+    border: 2px solid #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  }}
+
   #insights {{
     border-top: 1px solid rgba(0,0,0,0.08);
     padding-top: 10px;
@@ -1292,6 +1307,9 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
   function createIncidentPopup(rows) {{
     let idx = 0;
     const container = document.createElement("div");
+    if (typeof L !== "undefined" && L.DomEvent) {{
+      L.DomEvent.disableClickPropagation(container);
+    }}
 
     function render() {{
       const row = rows[idx];
@@ -1317,6 +1335,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
         prevBtn.addEventListener("click", function(e) {{
           e.preventDefault();
+          e.stopPropagation();
           if (idx > 0) {{
             idx -= 1;
             render();
@@ -1325,6 +1344,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
         nextBtn.addEventListener("click", function(e) {{
           e.preventDefault();
+          e.stopPropagation();
           if (idx < rows.length - 1) {{
             idx += 1;
             render();
@@ -1685,10 +1705,26 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       const layer = L.layerGroup().addTo(mapObj);
       const grouped = groupByExactLocation(filtered);
       for (const group of grouped) {{
-        const mk = L.circleMarker([group.lat, group.lng], {{ radius: 5, renderer: renderer }});
+        let mk = null;
         if (group.rows.length > 1) {{
+          const count = group.rows.length;
+          const icon = L.divIcon({{
+            className: "",
+            html: "<div class='incident-count-marker'>" + count + "</div>",
+            iconSize: [28, 28],
+            iconAnchor: [14, 14]
+          }});
+          mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
           mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320 }});
         }} else {{
+          mk = L.circleMarker([group.lat, group.lng], {{
+            radius: 5,
+            renderer: renderer,
+            color: "#1f1f1f",
+            weight: 1,
+            fillColor: "#4a4a4a",
+            fillOpacity: 0.9
+          }});
           mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320 }});
         }}
         mk.addTo(layer);
