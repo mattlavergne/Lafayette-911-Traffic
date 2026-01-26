@@ -1010,9 +1010,18 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
   #panelCountBar {{
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     align-items: center;
-    padding: 8px 12px;
+    padding: 8px 12px 6px 12px;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+  }}
+
+  #panelQuickFilters {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px 8px 12px;
     border-bottom: 1px solid rgba(0,0,0,0.06);
   }}
 
@@ -1029,12 +1038,13 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
 
   #panelBody {{
     padding: 10px 12px 12px 12px;
-    overflow: auto;
-    max-height: calc(82vh - 98px);
+    overflow: hidden;
+    max-height: calc(82vh - 140px);
+    transition: max-height 0.28s ease, opacity 0.2s ease, transform 0.28s ease;
   }}
 
   .section {{
-    padding: 8px 0 6px 0;
+    padding: 6px 0;
     border-bottom: 1px solid rgba(0,0,0,0.06);
   }}
 
@@ -1055,7 +1065,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 8px;
   }}
 
   .row-grid {{
@@ -1075,7 +1085,9 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     align-items: center;
     gap: 6px;
     margin-right: 6px;
-    white-space: nowrap;
+    white-space: normal;
+    min-width: 0;
+    flex: 1 1 140px;
   }}
 
   select, button {{
@@ -1089,6 +1101,8 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     border: 1px solid rgba(0,0,0,0.14);
     background: rgba(255,255,255,0.95);
     outline: none;
+    width: 100%;
+    box-sizing: border-box;
   }}
 
   input[type="checkbox"] {{
@@ -1151,21 +1165,21 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     box-shadow: 0 1px 4px rgba(0,0,0,0.18);
   }}
 
-  #insights {{
-    border-top: 1px solid rgba(0,0,0,0.08);
-    padding-top: 10px;
-    margin-top: 10px;
+  #controlPanel {{
+    transition: max-height 0.28s ease, transform 0.28s ease;
   }}
 
-  #insightsBody {{
-    font-size: 12px;
-    line-height: 1.35;
+  #controlPanel.collapsed {{
+    max-height: 160px;
   }}
 
-  #osmNote {{
-    margin-top: 8px;
-    font-size: 11px;
-    color: rgba(0,0,0,0.62);
+  #controlPanel.collapsed #panelBody {{
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-4px);
+    padding-top: 0;
+    padding-bottom: 0;
+    pointer-events: none;
   }}
 
   @media (max-width: 520px) {{
@@ -1180,7 +1194,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     }}
 
     #panelBody {{
-      max-height: calc(92vh - 98px);
+      max-height: calc(92vh - 160px);
     }}
 
     #mobileHandle {{
@@ -1238,7 +1252,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
   }}
 </style>
 
-<div id="controlPanel" class="collapsed">
+<div id="controlPanel">
   <div id="mobileHandle"></div>
 
   <div id="panelHeader">
@@ -1256,6 +1270,9 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     <div class="pill"><span>Total:</span><span id="countTotal">0</span></div>
     <div class="pill"><span>Filtered:</span><span id="countFiltered">0</span></div>
     <div class="pill"><span>In view:</span><span id="countInView">0</span></div>
+  </div>
+  <div id="panelQuickFilters">
+    <label><input type="checkbox" id="chkInViewOnly"> In view only</label>
   </div>
 
   <div id="panelBody">
@@ -1323,7 +1340,6 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       </div>
 
       <div class="row row-checks">
-        <label><input type="checkbox" id="chkInViewOnly"> In view only</label>
         <label><input type="checkbox" id="chkTodayOnly"> Today only</label>
       </div>
     </div>
@@ -1368,12 +1384,6 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       </div>
     </div>
 
-    <div id="insights">
-      <div style="font-weight:700; margin-bottom:6px;">Insights</div>
-      <div id="insightsBody"></div>
-      <div id="osmNote"></div>
-    </div>
-
   </div>
 </div>
 
@@ -1416,8 +1426,6 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     precIntersections: document.getElementById("precIntersections"),
     precMicro: document.getElementById("precMicro"),
 
-    insightsBody: document.getElementById("insightsBody"),
-    osmNote: document.getElementById("osmNote"),
   }};
 
   function esc(s) {{
@@ -1526,16 +1534,6 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     if (hh >= 19 && hh <= 23) return "night";
     if (hh >= 0 && hh < 6) return "latenight";
     return "unknown";
-  }}
-
-  function haversineKm(lat1, lon1, lat2, lon2) {{
-    const R = 6371;
-    const toRad = (x) => x * Math.PI / 180;
-    const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1);
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
   }}
 
   function groupByRounded(points, decimals) {{
@@ -1717,76 +1715,6 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     return c;
   }}
 
-  function renderInsights(filtered, centerLat, centerLng) {{
-    if (!els.insightsBody) return;
-
-    const topN = parseInt(els.topNSelect.value || "10", 10);
-    const dInter = parseInt(els.precIntersections.value || "3", 10);
-    const dMicro = parseInt(els.precMicro.value || "4", 10);
-
-    const intersections = groupByRounded(filtered, dInter).slice(0, topN);
-    const micro = groupByRounded(filtered, dMicro).slice(0, topN);
-
-    const bins = [
-      {{ name: "0-1 km", lo: 0, hi: 1, c: 0 }},
-      {{ name: "1-2 km", lo: 1, hi: 2, c: 0 }},
-      {{ name: "2-3 km", lo: 2, hi: 3, c: 0 }},
-      {{ name: "3-5 km", lo: 3, hi: 5, c: 0 }},
-      {{ name: "5-8 km", lo: 5, hi: 8, c: 0 }},
-      {{ name: "8+ km", lo: 8, hi: 1e9, c: 0 }}
-    ];
-
-    for (const row of filtered) {{
-      const d = haversineKm(centerLat, centerLng, row[0], row[1]);
-      for (const b of bins) {{
-        if (d >= b.lo && d < b.hi) {{
-          b.c += 1;
-          break;
-        }}
-      }}
-    }}
-
-    let html = "";
-    html += "<div style='margin-bottom:8px;'><span style='font-weight:700;'>Top rounded intersections</span></div>";
-    if (intersections.length === 0) {{
-      html += "<div>None</div>";
-    }} else {{
-      html += "<ol style='margin:6px 0 10px 18px; padding:0;'>";
-      for (const it of intersections) {{
-        html += "<li>" + esc(it.key) + " (" + it.count + ")</li>";
-      }}
-      html += "</ol>";
-    }}
-
-    html += "<div style='margin-top:10px; margin-bottom:8px;'><span style='font-weight:700;'>Micro-hotspots</span></div>";
-    if (micro.length === 0) {{
-      html += "<div>None</div>";
-    }} else {{
-      html += "<ol style='margin:6px 0 10px 18px; padding:0;'>";
-      for (const it of micro) {{
-        html += "<li>" + esc(it.key) + " (" + it.count + ")</li>";
-      }}
-      html += "</ol>";
-    }}
-
-    html += "<div style='margin-top:10px; margin-bottom:6px;'><span style='font-weight:700;'>Distance from center</span></div>";
-    html += "<ul style='margin:6px 0 0 18px; padding:0;'>";
-    for (const b of bins) {{
-      html += "<li>" + esc(b.name) + ": " + b.c + "</li>";
-    }}
-    html += "</ul>";
-
-    els.insightsBody.innerHTML = html;
-
-    if (els.osmNote) {{
-      if (!OSM_INTERSECTIONS || OSM_INTERSECTIONS.length === 0) {{
-        els.osmNote.textContent = "OSM hotspots unavailable. Install osmnx, then rebuild the map once.";
-      }} else {{
-        els.osmNote.textContent = "OSM hotspots enabled (OpenStreetMap road geometry).";
-      }}
-    }}
-  }}
-
   let layers = {{
     points: null,
     heat: null,
@@ -1832,7 +1760,7 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     if (isTouch) {{
       radius = Math.min(13.5, radius * 1.35 + 1.2);
     }}
-    const countSize = Math.max(18, Math.round(radius * 2.4 + (isTouch ? 6 : 4)));
+    const countSize = Math.max(16, Math.round(radius * 2.05 + (isTouch ? 5 : 3)));
     const countFont = Math.max(10, Math.round(countSize * 0.55));
     return {{ radius, countSize, countFont }};
   }}
@@ -1997,7 +1925,6 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
       layers.rings = ringLayer;
     }}
 
-    renderInsights(filtered, centerLat, centerLng);
   }}
 
   function updateInViewOnly(mapObj) {{
