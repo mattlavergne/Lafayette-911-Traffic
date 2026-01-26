@@ -33,10 +33,10 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 # ==========================
 
 # Lafayette-only safety bounds (used for map sanity, OSM bbox, and incident acceptance)
-LAF_LAT_MIN = 30.05
-LAF_LAT_MAX = 30.45
-LAF_LON_MIN = -92.35
-LAF_LON_MAX = -91.75
+LAF_LAT_MIN = 29.50
+LAF_LAT_MAX = 31.00
+LAF_LON_MIN = -92.25
+LAF_LON_MAX = -91.90
 
 # OSM snapping config
 OSM_PAD_DEG = 0.02
