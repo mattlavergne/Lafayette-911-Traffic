@@ -1680,6 +1680,12 @@ def create_map_from_csv(input_csv=FILENAME, output_map=MAPNAME, output_datajs=DA
     return Math.max(4.4, Math.min(8.2, radius));
   }}
 
+  function getPointRadius(mapObj) {{
+    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+    const radius = 2.6 + (zoom - 10) * 0.55;
+    return Math.max(2.4, Math.min(6.2, radius));
+  }}
+
   function renderAll(mapObj) {{
     const f = currentFilterObj();
     clearLayers(mapObj);
