@@ -533,12 +533,21 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     base_map = folium.Map(location=[center_lat, center_lng], zoom_start=12, control_scale=True)
 
     tmp_map_path = output_map + ".tmp"
+    try:
+        if os.path.exists(tmp_map_path):
+            os.remove(tmp_map_path)
+    except Exception:
+        pass
+
     base_map.save(tmp_map_path)
 
     with open(tmp_map_path, "r", encoding="utf-8") as handle:
         html = handle.read()
 
-    os.remove(tmp_map_path)
+    try:
+        os.remove(tmp_map_path)
+    except Exception:
+        pass
 
     m = re.search(r"var\s+(map_[a-zA-Z0-9_]+)\s*=\s*L\.map\(", html)
     if not m:
