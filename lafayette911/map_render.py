@@ -56,9 +56,9 @@ def _ensure_world_readable(path: str) -> None:
         return
 
 
-def _ensure_world_readable(path: str) -> None:
+def _ensure_world_readable_dir(path: str) -> None:
     try:
-        os.chmod(path, 0o644)
+        os.chmod(path, 0o755)
     except Exception:
         return
 
@@ -511,6 +511,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
     map_dir = os.path.dirname(output_map) or "."
     datajs_dir = os.path.dirname(output_datajs) or "."
+    _ensure_world_readable_dir(map_dir)
+    _ensure_world_readable_dir(datajs_dir)
     if os.path.abspath(map_dir) != os.path.abspath(datajs_dir):
         map_datajs_path = os.path.join(map_dir, os.path.basename(output_datajs))
         try:
@@ -1380,6 +1382,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     html = html.replace("</body>", f"{inject}\n</body>")
 
     atomic_write_text(output_map, html)
+    _ensure_world_readable(output_map)
 
     del df
     del df_map
