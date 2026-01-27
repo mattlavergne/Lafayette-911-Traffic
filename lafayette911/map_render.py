@@ -1264,7 +1264,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
       }});
     }}
 
-    if (els.chkHeat.checked) {{
+    if (els.chkHeat.checked && typeof L.heatLayer === "function") {{
       const heatPoints = filtered.map((incident) => [incident.lat, incident.lng, incident.weight || 1]);
       const heatLayer = L.heatLayer(heatPoints, {{ radius: 25, blur: 18, maxZoom: 14 }});
       layerGroups.heat.addLayer(heatLayer);
