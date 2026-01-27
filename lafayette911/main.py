@@ -160,15 +160,17 @@ def run_once(config: Config, store: StateStore, session, logger) -> None:
         raw = fetch_traffic_data(session)
         incidents = parse_traffic_data(raw)
         if incidents:
-            geocode_incidents(
-                session,
-                incidents,
-                config.google_api_key,
-                sleep_seconds=config.geocode_sleep_seconds,
-            )
-            _filter_geocode_results(incidents)
-            new_incidents = store.store_new_incidents(incidents)
-            store.append_to_csv(new_incidents)
+            new_incidents = store.filter_new_incidents(incidents)
+            if new_incidents:
+                geocode_incidents(
+                    session,
+                    new_incidents,
+                    config.google_api_key,
+                    sleep_seconds=config.geocode_sleep_seconds,
+                )
+                _filter_geocode_results(new_incidents)
+                new_incidents = store.store_new_incidents(new_incidents)
+                store.append_to_csv(new_incidents)
 
     if config.mode in {"all", "renderer"}:
         if config.render_source == "db":

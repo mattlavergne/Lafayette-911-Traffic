@@ -115,9 +115,7 @@ class StateStore:
         if not incidents:
             return []
 
-        ids = [str(inc.get("incident_number") or "") for inc in incidents]
-        existing = self._existing_ids(ids)
-        new_incidents = [inc for inc in incidents if str(inc.get("incident_number") or "") not in existing]
+        new_incidents = self.filter_new_incidents(incidents)
         if not new_incidents:
             return []
 
@@ -145,6 +143,14 @@ class StateStore:
             self._insert_batch(rows, index_rows)
 
         return new_incidents
+
+    def filter_new_incidents(self, incidents: Sequence[Dict]) -> List[Dict]:
+        if not incidents:
+            return []
+
+        ids = [str(inc.get("incident_number") or "") for inc in incidents]
+        existing = self._existing_ids(ids)
+        return [inc for inc in incidents if str(inc.get("incident_number") or "") not in existing]
 
     def append_to_csv(self, incidents: Sequence[Dict]) -> None:
         if not incidents:
