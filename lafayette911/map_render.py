@@ -56,6 +56,13 @@ def _ensure_world_readable(path: str) -> None:
         return
 
 
+def _ensure_world_readable(path: str) -> None:
+    try:
+        os.chmod(path, 0o644)
+    except Exception:
+        return
+
+
 def _find_lat_lon_columns(df):
     cols = {c.strip().lower(): c for c in df.columns}
     lat_candidates = ["latitude", "lat", "y"]
@@ -532,6 +539,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     if not m:
         return
     map_var = m.group(1)
+
+    rel_datajs = os.path.relpath(output_datajs, os.path.dirname(output_map) or ".").replace(os.sep, "/")
 
     html = html.replace(
         "</head>",
