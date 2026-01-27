@@ -1393,21 +1393,36 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
   map.setView(defaultCenter, 12);
 
+  function waitForDataThenRender() {{
+    let attempts = 0;
+    const tick = () => {{
+      const raw = window.INCIDENTS_DATA;
+      if (Array.isArray(raw) && raw.length > 0) {{
+        applyFilters();
+        map.invalidateSize();
+        return;
+      }}
+      attempts += 1;
+      if (attempts < 20) {{
+        setTimeout(tick, 500);
+        return;
+      }}
+      applyFilters();
+    }};
+    tick();
+  }}
+
   map.on("moveend", applyFilters);
-  window.addEventListener("focus", applyFilters);
-  window.addEventListener("load", applyFilters);
+  window.addEventListener("focus", waitForDataThenRender);
+  window.addEventListener("load", waitForDataThenRender);
+  document.addEventListener("visibilitychange", () => {{
+    if (document.visibilityState === "visible") {{
+      waitForDataThenRender();
+    }}
+  }});
 
   map.whenReady(() => {{
-    applyFilters();
-    let attempts = 0;
-    const refresh = () => {{
-      attempts += 1;
-      applyFilters();
-      if (attempts < 6) {{
-        setTimeout(refresh, 500);
-      }}
-    }};
-    setTimeout(refresh, 0);
+    waitForDataThenRender();
   }});
 }})();
 </script>
