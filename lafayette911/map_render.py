@@ -36,13 +36,24 @@ def _write_text_if_changed(path: str, text: str) -> bool:
         return True
 
 
-def _write_jsonjs_if_changed(path: str, incidents, osm_intersections) -> bool:
+def _build_incidents_script(incidents, osm_intersections) -> str:
     s = "window.INCIDENTS_DATA=" + json.dumps(incidents, ensure_ascii=False, separators=(",", ":"))
     s += ";\nwindow.OSM_INTERSECTIONS_DATA=" + json.dumps(
         osm_intersections, ensure_ascii=False, separators=(",", ":")
     )
     s += ";"
-    return _write_text_if_changed(path, s)
+    return s
+
+
+def _write_jsonjs_if_changed(path: str, incidents, osm_intersections) -> bool:
+    return _write_text_if_changed(path, _build_incidents_script(incidents, osm_intersections))
+
+
+def _ensure_world_readable(path: str) -> None:
+    try:
+        os.chmod(path, 0o644)
+    except Exception:
+        return
 
 
 def _ensure_world_readable(path: str) -> None:
@@ -500,7 +511,6 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
     map_dir = os.path.dirname(output_map) or "."
     datajs_dir = os.path.dirname(output_datajs) or "."
-    script_src = os.path.basename(output_datajs)
     if os.path.abspath(map_dir) != os.path.abspath(datajs_dir):
         map_datajs_path = os.path.join(map_dir, os.path.basename(output_datajs))
         try:
@@ -508,22 +518,10 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
                 datajs_text = handle.read()
             _write_text_if_changed(map_datajs_path, datajs_text)
             _ensure_world_readable(map_datajs_path)
-            script_src = os.path.basename(map_datajs_path)
         except Exception:
-            script_src = os.path.basename(output_datajs)
+            pass
 
-    map_dir = os.path.dirname(output_map) or "."
-    datajs_dir = os.path.dirname(output_datajs) or "."
-    script_src = os.path.basename(output_datajs)
-    if os.path.abspath(map_dir) != os.path.abspath(datajs_dir):
-        map_datajs_path = os.path.join(map_dir, os.path.basename(output_datajs))
-        try:
-            with open(output_datajs, "r", encoding="utf-8") as handle:
-                datajs_text = handle.read()
-            _write_text_if_changed(map_datajs_path, datajs_text)
-            script_src = os.path.basename(map_datajs_path)
-        except Exception:
-            script_src = os.path.basename(output_datajs)
+    data_script = _build_incidents_script(incidents, osm_intersections)
 
     center_lat, center_lng = _compute_center(df_map, lat_col, lon_col)
 
@@ -547,7 +545,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     html = html.replace(
         "</head>",
         f'<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />\n'
-        f'<script src="{script_src}"></script>\n'
+        f"<script>{data_script}</script>\n"
         f'<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>\n'
         f"</head>",
     )
