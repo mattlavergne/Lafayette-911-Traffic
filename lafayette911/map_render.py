@@ -507,10 +507,12 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
         return
     map_var = m.group(1)
 
+    rel_datajs = os.path.relpath(output_datajs, os.path.dirname(output_map) or ".").replace(os.sep, "/")
+
     html = html.replace(
         "</head>",
         f'<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />\n'
-        f'<script src="{os.path.basename(output_datajs)}"></script>\n'
+        f'<script src="{rel_datajs}"></script>\n'
         f'<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>\n'
         f"</head>",
     )
