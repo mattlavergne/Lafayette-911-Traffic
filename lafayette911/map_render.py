@@ -4,7 +4,10 @@ import importlib.util
 import json
 import os
 import re
-from typing import Dict, List, Tuple
+import sqlite3
+import tempfile
+from datetime import datetime
+from typing import Dict, Iterable, List, Tuple
 
 import folium
 import pandas as pd
@@ -47,6 +50,23 @@ def _build_incidents_script(incidents, osm_intersections) -> str:
 
 def _write_jsonjs_if_changed(path: str, incidents, osm_intersections) -> bool:
     return _write_text_if_changed(path, _build_incidents_script(incidents, osm_intersections))
+
+
+def _stream_jsonjs_header(handle) -> None:
+    handle.write("window.INCIDENTS_DATA=[")
+
+
+def _stream_jsonjs_incident(handle, incident, first: bool) -> bool:
+    if not first:
+        handle.write(",")
+    handle.write(json.dumps(incident, ensure_ascii=False, separators=(",", ":")))
+    return False
+
+
+def _stream_jsonjs_footer(handle, osm_intersections) -> None:
+    handle.write("];\nwindow.OSM_INTERSECTIONS_DATA=")
+    handle.write(json.dumps(osm_intersections, ensure_ascii=False, separators=(",", ":")))
+    handle.write(";")
 
 
 def _ensure_world_readable(path: str) -> None:
@@ -360,6 +380,1010 @@ def _collapse_traffic_control(df: pd.DataFrame, lat_col: str, lon_col: str) -> p
     return out
 
 
+def _safe_float(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _parse_reported(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        ts = pd.to_datetime(value, errors="coerce")
+        if pd.isna(ts):
+            return None
+        if hasattr(ts, "to_pydatetime"):
+            return ts.to_pydatetime()
+        return ts
+    except Exception:
+        return None
+
+
+def _format_reported(dt: datetime) -> str:
+    if dt is None:
+        return ""
+    try:
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(dt)
+
+
+def _compute_bbox_from_points(lat_min, lat_max, lon_min, lon_max, pad_deg=OSM_PAD_DEG):
+    if lat_min is None or lat_max is None or lon_min is None or lon_max is None:
+        return (LAF_LAT_MIN, LAF_LAT_MAX, LAF_LON_MIN, LAF_LON_MAX)
+
+    south = float(lat_min) - pad_deg
+    north = float(lat_max) + pad_deg
+    west = float(lon_min) - pad_deg
+    east = float(lon_max) + pad_deg
+
+    south = max(south, LAF_LAT_MIN - 0.10)
+    north = min(north, LAF_LAT_MAX + 0.10)
+    west = max(west, LAF_LON_MIN - 0.10)
+    east = min(east, LAF_LON_MAX + 0.10)
+
+    return (south, north, west, east)
+
+
+def _stream_osm_intersections(
+    db_path: str,
+    bbox,
+    total_points: int,
+    osm_cache_dir: str,
+    tc_points: List[Tuple[float, float]],
+    chunk_size: int = 800,
+):
+    if not importlib.util.find_spec("osmnx"):
+        return []
+
+    ox = importlib.import_module("osmnx")
+    os.makedirs(osm_cache_dir, exist_ok=True)
+
+    south, north, west, east = bbox
+    bbox_id = _hash_bbox((south, north, west, east))
+    graphml_path, cache_json = _osm_cache_paths(osm_cache_dir, bbox_id, total_points)
+
+    if os.path.exists(cache_json):
+        try:
+            with open(cache_json, "r", encoding="utf-8") as handle:
+                cached = json.load(handle)
+            overall_counts = cached.get("overall_counts", []) or []
+            if len(cached.get("point_nodes", [])) == total_points or cached.get("point_count") == total_points:
+                return overall_counts
+        except Exception:
+            pass
+
+    try:
+        if os.path.exists(graphml_path):
+            G = ox.load_graphml(graphml_path)
+        else:
+            G = ox.graph_from_bbox(bbox=(west, south, east, north), network_type="drive", simplify=True)
+            ox.save_graphml(G, graphml_path)
+    except Exception:
+        return []
+
+    try:
+        sc = ox.stats.count_streets_per_node(G)
+        for n, v in sc.items():
+            try:
+                G.nodes[n]["street_count"] = int(v)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    def street_count_or_degree(n):
+        try:
+            v = G.nodes[n].get("street_count", None)
+            if v is not None:
+                return int(v)
+        except Exception:
+            pass
+        try:
+            return int(G.degree(n))
+        except Exception:
+            return 0
+
+    intersection_nodes = set()
+    for n in G.nodes:
+        if street_count_or_degree(n) >= OSM_INTERSECTION_MIN_STREETS:
+            intersection_nodes.add(n)
+
+    if not intersection_nodes:
+        return []
+
+    counts: Dict[str, int] = {}
+
+    def _process_points(xs, ys):
+        if not xs:
+            return
+        try:
+            nearest_edges = ox.distance.nearest_edges(G, X=xs, Y=ys)
+        except Exception:
+            return
+        for e in nearest_edges:
+            try:
+                u = e[0]
+                v = e[1]
+            except Exception:
+                continue
+            su = street_count_or_degree(u)
+            sv = street_count_or_degree(v)
+            chosen = u if su >= sv else v
+            if chosen not in intersection_nodes:
+                other = v if chosen == u else u
+                if other in intersection_nodes:
+                    chosen = other
+                else:
+                    continue
+            node_id = str(chosen)
+            counts[node_id] = counts.get(node_id, 0) + 1
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT latitude, longitude, cause
+            FROM incidents
+            """
+        )
+        xs: List[float] = []
+        ys: List[float] = []
+        for lat, lon, cause in cursor:
+            lat = _safe_float(lat)
+            lon = _safe_float(lon)
+            if lat is None or lon is None:
+                continue
+            if not _in_lafayette_bounds(lat, lon):
+                continue
+            if str(cause or "").strip().upper() == "TRAFFIC CONTROL":
+                continue
+            xs.append(float(lon))
+            ys.append(float(lat))
+            if len(xs) >= chunk_size:
+                _process_points(xs, ys)
+                xs = []
+                ys = []
+        if xs:
+            _process_points(xs, ys)
+    finally:
+        conn.close()
+
+    if tc_points:
+        xs = [float(lon) for _, lon in tc_points]
+        ys = [float(lat) for lat, _ in tc_points]
+        _process_points(xs, ys)
+
+    overall_counts: List[List] = []
+    for node_id, cnt in counts.items():
+        try:
+            n = int(node_id)
+        except Exception:
+            continue
+        try:
+            node = G.nodes[n]
+            lat = float(node.get("y"))
+            lng = float(node.get("x"))
+            overall_counts.append([round(lat, 6), round(lng, 6), int(cnt), str(node_id)])
+        except Exception:
+            continue
+
+    overall_counts.sort(key=lambda x: x[2], reverse=True)
+
+    try:
+        payload = {
+            "overall_counts": overall_counts,
+            "bbox": {"south": south, "north": north, "west": west, "east": east},
+            "min_streets": OSM_INTERSECTION_MIN_STREETS,
+            "point_count": total_points,
+        }
+        with open(cache_json, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        pass
+
+    return overall_counts
+
+
+def _write_streaming_datajs(
+    db_path: str, output_datajs: str, osm_cache_dir: str
+) -> Tuple[float, float, List[List]]:
+    conn = sqlite3.connect(db_path)
+    tc_groups: Dict[str, Dict[str, object]] = {}
+
+    lat_min = None
+    lat_max = None
+    lon_min = None
+    lon_max = None
+    center_lat_sum = 0.0
+    center_lon_sum = 0.0
+    center_count = 0
+    non_tc_count = 0
+
+    map_dir = os.path.dirname(output_datajs) or "."
+    os.makedirs(map_dir, exist_ok=True)
+    tmp_dir = os.path.join(map_dir, ".tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=tmp_dir, delete=False) as handle:
+        tmp_path = handle.name
+        _stream_jsonjs_header(handle)
+        first = True
+        try:
+            cursor = conn.execute(
+                """
+                SELECT location, cause, reported, assisting, incident_number, latitude, longitude
+                FROM incidents
+                """
+            )
+            for location, cause, reported, assisting, incident_number, lat, lon in cursor:
+                lat = _safe_float(lat)
+                lon = _safe_float(lon)
+                if lat is None or lon is None:
+                    continue
+
+                cause_str = str(cause or "").strip()
+                cause_norm = cause_str.upper()
+
+                if cause_norm == "TRAFFIC CONTROL":
+                    key = _normalize_location(location)
+                    entry = tc_groups.get(key)
+                    if entry is None:
+                        entry = {
+                            "location": location or "",
+                            "assisting": assisting or "",
+                            "lat_sum": 0.0,
+                            "lon_sum": 0.0,
+                            "count": 0,
+                            "reported_min": None,
+                            "reported_max": None,
+                        }
+                        tc_groups[key] = entry
+                    entry["lat_sum"] = float(entry["lat_sum"]) + float(lat)
+                    entry["lon_sum"] = float(entry["lon_sum"]) + float(lon)
+                    entry["count"] = int(entry["count"]) + 1
+                    reported_dt = _parse_reported(reported)
+                    if reported_dt is not None:
+                        rmin = entry.get("reported_min")
+                        rmax = entry.get("reported_max")
+                        if rmin is None or reported_dt < rmin:
+                            entry["reported_min"] = reported_dt
+                        if rmax is None or reported_dt > rmax:
+                            entry["reported_max"] = reported_dt
+                    continue
+
+                if not _in_lafayette_bounds(lat, lon):
+                    continue
+
+                loc = str(location or "").strip()
+                assist = str(assisting or "").strip()
+                reported_str = str(reported or "").strip()
+                incident = [
+                    round(float(lat), 6),
+                    round(float(lon), 6),
+                    reported_str,
+                    loc,
+                    cause_str,
+                    assist,
+                    1.0,
+                    1,
+                ]
+                first = _stream_jsonjs_incident(handle, incident, first)
+                non_tc_count += 1
+
+                center_lat_sum += float(lat)
+                center_lon_sum += float(lon)
+                center_count += 1
+
+                lat_min = float(lat) if lat_min is None else min(lat_min, float(lat))
+                lat_max = float(lat) if lat_max is None else max(lat_max, float(lat))
+                lon_min = float(lon) if lon_min is None else min(lon_min, float(lon))
+                lon_max = float(lon) if lon_max is None else max(lon_max, float(lon))
+
+            tc_points: List[Tuple[float, float]] = []
+            tc_count = 0
+            for entry in tc_groups.values():
+                count = int(entry["count"]) if entry["count"] else 0
+                if count == 0:
+                    continue
+                lat = float(entry["lat_sum"]) / count
+                lon = float(entry["lon_sum"]) / count
+                if not _in_lafayette_bounds(lat, lon):
+                    continue
+                reported_first = _format_reported(entry.get("reported_min"))
+                reported_last = _format_reported(entry.get("reported_max"))
+                reported_parts = "TRAFFIC CONTROL (aggregated)"
+                if reported_first:
+                    reported_parts += f" | first: {reported_first}"
+                if reported_last:
+                    reported_parts += f" | last: {reported_last}"
+                incident = [
+                    round(float(lat), 6),
+                    round(float(lon), 6),
+                    reported_parts,
+                    str(entry.get("location") or "").strip(),
+                    "TRAFFIC CONTROL",
+                    str(entry.get("assisting") or "").strip(),
+                    1.0,
+                    int(count),
+                ]
+                first = _stream_jsonjs_incident(handle, incident, first)
+                tc_count += 1
+                tc_points.append((lat, lon))
+
+                center_lat_sum += float(lat)
+                center_lon_sum += float(lon)
+                center_count += 1
+
+                lat_min = float(lat) if lat_min is None else min(lat_min, float(lat))
+                lat_max = float(lat) if lat_max is None else max(lat_max, float(lat))
+                lon_min = float(lon) if lon_min is None else min(lon_min, float(lon))
+                lon_max = float(lon) if lon_max is None else max(lon_max, float(lon))
+
+            total_points = non_tc_count + tc_count
+            bbox = _compute_bbox_from_points(lat_min, lat_max, lon_min, lon_max)
+            osm_intersections = _stream_osm_intersections(
+                db_path, bbox, total_points, osm_cache_dir, tc_points
+            )
+            _stream_jsonjs_footer(handle, osm_intersections)
+
+        finally:
+            conn.close()
+
+    os.replace(tmp_path, output_datajs)
+    _ensure_world_readable(output_datajs)
+
+    if center_count == 0:
+        return (30.2241, -92.0198, [])
+
+    center_lat = center_lat_sum / center_count
+    center_lon = center_lon_sum / center_count
+    return (center_lat, center_lon, osm_intersections)
+
+
+def _write_map_html(center_lat: float, center_lng: float, output_map: str, output_datajs: str) -> None:
+    map_dir = os.path.dirname(output_map) or "."
+    datajs_dir = os.path.dirname(output_datajs) or "."
+    _ensure_world_readable_dir(map_dir)
+    _ensure_world_readable_dir(datajs_dir)
+    if os.path.abspath(map_dir) != os.path.abspath(datajs_dir):
+        map_datajs_path = os.path.join(map_dir, os.path.basename(output_datajs))
+        try:
+            with open(output_datajs, "r", encoding="utf-8") as handle:
+                datajs_text = handle.read()
+            _write_text_if_changed(map_datajs_path, datajs_text)
+            _ensure_world_readable(map_datajs_path)
+        except Exception:
+            pass
+
+    base_map = folium.Map(location=[center_lat, center_lng], zoom_start=12, control_scale=True)
+
+    tmp_map_path = output_map + ".tmp"
+    try:
+        if os.path.exists(tmp_map_path):
+            os.remove(tmp_map_path)
+    except Exception:
+        pass
+
+    base_map.save(tmp_map_path)
+
+    with open(tmp_map_path, "r", encoding="utf-8") as handle:
+        html = handle.read()
+
+    try:
+        os.remove(tmp_map_path)
+    except Exception:
+        pass
+
+    m = re.search(r"var\s+(map_[a-zA-Z0-9_]+)\s*=\s*L\.map\(", html)
+    if not m:
+        return
+    map_var = m.group(1)
+
+    rel_datajs = os.path.relpath(output_datajs, os.path.dirname(output_map) or ".").replace(os.sep, "/")
+    if os.path.abspath(map_dir) != os.path.abspath(datajs_dir):
+        rel_datajs = os.path.basename(output_datajs)
+
+    html = html.replace(
+        "</head>",
+        f'<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />\n'
+        f'<script src="{rel_datajs}"></script>\n'
+        f'<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>\n'
+        f"</head>",
+    )
+
+    year_options = (
+        '<option value="">--</option>'
+        '<option value="2024">2024</option>'
+        '<option value="2025">2025</option>'
+        '<option value="2026">2026</option>'
+    )
+
+    inject = f"""
+<style>
+  :root {{
+    --panel-bg: rgba(255,255,255,0.92);
+    --panel-border: rgba(0,0,0,0.12);
+    --shadow: 0 10px 30px rgba(0,0,0,0.18);
+    --radius: 14px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }}
+
+  #controlPanel {{
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 9999999;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    font-family: var(--font);
+    font-size: 13px;
+    width: 380px;
+    max-height: 82vh;
+    overflow: hidden;
+    box-sizing: border-box;
+    backdrop-filter: blur(10px);
+  }}
+
+  #panelHeader {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+  }}
+
+  #panelHeader h2 {{
+    margin: 0;
+    font-size: 14px;
+    letter-spacing: 0.2px;
+  }}
+
+  #panelBody {{
+    padding: 10px 12px 12px 12px;
+    max-height: calc(82vh - 52px);
+    overflow: auto;
+  }}
+
+  #panelBody label {{
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 8px 0 4px;
+    color: #333;
+  }}
+
+  #panelBody input,
+  #panelBody select {{
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.15);
+    font-size: 12px;
+    box-sizing: border-box;
+    font-family: var(--font);
+    outline: none;
+  }}
+
+  #panelBody .row {{
+    display: flex;
+    gap: 8px;
+  }}
+
+  #panelBody .row > * {{
+    flex: 1;
+  }}
+
+  #panelBody .toggle {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+  }}
+
+  #panelBody .toggle input {{
+    width: auto;
+  }}
+
+  .panel-actions {{
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }}
+
+  .panel-actions button {{
+    flex: 1;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+  }}
+
+  .panel-actions button.primary {{
+    background: #206ad8;
+    color: white;
+  }}
+
+  .panel-actions button.secondary {{
+    background: #e9eef8;
+    color: #1a355e;
+  }}
+
+  .pill-row {{
+    display: flex;
+    gap: 6px;
+    margin: 8px 0 0 0;
+  }}
+
+  .pill {{
+    background: #f4f6fb;
+    padding: 6px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }}
+
+  .pill span:first-child {{
+    color: #6c7a90;
+  }}
+
+  #panelFooter {{
+    padding: 8px 12px 12px;
+    font-size: 11px;
+    color: #566;
+  }}
+
+  #osmSection {{
+    margin-top: 10px;
+    border-top: 1px dashed rgba(0,0,0,0.08);
+    padding-top: 8px;
+  }}
+
+  #osmList {{
+    list-style: none;
+    padding: 0;
+    margin: 6px 0 0 0;
+    max-height: 140px;
+    overflow: auto;
+  }}
+
+  #osmList li {{
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 11px;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+  }}
+
+  #osmList li span:first-child {{
+    color: #4f5d73;
+  }}
+
+  @media (max-width: 500px) {{
+    #controlPanel {{
+      width: 92vw;
+      left: 4vw;
+      right: 4vw;
+    }}
+  }}
+</style>
+<div id="controlPanel">
+  <div id="panelHeader">
+    <h2>Traffic Incident Filters</h2>
+    <button id="togglePanel" class="secondary">Hide</button>
+  </div>
+  <div id="panelBody">
+    <label>Incident filter text</label>
+    <input id="filterText" type="text" placeholder="e.g. south college" />
+    <div class="row">
+      <div>
+        <label>Month</label>
+        <select id="monthSelect">
+          <option value="">--</option>
+          <option value="01">January</option>
+          <option value="02">February</option>
+          <option value="03">March</option>
+          <option value="04">April</option>
+          <option value="05">May</option>
+          <option value="06">June</option>
+          <option value="07">July</option>
+          <option value="08">August</option>
+          <option value="09">September</option>
+          <option value="10">October</option>
+          <option value="11">November</option>
+          <option value="12">December</option>
+        </select>
+      </div>
+      <div>
+        <label>Day</label>
+        <select id="daySelect">
+          <option value="">--</option>
+          {"".join([f'<option value="{i:02d}">{i}</option>' for i in range(1, 32)])}
+        </select>
+      </div>
+      <div>
+        <label>Year</label>
+        <select id="yearSelect">{year_options}</select>
+      </div>
+    </div>
+    <label>Day type</label>
+    <select id="dayTypeSelect">
+      <option value="">All days</option>
+      <option value="weekday">Weekdays</option>
+      <option value="weekend">Weekends</option>
+    </select>
+    <label>Time block:</label>
+    <select id="timeBlockSelect">
+      <option value="all">All</option>
+      <option value="morning">Morning (6a-11a)</option>
+      <option value="midday">Midday (11a-3p)</option>
+      <option value="afternoon">Afternoon (3p-6p)</option>
+      <option value="evening">Evening (6p-10p)</option>
+      <option value="night">Night (10p-6a)</option>
+    </select>
+    <label>Incident cause</label>
+    <select id="causeSelect">
+      <option value="">All causes</option>
+    </select>
+    <label>Cause group</label>
+    <select id="causeGroupSelect">
+      <option value="">All groups</option>
+      <option value="collision">Collision / crash</option>
+      <option value="traffic">Traffic control</option>
+      <option value="vehicle">Vehicle issues</option>
+      <option value="road">Road conditions</option>
+      <option value="other">Other</option>
+    </select>
+    <div class="toggle">
+      <input id="todayOnlyToggle" type="checkbox" />
+      <label for="todayOnlyToggle">Only show incidents reported today</label>
+    </div>
+    <div class="toggle">
+      <input id="inViewOnlyToggle" type="checkbox" />
+      <label for="inViewOnlyToggle">Only show incidents in current map view</label>
+    </div>
+    <div class="panel-actions">
+      <button id="clearFilters" class="secondary">Reset</button>
+      <button id="applyFilters" class="primary">Apply</button>
+    </div>
+    <div class="pill-row">
+      <div class="pill"><span>Total:</span><span id="countTotal">0</span></div>
+      <div class="pill"><span>Filtered:</span><span id="countFiltered">0</span></div>
+      <div class="pill"><span>In view:</span><span id="countInView">0</span></div>
+    </div>
+    <div id="osmSection">
+      <label>Most busy intersections</label>
+      <ol id="osmList"></ol>
+    </div>
+  </div>
+  <div id="panelFooter">
+    Data updates every few minutes. Incidents are aggregated by location for traffic control entries.
+  </div>
+</div>
+<script>
+(function() {{
+  const INCIDENTS = (window.INCIDENTS_DATA || []).slice();
+  const OSM_INTERSECTIONS = (window.OSM_INTERSECTIONS_DATA || []).slice();
+  const HEAT_RADIUS = 30;
+  const HEAT_BLUR = 20;
+  const HEAT_MAX = 1.0;
+  let heatLayer = null;
+
+  const els = {{
+    filterText: document.getElementById("filterText"),
+    monthSelect: document.getElementById("monthSelect"),
+    daySelect: document.getElementById("daySelect"),
+    yearSelect: document.getElementById("yearSelect"),
+    dayTypeSelect: document.getElementById("dayTypeSelect"),
+    timeBlockSelect: document.getElementById("timeBlockSelect"),
+    causeSelect: document.getElementById("causeSelect"),
+    causeGroupSelect: document.getElementById("causeGroupSelect"),
+    todayOnlyToggle: document.getElementById("todayOnlyToggle"),
+    inViewOnlyToggle: document.getElementById("inViewOnlyToggle"),
+    clearFilters: document.getElementById("clearFilters"),
+    applyFilters: document.getElementById("applyFilters"),
+    countTotal: document.getElementById("countTotal"),
+    countFiltered: document.getElementById("countFiltered"),
+    countInView: document.getElementById("countInView"),
+    osmList: document.getElementById("osmList"),
+    togglePanel: document.getElementById("togglePanel"),
+    controlPanel: document.getElementById("controlPanel"),
+  }};
+
+  function buildCauseDropdown() {{
+    const causes = new Set();
+    for (const row of INCIDENTS) {{
+      const cause = (row[4] || "").trim();
+      if (cause) causes.add(cause);
+    }}
+    const sorted = Array.from(causes).sort();
+    for (const c of sorted) {{
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      els.causeSelect.appendChild(opt);
+    }}
+  }}
+
+  function buildCauseGroupDropdown() {{
+    const options = Array.from(els.causeSelect.options).map((o) => o.value);
+    const groups = {{
+      collision: /crash|collision|accident|wreck|hit/i,
+      traffic: /traffic control|flag/i,
+      vehicle: /stalled|disabled|vehicle|blocking|abandoned/i,
+      road: /road|debris|water|flood|hazard/i,
+    }};
+    const byGroup = {{
+      collision: [],
+      traffic: [],
+      vehicle: [],
+      road: [],
+      other: [],
+    }};
+    for (const cause of options) {{
+      if (!cause) continue;
+      let assigned = false;
+      for (const [group, regex] of Object.entries(groups)) {{
+        if (regex.test(cause)) {{
+          byGroup[group].push(cause);
+          assigned = true;
+          break;
+        }}
+      }}
+      if (!assigned) {{
+        byGroup.other.push(cause);
+      }}
+    }}
+    for (const group of Object.keys(byGroup)) {{
+      byGroup[group] = Array.from(new Set(byGroup[group])).sort();
+    }}
+    els.causeGroupSelect._groups = byGroup;
+  }}
+
+  function setDateSelectState() {{
+    const now = new Date();
+    const yy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    if (els.yearSelect) els.yearSelect.value = String(yy);
+    if (els.monthSelect) els.monthSelect.value = mm;
+    if (els.daySelect) els.daySelect.value = dd;
+  }}
+
+  function renderOsmList() {{
+    if (!els.osmList) return;
+    els.osmList.innerHTML = "";
+    const top = OSM_INTERSECTIONS.slice(0, 12);
+    for (const row of top) {{
+      const li = document.createElement("li");
+      const label = document.createElement("span");
+      const count = document.createElement("span");
+      label.textContent = `#{{row[3] || ""}}`;
+      count.textContent = row[2] || 0;
+      li.appendChild(label);
+      li.appendChild(count);
+      els.osmList.appendChild(li);
+    }}
+  }}
+
+  function updateHeat(mapObj, rows) {{
+    if (heatLayer) {{
+      mapObj.removeLayer(heatLayer);
+      heatLayer = null;
+    }}
+    if (!rows.length) return;
+    const heatData = rows.map((row) => [row[0], row[1], row[6] || 1]);
+    heatLayer = L.heatLayer(heatData, {{
+      radius: HEAT_RADIUS,
+      blur: HEAT_BLUR,
+      maxZoom: 16,
+      max: HEAT_MAX,
+    }});
+    heatLayer.addTo(mapObj);
+  }}
+
+  function parseReportedDate(s) {{
+    if (!s) return null;
+    const parts = s.replace("T", " ").replace("Z", "").split(" ");
+    const d = parts[0] || "";
+    const t = parts[1] || "00:00";
+    const dp = d.split("-");
+    if (dp.length !== 3) return null;
+    const yy = parseInt(dp[0], 10);
+    const mm = parseInt(dp[1], 10);
+    const dd = parseInt(dp[2], 10);
+    const tp = t.split(":");
+    const hh = parseInt(tp[0] || "0", 10);
+    const mn = parseInt(tp[1] || "0", 10);
+    if (isNaN(yy) || isNaN(mm) || isNaN(dd) || isNaN(hh) || isNaN(mn)) return null;
+    return new Date(yy, mm - 1, dd, hh, mn, 0, 0);
+  }}
+
+  function matchesFilter(row, filterObj, mapObj) {{
+    const loc = (row[3] || "").toLowerCase();
+    const cause = (row[4] || "").toLowerCase();
+    const reported = (row[2] || "").toLowerCase();
+    const assist = (row[5] || "").toLowerCase();
+    const hay = `${loc} ${cause} ${reported} ${assist}`;
+    if (filterObj.text && !hay.includes(filterObj.text)) return false;
+
+    if (filterObj.cause && cause !== filterObj.cause.toLowerCase()) return false;
+    if (filterObj.causeGroup) {{
+      const groupList = (els.causeGroupSelect._groups || {{}})[filterObj.causeGroup] || [];
+      if (!groupList.map((x) => x.toLowerCase()).includes(cause)) return false;
+    }}
+
+    const pr = parseReportedDate(row[2] || "");
+    if (filterObj.yy && (!pr || String(pr.getFullYear()) !== filterObj.yy)) return false;
+    if (filterObj.mm && (!pr || String(pr.getMonth() + 1).padStart(2, "0") !== filterObj.mm)) return false;
+    if (filterObj.dd && (!pr || String(pr.getDate()).padStart(2, "0") !== filterObj.dd)) return false;
+
+    if (filterObj.todayOnly && pr) {{
+      const now = new Date();
+      const isToday =
+        pr.getFullYear() === now.getFullYear() &&
+        pr.getMonth() === now.getMonth() &&
+        pr.getDate() === now.getDate();
+      if (!isToday) return false;
+    }}
+
+    if (filterObj.dayType && pr) {{
+      const day = pr.getDay();
+      const isWeekend = day === 0 || day === 6;
+      if (filterObj.dayType === "weekend" && !isWeekend) return false;
+      if (filterObj.dayType === "weekday" && isWeekend) return false;
+    }}
+
+    if (filterObj.timeBlock && filterObj.timeBlock !== "all" && pr) {{
+      const hh = pr.getHours();
+      if (!matchesTimeBlock(row, filterObj.timeBlock, hh)) return false;
+    }}
+
+    if (filterObj.inViewOnly && mapObj) {{
+      const bounds = mapObj.getBounds();
+      if (!bounds.contains([row[0], row[1]])) return false;
+    }}
+
+    return true;
+  }}
+
+  function timeBlockOf(hh) {{
+    if (hh >= 6 && hh < 11) return "morning";
+    if (hh >= 11 && hh < 15) return "midday";
+    if (hh >= 15 && hh < 18) return "afternoon";
+    if (hh >= 18 && hh < 22) return "evening";
+    return "night";
+  }}
+
+  function matchesTimeBlock(row, block, hh) {{
+    if (block === "all") return true;
+    const tb = timeBlockOf(hh);
+    return tb === block;
+  }}
+
+  function collectFilter() {{
+    const text = (els.filterText.value || "").toLowerCase().trim();
+    const mm = (els.monthSelect.value || "").trim();
+    const dd = (els.daySelect.value || "").trim();
+    const yy = (els.yearSelect.value || "").trim();
+    const dayType = (els.dayTypeSelect.value || "").trim();
+    const timeBlock = (els.timeBlockSelect.value || "all").trim();
+    const cause = (els.causeSelect.value || "").trim();
+    const causeGroup = (els.causeGroupSelect.value || "").trim();
+    const todayOnly = !!els.todayOnlyToggle.checked;
+    const inViewOnly = !!els.inViewOnlyToggle.checked;
+    return {{ mm: mm || "", dd: dd || "", yy: yy || "", dayType, timeBlock, cause, causeGroup, todayOnly, inViewOnly, text }};
+  }}
+
+  function applyFilters(mapObj) {{
+    const filterObj = collectFilter();
+    const out = [];
+    for (const row of INCIDENTS) {{
+      if (!matchesFilter(row, filterObj, mapObj)) continue;
+      out.push(row);
+    }}
+    if (els.countFiltered) els.countFiltered.textContent = String(out.length);
+    renderOsmList();
+    updateHeat(mapObj, out);
+    if (filterObj.inViewOnly && els.countInView) {{
+      els.countInView.textContent = String(out.length);
+    }} else if (els.countInView) {{
+      els.countInView.textContent = String(out.length);
+    }}
+  }}
+
+  function resetFilters(mapObj) {{
+    els.filterText.value = "";
+    els.monthSelect.value = "";
+    els.daySelect.value = "";
+    els.yearSelect.value = "";
+    els.dayTypeSelect.value = "";
+    els.timeBlockSelect.value = "all";
+    els.causeSelect.value = "";
+    els.causeGroupSelect.value = "";
+    els.todayOnlyToggle.checked = false;
+    els.inViewOnlyToggle.checked = false;
+    applyFilters(mapObj);
+  }}
+
+  function scheduleRender(mapObj, delayMs) {{
+    setTimeout(() => applyFilters(mapObj), delayMs);
+  }}
+
+  function wireUI(mapObj) {{
+    const selects = [
+      "filterText","monthSelect","daySelect","yearSelect","dayTypeSelect","timeBlockSelect",
+      "causeSelect","causeGroupSelect","todayOnlyToggle","inViewOnlyToggle"
+    ];
+    selects.forEach((id) => {{
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("change", function() {{
+        applyFilters(mapObj);
+      }});
+      el.addEventListener("input", function() {{
+        if (id === "filterText") applyFilters(mapObj);
+      }});
+    }});
+
+    if (els.applyFilters) els.applyFilters.addEventListener("click", () => applyFilters(mapObj));
+    if (els.clearFilters) els.clearFilters.addEventListener("click", () => resetFilters(mapObj));
+    if (els.togglePanel) {{
+      els.togglePanel.addEventListener("click", () => {{
+        const body = document.getElementById("panelBody");
+        if (!body) return;
+        const hidden = body.style.display === "none";
+        body.style.display = hidden ? "block" : "none";
+        els.togglePanel.textContent = hidden ? "Hide" : "Show";
+      }});
+    }}
+  }}
+
+  function getMapWhenReady(cb) {{
+    let tries = 0;
+    const t = setInterval(function() {{
+      tries++;
+      if (typeof window.{map_var} !== "undefined" && window.{map_var}) {{
+        clearInterval(t);
+        cb(window.{map_var});
+      }}
+      if (tries > 200) {{
+        clearInterval(t);
+      }}
+    }}, 50);
+  }}
+
+  getMapWhenReady(function(mapObj) {{
+    buildCauseDropdown();
+    buildCauseGroupDropdown();
+    setDateSelectState();
+    wireUI(mapObj);
+
+    if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
+    scheduleRender(mapObj, 0);
+  }});
+}})();
+</script>
+"""
+
+    html = html.replace("</body>", f"{inject}\n</body>")
+
+    atomic_write_text(output_map, html)
+    _ensure_world_readable(output_map)
+
+
 def _in_lafayette_bounds(lat, lng):
     try:
         lat = float(lat)
@@ -445,8 +1469,16 @@ def create_map_from_csv(input_csv: str, output_map: str, output_datajs: str, osm
 
 
 def create_map_from_db(db_path: str, output_map: str, output_datajs: str, osm_cache_dir: str) -> None:
-    df = _load_dataframe_from_db(db_path)
-    _create_map_from_dataframe(df, output_map, output_datajs, osm_cache_dir)
+    if not os.path.exists(db_path):
+        _write_text_if_changed(output_datajs, "window.INCIDENTS_DATA=[];window.OSM_INTERSECTIONS_DATA=[];")
+        _write_map_html(30.2241, -92.0198, output_map, output_datajs)
+        return
+    try:
+        center_lat, center_lng, _ = _write_streaming_datajs(db_path, output_datajs, osm_cache_dir)
+        _write_map_html(center_lat, center_lng, output_map, output_datajs)
+    except Exception:
+        _write_text_if_changed(output_datajs, "window.INCIDENTS_DATA=[];window.OSM_INTERSECTIONS_DATA=[];")
+        _write_map_html(30.2241, -92.0198, output_map, output_datajs)
 
 
 def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs: str, osm_cache_dir: str) -> None:
@@ -529,1225 +1561,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
             pass
 
     center_lat, center_lng = _compute_center(df_map, lat_col, lon_col)
-
-    base_map = folium.Map(location=[center_lat, center_lng], zoom_start=12, control_scale=True)
-
-    tmp_map_path = output_map + ".tmp"
-    try:
-        if os.path.exists(tmp_map_path):
-            os.remove(tmp_map_path)
-    except Exception:
-        pass
-
-    base_map.save(tmp_map_path)
-
-    with open(tmp_map_path, "r", encoding="utf-8") as handle:
-        html = handle.read()
-
-    try:
-        os.remove(tmp_map_path)
-    except Exception:
-        pass
-
-    m = re.search(r"var\s+(map_[a-zA-Z0-9_]+)\s*=\s*L\.map\(", html)
-    if not m:
-        return
-    map_var = m.group(1)
-
-    rel_datajs = os.path.relpath(output_datajs, os.path.dirname(output_map) or ".").replace(os.sep, "/")
-    if os.path.abspath(map_dir) != os.path.abspath(datajs_dir):
-        rel_datajs = os.path.basename(output_datajs)
-
-    html = html.replace(
-        "</head>",
-        f'<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />\n'
-        f'<script src="{rel_datajs}"></script>\n'
-        f'<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>\n'
-        f"</head>",
-    )
-
-    year_options = (
-        '<option value="">--</option>'
-        '<option value="2024">2024</option>'
-        '<option value="2025">2025</option>'
-        '<option value="2026">2026</option>'
-    )
-
-    inject = f"""
-<style>
-  :root {{
-    --panel-bg: rgba(255,255,255,0.92);
-    --panel-border: rgba(0,0,0,0.12);
-    --shadow: 0 10px 30px rgba(0,0,0,0.18);
-    --radius: 14px;
-    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  }}
-
-  #controlPanel {{
-    position: absolute;
-    top: 12px;
-    left: 12px;
-    z-index: 9999999;
-    background: var(--panel-bg);
-    border: 1px solid var(--panel-border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    font-family: var(--font);
-    font-size: 13px;
-    width: 380px;
-    max-height: 82vh;
-    overflow: hidden;
-    box-sizing: border-box;
-    backdrop-filter: blur(10px);
-  }}
-
-  #panelHeader {{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 12px;
-    border-bottom: 1px solid rgba(0,0,0,0.08);
-  }}
-
-  #panelTitle {{
-    font-weight: 700;
-    font-size: 14px;
-  }}
-
-  #panelSubtitle {{
-    font-size: 12px;
-    color: rgba(0,0,0,0.62);
-    margin-top: 2px;
-  }}
-
-  #panelCountBar {{
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    padding: 8px 12px 6px 12px;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
-  }}
-
-  #panelQuickFilters {{
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0 12px 8px 12px;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
-  }}
-
-  .pill {{
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    border-radius: 999px;
-    background: rgba(0,0,0,0.05);
-    font-size: 12px;
-    white-space: nowrap;
-  }}
-
-  #panelBody {{
-    padding: 10px 12px 12px 12px;
-    overflow: hidden;
-    max-height: calc(82vh - 140px);
-    transition: max-height 0.28s ease, opacity 0.2s ease, transform 0.28s ease;
-  }}
-
-  .section {{
-    padding: 6px 0;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
-  }}
-
-  .section:last-child {{
-    border-bottom: none;
-  }}
-
-  .section-title {{
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: rgba(0,0,0,0.5);
-    font-weight: 700;
-    margin-bottom: 6px;
-  }}
-
-  .row {{
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 8px;
-  }}
-
-  .row-grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 10px;
-  }}
-
-  .row-checks {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-    gap: 8px;
-  }}
-
-  .row label {{
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin-right: 6px;
-    white-space: normal;
-    min-width: 0;
-    flex: 1 1 140px;
-  }}
-
-  select, button {{
-    font-family: var(--font);
-    font-size: 13px;
-  }}
-
-  select {{
-    padding: 6px 8px;
-    border-radius: 10px;
-    border: 1px solid rgba(0,0,0,0.14);
-    background: rgba(255,255,255,0.95);
-    outline: none;
-    width: 100%;
-    box-sizing: border-box;
-  }}
-
-  input[type="checkbox"] {{
-    width: 16px;
-    height: 16px;
-  }}
-
-  select:disabled {{
-    background: #f2f2f2;
-    color: rgba(0,0,0,0.45);
-    cursor: not-allowed;
-  }}
-
-  button {{
-    padding: 8px 10px;
-    border-radius: 12px;
-    border: 1px solid rgba(0,0,0,0.14);
-    background: rgba(255,255,255,0.95);
-  }}
-
-  button:active {{
-    transform: translateY(1px);
-  }}
-
-  .incident-nav {{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 6px;
-  }}
-
-  .incident-nav button {{
-    padding: 4px 8px;
-    border-radius: 8px;
-    border: 1px solid rgba(0,0,0,0.2);
-    background: rgba(255,255,255,0.95);
-    line-height: 1;
-  }}
-
-  .incident-nav button:disabled {{
-    opacity: 0.4;
-    cursor: not-allowed;
-  }}
-
-  .incident-count {{
-    font-size: 12px;
-    font-weight: 600;
-  }}
-
-  .incident-count-marker {{
-    border-radius: 999px;
-    background: rgba(212, 230, 255, 0.9);
-    color: #1a365d;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    border: 2px solid #2b6cb0;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.18);
-  }}
-
-  #controlPanel {{
-    transition: max-height 0.28s ease, transform 0.28s ease;
-  }}
-
-  #controlPanel.collapsed {{
-    max-height: 160px;
-  }}
-
-  #controlPanel.collapsed #panelBody {{
-    max-height: 0;
-    opacity: 0;
-    transform: translateY(-4px);
-    padding-top: 0;
-    padding-bottom: 0;
-    pointer-events: none;
-  }}
-
-  @media (max-width: 520px) {{
-    #controlPanel {{
-      left: 0;
-      top: auto;
-      bottom: 0;
-      width: 100%;
-      max-height: 92vh;
-      border-radius: 18px 18px 0 0;
-      box-shadow: 0 -10px 30px rgba(0,0,0,0.22);
-    }}
-
-    #panelBody {{
-      max-height: calc(92vh - 120px);
-      padding-top: 8px;
-    }}
-
-    #mobileHandle {{
-      display: block;
-      width: 44px;
-      height: 5px;
-      border-radius: 999px;
-      background: rgba(0,0,0,0.18);
-      margin: 8px auto 0 auto;
-    }}
-
-    #panelHeader {{
-      padding-top: 6px;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 6px;
-    }}
-
-    #panelActions {{
-      width: 100%;
-      display: flex;
-      gap: 10px;
-    }}
-
-    #panelActions button {{
-      flex: 1;
-      padding: 12px 10px;
-      font-size: 15px;
-      border-radius: 14px;
-    }}
-
-    select {{
-      padding: 10px 12px;
-      font-size: 15px;
-      border-radius: 12px;
-    }}
-
-    input[type="checkbox"] {{
-      width: 20px;
-      height: 20px;
-    }}
-
-    .pill {{
-      font-size: 13px;
-      padding: 8px 12px;
-    }}
-
-    #panelCountBar {{
-      padding: 8px 12px 4px 12px;
-    }}
-
-    #panelQuickFilters {{
-      padding-bottom: 6px;
-    }}
-
-    .section {{
-      padding: 4px 0;
-    }}
-
-    .row {{
-      gap: 6px;
-      margin-bottom: 6px;
-    }}
-
-    .row-grid {{
-      gap: 8px;
-    }}
-
-    .row-checks {{
-      gap: 6px;
-    }}
-
-    #controlPanel.collapsed {{
-      max-height: 120px;
-    }}
-  }}
-
-  #mobileHandle {{
-    display: none;
-  }}
-</style>
-
-<div id="controlPanel">
-  <div id="mobileHandle"></div>
-
-  <div id="panelHeader">
-    <div>
-      <div id="panelTitle">Traffic Incidents</div>
-      <div id="panelSubtitle">Lafayette bounds enforced</div>
-    </div>
-    <div id="panelActions">
-      <button id="panelToggleBtn" type="button">Filters</button>
-      <button id="clearBtn" type="button">Clear</button>
-    </div>
-  </div>
-
-  <div id="panelCountBar">
-    <div class="pill"><span>Total:</span><span id="countTotal">0</span></div>
-    <div class="pill"><span>Filtered:</span><span id="countFiltered">0</span></div>
-    <div class="pill"><span>In view:</span><span id="countInView">0</span></div>
-  </div>
-  <div id="panelQuickFilters">
-    <label><input type="checkbox" id="chkInViewOnly"> In view only</label>
-  </div>
-
-  <div id="panelBody">
-
-    <div class="section">
-      <div class="section-title">Filters</div>
-      <div class="row row-grid">
-        <label>Group:
-          <select id="causeGroupSelect">
-            <option value="__ALL__">All</option>
-          </select>
-        </label>
-
-        <label>Type:
-          <select id="causeSelect">
-            <option value="__ALL__">All</option>
-          </select>
-        </label>
-      </div>
-
-      <div class="row row-grid">
-        <label>Month:
-          <select id="monthSelect">
-            <option value="">--</option>
-            <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
-            <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
-            <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
-            <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
-          </select>
-        </label>
-
-        <label>Day:
-          <select id="daySelect">
-            <option value="">--</option>
-            {''.join([f'<option value="{str(i).zfill(2)}">{i}</option>' for i in range(1, 32)])}
-          </select>
-        </label>
-
-        <label>Year:
-          <select id="yearSelect">
-            {year_options}
-          </select>
-        </label>
-      </div>
-
-      <div class="row row-grid">
-        <label>Day type:
-          <select id="dayTypeSelect">
-            <option value="all">All</option>
-            <option value="weekday">Weekdays</option>
-            <option value="weekend">Weekends</option>
-          </select>
-        </label>
-
-        <label>Time block:
-          <select id="timeBlockSelect">
-            <option value="all">All</option>
-            <option value="morning">Morning (06-10)</option>
-            <option value="midday">Midday (10-15)</option>
-            <option value="evening">Evening (15-19)</option>
-            <option value="night">Night (19-24)</option>
-            <option value="latenight">Late night (00-06)</option>
-          </select>
-        </label>
-      </div>
-
-      <div class="row row-checks">
-        <label><input type="checkbox" id="chkTodayOnly"> Today only</label>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Layers</div>
-      <div class="row row-checks">
-        <label><input type="checkbox" id="chkPoints" checked> Points</label>
-        <label><input type="checkbox" id="chkHeat"> Heat</label>
-        <label><input type="checkbox" id="chkIntersections"> Rounded</label>
-        <label><input type="checkbox" id="chkOsmIntersections"> OSM</label>
-        <label><input type="checkbox" id="chkMicro"> Micro</label>
-        <label><input type="checkbox" id="chkRings"> Rings</label>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Precision</div>
-      <div class="row row-grid">
-        <label>Top N:
-          <select id="topNSelect">
-            <option value="5">5</option>
-            <option value="10" selected>10</option>
-            <option value="20">20</option>
-            <option value="50">50</option>
-          </select>
-        </label>
-
-        <label>Rounded precision:
-          <select id="precIntersections">
-            <option value="3" selected>~100m</option>
-            <option value="4">~10m</option>
-          </select>
-        </label>
-
-        <label>Micro precision:
-          <select id="precMicro">
-            <option value="4" selected>~10m</option>
-            <option value="5">~1m</option>
-          </select>
-        </label>
-      </div>
-    </div>
-
-  </div>
-</div>
-
-<script>
-(function() {{
-  const INCIDENTS = window.INCIDENTS_DATA || [];
-  const OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
-  const renderer = L.canvas({{ padding: 0.5 }});
-  const isCoarsePointer = window.matchMedia ? window.matchMedia("(pointer: coarse)").matches : false;
-  const isTouch = (L && L.Browser && L.Browser.touch) || isCoarsePointer;
-
-  const els = {{
-    panel: document.getElementById("controlPanel"),
-    toggleBtn: document.getElementById("panelToggleBtn"),
-    clearBtn: document.getElementById("clearBtn"),
-
-    countTotal: document.getElementById("countTotal"),
-    countFiltered: document.getElementById("countFiltered"),
-    countInView: document.getElementById("countInView"),
-
-    causeSelect: document.getElementById("causeSelect"),
-    causeGroupSelect: document.getElementById("causeGroupSelect"),
-    chkInViewOnly: document.getElementById("chkInViewOnly"),
-
-    monthSelect: document.getElementById("monthSelect"),
-    daySelect: document.getElementById("daySelect"),
-    yearSelect: document.getElementById("yearSelect"),
-    chkTodayOnly: document.getElementById("chkTodayOnly"),
-    dayTypeSelect: document.getElementById("dayTypeSelect"),
-    timeBlockSelect: document.getElementById("timeBlockSelect"),
-
-    chkPoints: document.getElementById("chkPoints"),
-    chkHeat: document.getElementById("chkHeat"),
-    chkIntersections: document.getElementById("chkIntersections"),
-    chkOsmIntersections: document.getElementById("chkOsmIntersections"),
-    chkMicro: document.getElementById("chkMicro"),
-    chkRings: document.getElementById("chkRings"),
-
-    topNSelect: document.getElementById("topNSelect"),
-    precIntersections: document.getElementById("precIntersections"),
-    precMicro: document.getElementById("precMicro"),
-
-  }};
-
-  function esc(s) {{
-    return String(s || "").replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
-  }}
-
-  function popupHtml(row) {{
-    const occurrences = (row.length >= 8 && row[7] != null) ? parseInt(row[7], 10) : 1;
-    const occLine = (occurrences && occurrences > 1) ? ("<br>Occurrences: " + occurrences) : "";
-    return "Location: " + esc(row[3]) +
-           "<br>Type: " + esc(row[4]) +
-           "<br>Reported: " + esc(row[2]) +
-           "<br>Assisting: " + esc(row[5]) +
-           occLine;
-  }}
-
-  function createIncidentPopup(rows) {{
-    let idx = 0;
-    const container = document.createElement("div");
-    if (typeof L !== "undefined" && L.DomEvent) {{
-      L.DomEvent.disableClickPropagation(container);
-    }}
-
-    function render() {{
-      const row = rows[idx];
-      const hasNav = rows.length > 1;
-      container.innerHTML =
-        (hasNav
-          ? (
-            "<div class='incident-nav'>" +
-              "<button class='incident-prev' type='button' aria-label='Previous incident'>&larr;</button>" +
-              "<div class='incident-count'>Incident " + (idx + 1) + " of " + rows.length + "</div>" +
-              "<button class='incident-next' type='button' aria-label='Next incident'>&rarr;</button>" +
-            "</div>"
-          )
-          : ""
-        ) +
-        "<div class='incident-details'>" + popupHtml(row) + "</div>";
-
-      if (hasNav) {{
-        const prevBtn = container.querySelector(".incident-prev");
-        const nextBtn = container.querySelector(".incident-next");
-        prevBtn.disabled = idx <= 0;
-        nextBtn.disabled = idx >= rows.length - 1;
-
-        prevBtn.addEventListener("click", function(e) {{
-          e.preventDefault();
-          e.stopPropagation();
-          if (idx > 0) {{
-            idx -= 1;
-            render();
-          }}
-        }});
-
-        nextBtn.addEventListener("click", function(e) {{
-          e.preventDefault();
-          e.stopPropagation();
-          if (idx < rows.length - 1) {{
-            idx += 1;
-            render();
-          }}
-        }});
-      }}
-    }}
-
-    render();
-    return container;
-  }}
-
-  function parseReported(reported) {{
-    if (!reported) return null;
-    const s = String(reported).trim();
-    const m1 = s.match(/(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{4}})(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?/);
-    if (!m1) return null;
-
-    const mm = m1[1].padStart(2, "0");
-    const dd = m1[2].padStart(2, "0");
-    const yy = m1[3];
-
-    let hh = null;
-    let mi = null;
-
-    if (m1[4] != null && m1[5] != null) {{
-      hh = parseInt(m1[4], 10);
-      mi = parseInt(m1[5], 10);
-      const ap = m1[6] ? String(m1[6]).toLowerCase() : null;
-      if (ap === "pm" && hh < 12) hh += 12;
-      if (ap === "am" && hh === 12) hh = 0;
-      if (hh < 0 || hh > 23) hh = null;
-    }}
-
-    const dt = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh || 0, mi || 0, 0, 0);
-    return {{ mm, dd, yy, hh, mi, dt }};
-  }}
-
-  function dayTypeOf(dt) {{
-    const d = dt.getDay();
-    return (d === 0 || d === 6) ? "weekend" : "weekday";
-  }}
-
-  function timeBlockOf(hh) {{
-    if (hh == null) return "unknown";
-    if (hh >= 6 && hh < 10) return "morning";
-    if (hh >= 10 && hh < 15) return "midday";
-    if (hh >= 15 && hh < 19) return "evening";
-    if (hh >= 19 && hh <= 23) return "night";
-    if (hh >= 0 && hh < 6) return "latenight";
-    return "unknown";
-  }}
-
-  function groupByRounded(points, decimals) {{
-    const m = new Map();
-    for (const row of points) {{
-      const key = row[0].toFixed(decimals) + "," + row[1].toFixed(decimals);
-      const v = m.get(key) || {{
-        key,
-        lat: parseFloat(row[0].toFixed(decimals)),
-        lng: parseFloat(row[1].toFixed(decimals)),
-        count: 0,
-        sample: row
-      }};
-      v.count += 1;
-      m.set(key, v);
-    }}
-    return Array.from(m.values()).sort((a, b) => b.count - a.count);
-  }}
-
-  function groupByExactLocation(points) {{
-    const m = new Map();
-    for (const row of points) {{
-      const lat = row[0];
-      const lng = row[1];
-      const key = lat.toFixed(6) + "," + lng.toFixed(6);
-      const v = m.get(key) || {{
-        key,
-        lat,
-        lng,
-        rows: []
-      }};
-      v.rows.push(row);
-      m.set(key, v);
-    }}
-    return Array.from(m.values());
-  }}
-
-  function getCenterFromData() {{
-    if (INCIDENTS.length === 0) return [30.2241, -92.0198];
-    let sLat = 0, sLng = 0, n = 0;
-    for (const r of INCIDENTS) {{
-      sLat += r[0];
-      sLng += r[1];
-      n += 1;
-    }}
-    return [sLat / n, sLng / n];
-  }}
-
-  function buildCauseDropdown() {{
-    if (!els.causeSelect) return;
-    const set = new Set();
-    for (const r of INCIDENTS) {{
-      const c = String(r[4] || "").trim();
-      if (c) set.add(c);
-    }}
-    const causes = Array.from(set.values()).sort((a,b) => a.localeCompare(b));
-    while (els.causeSelect.options.length > 1) {{
-      els.causeSelect.remove(1);
-    }}
-    for (const c of causes) {{
-      const opt = document.createElement("option");
-      opt.value = c;
-      opt.textContent = c;
-      els.causeSelect.appendChild(opt);
-    }}
-  }}
-
-  const CAUSE_GROUPS = [
-    {{ id: "fire", label: "Fire", keywords: ["FIRE"] }},
-    {{ id: "accident", label: "Accident", keywords: ["ACCIDENT", "CRASH", "COLLISION", "WRECK", "MVA", "MVC"] }}
-  ];
-
-  function buildCauseGroupDropdown() {{
-    if (!els.causeGroupSelect) return;
-    while (els.causeGroupSelect.options.length > 1) {{
-      els.causeGroupSelect.remove(1);
-    }}
-    for (const g of CAUSE_GROUPS) {{
-      const opt = document.createElement("option");
-      opt.value = g.id;
-      opt.textContent = g.label;
-      els.causeGroupSelect.appendChild(opt);
-    }}
-  }}
-
-  function normalizeCause(cause) {{
-    return String(cause || "").trim().toUpperCase();
-  }}
-
-  function matchesCause(row, selected) {{
-    if (!selected || selected === "__ALL__") return true;
-    return String(row[4] || "").trim() === selected;
-  }}
-
-  function matchesCauseGroup(row, selectedGroup) {{
-    if (!selectedGroup || selectedGroup === "__ALL__") return true;
-    const causeNorm = normalizeCause(row[4]);
-    const group = CAUSE_GROUPS.find((g) => g.id === selectedGroup);
-    if (!group) return true;
-    return group.keywords.some((kw) => causeNorm.includes(kw));
-  }}
-
-  function matchesDateFilter(row, f) {{
-    if (!f.todayOnly && !f.mm && !f.dd && !f.yy) return true;
-    const pr = parseReported(row[2]);
-    if (!pr) return false;
-    if (f.todayOnly) {{
-      const now = new Date();
-      const today = {{
-        mm: String(now.getMonth() + 1).padStart(2, "0"),
-        dd: String(now.getDate()).padStart(2, "0"),
-        yy: String(now.getFullYear())
-      }};
-      return pr.yy === today.yy && pr.mm === today.mm && pr.dd === today.dd;
-    }}
-    if (f.yy && pr.yy !== f.yy) return false;
-    if (f.mm && pr.mm !== f.mm) return false;
-    if (f.dd && pr.dd !== f.dd) return false;
-    return true;
-  }}
-
-  function matchesDayType(row, dayType) {{
-    if (dayType === "all") return true;
-    const pr = parseReported(row[2]);
-    if (!pr || !pr.dt) return false;
-    return dayTypeOf(pr.dt) === dayType;
-  }}
-
-  function matchesTimeBlock(row, block) {{
-    if (block === "all") return true;
-    const pr = parseReported(row[2]);
-    if (!pr) return false;
-    const tb = timeBlockOf(pr.hh);
-    if (tb === "unknown") return false;
-    return tb === block;
-  }}
-
-  function currentFilterObj() {{
-    const mm = (els.monthSelect.value || "").trim();
-    const dd = (els.daySelect.value || "").trim();
-    const yy = (els.yearSelect.value || "").trim();
-    const dayType = (els.dayTypeSelect.value || "all").trim();
-    const timeBlock = (els.timeBlockSelect.value || "all").trim();
-    const cause = (els.causeSelect.value || "__ALL__").trim();
-    const causeGroup = (els.causeGroupSelect.value || "__ALL__").trim();
-    const inViewOnly = !!els.chkInViewOnly.checked;
-    const todayOnly = !!els.chkTodayOnly.checked;
-    return {{ mm: mm || "", dd: dd || "", yy: yy || "", dayType, timeBlock, cause, causeGroup, todayOnly, inViewOnly }};
-  }}
-
-  function filteredIncidents(filterObj, mapObj) {{
-    const out = [];
-    const bounds = (filterObj.inViewOnly && mapObj) ? mapObj.getBounds() : null;
-
-    for (const row of INCIDENTS) {{
-      if (!matchesCauseGroup(row, filterObj.causeGroup)) continue;
-      if (!matchesCause(row, filterObj.cause)) continue;
-      if (!matchesDateFilter(row, filterObj)) continue;
-      if (!matchesDayType(row, filterObj.dayType)) continue;
-      if (!matchesTimeBlock(row, filterObj.timeBlock)) continue;
-
-      if (bounds) {{
-        const latlng = L.latLng(row[0], row[1]);
-        if (!bounds.contains(latlng)) continue;
-      }}
-
-      out.push(row);
-    }}
-    return out;
-  }}
-
-  function computeInViewCount(rows, mapObj) {{
-    if (!mapObj) return 0;
-    const b = mapObj.getBounds();
-    let c = 0;
-    for (const row of rows) {{
-      if (b.contains(L.latLng(row[0], row[1]))) c += 1;
-    }}
-    return c;
-  }}
-
-  let layers = {{
-    points: null,
-    heat: null,
-    intersections: null,
-    osmIntersections: null,
-    micro: null,
-    rings: null
-  }};
-
-  let lastFiltered = [];
-  let renderTimer = null;
-  let popupOpen = false;
-  let renderToken = 0;
-  let pointMarkers = {{
-    singles: [],
-    counts: []
-  }};
-
-  function scheduleRender(mapObj, delayMs) {{
-    const delay = Number.isFinite(delayMs) ? delayMs : 0;
-    if (renderTimer) {{
-      clearTimeout(renderTimer);
-      renderTimer = null;
-    }}
-    renderTimer = setTimeout(function() {{
-      renderTimer = null;
-      renderAll(mapObj);
-    }}, delay);
-  }}
-
-  function clearLayers(mapObj) {{
-    for (const k of Object.keys(layers)) {{
-      if (layers[k]) {{
-        try {{ mapObj.removeLayer(layers[k]); }} catch (e) {{}}
-        layers[k] = null;
-      }}
-    }}
-  }}
-
-  function getPointSizing(mapObj) {{
-    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
-    const inverse = 12 - zoom;
-    let radius = 5.6 + inverse * 0.7;
-    radius = Math.max(3.6, Math.min(10.8, radius));
-    if (isTouch) {{
-      radius = Math.min(13.5, radius * 1.35 + 1.2);
-    }}
-    const countSize = Math.max(16, Math.round(radius * 2.05 + (isTouch ? 5 : 3)));
-    const countFont = Math.max(10, Math.round(countSize * 0.55));
-    return {{ radius, countSize, countFont }};
-  }}
-
-  function updatePointSizing(mapObj) {{
-    if (!mapObj) return;
-    const sizing = getPointSizing(mapObj);
-    for (const mk of pointMarkers.singles) {{
-      if (mk && mk.setRadius) {{
-        mk.setRadius(sizing.radius);
-      }}
-    }}
-    for (const mk of pointMarkers.counts) {{
-      if (!mk || !mk.setIcon) continue;
-      const count = mk.__count || 1;
-      const size = sizing.countSize;
-      const fontSize = sizing.countFont;
-      const icon = L.divIcon({{
-        className: "",
-        html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
-        iconSize: [size, size],
-        iconAnchor: [size / 2, size / 2]
-      }});
-      mk.setIcon(icon);
-    }}
-  }}
-
-  function focusMarker(mapObj, marker) {{
-    if (!mapObj || !marker || !marker.getLatLng) return;
-    const latlng = marker.getLatLng();
-    const currentZoom = mapObj.getZoom ? mapObj.getZoom() : 12;
-    const targetZoom = Math.max(currentZoom, 15);
-    mapObj.setView(latlng, targetZoom, {{ animate: true, duration: 0.35 }});
-    if (marker.openPopup) marker.openPopup();
-  }}
-
-  function renderAll(mapObj) {{
-    const f = currentFilterObj();
-    clearLayers(mapObj);
-    pointMarkers = {{ singles: [], counts: [] }};
-    renderToken += 1;
-    const thisRender = renderToken;
-
-    const showPoints = !!els.chkPoints.checked;
-    const showHeat = !!els.chkHeat.checked;
-    const showInter = !!els.chkIntersections.checked;
-    const showOsmInter = !!els.chkOsmIntersections.checked;
-    const showMicro = !!els.chkMicro.checked;
-    const showRings = !!els.chkRings.checked;
-
-    const topN = parseInt(els.topNSelect.value || "10", 10);
-    const dInter = parseInt(els.precIntersections.value || "3", 10);
-    const dMicro = parseInt(els.precMicro.value || "4", 10);
-
-    const filtered = filteredIncidents(f, mapObj);
-    lastFiltered = filtered;
-
-    if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
-    if (els.countFiltered) els.countFiltered.textContent = String(filtered.length);
-
-    const inView = computeInViewCount(filtered, mapObj);
-    if (els.countInView) els.countInView.textContent = String(inView);
-
-    if (showPoints) {{
-      const layer = L.layerGroup().addTo(mapObj);
-      const grouped = groupByExactLocation(filtered);
-      const sizing = getPointSizing(mapObj);
-      let idx = 0;
-      const chunkSize = isTouch ? 120 : 220;
-      function addChunk() {{
-        if (thisRender !== renderToken) return;
-        const end = Math.min(grouped.length, idx + chunkSize);
-        for (; idx < end; idx++) {{
-          const group = grouped[idx];
-          let mk = null;
-          if (group.rows.length > 1) {{
-            const count = group.rows.length;
-            const size = sizing.countSize;
-            const fontSize = sizing.countFont;
-            const icon = L.divIcon({{
-              className: "",
-              html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
-              iconSize: [size, size],
-              iconAnchor: [size / 2, size / 2]
-            }});
-            mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
-            mk.__count = count;
-            pointMarkers.counts.push(mk);
-            mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320, autoPan: false }});
-            mk.on("click", function() {{
-              focusMarker(mapObj, mk);
-            }});
-          }} else {{
-            const radius = sizing.radius;
-            mk = L.circleMarker([group.lat, group.lng], {{
-              radius: radius,
-              renderer: renderer,
-              color: "#2b6cb0",
-              weight: isTouch ? 2.2 : 1.4,
-              fillColor: "#cfe1ff",
-              fillOpacity: 0.65
-            }});
-            pointMarkers.singles.push(mk);
-            mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320, autoPan: false }});
-            mk.on("click", function() {{
-              focusMarker(mapObj, mk);
-            }});
-          }}
-          mk.addTo(layer);
-        }}
-        if (idx < grouped.length) {{
-          requestAnimationFrame(addChunk);
-        }}
-      }}
-      addChunk();
-      layers.points = layer;
-    }}
-
-    if (showHeat && typeof L.heatLayer === "function") {{
-      const heatPts = filtered.map(r => [r[0], r[1], (r.length >= 7 ? (parseFloat(r[6]) || 1.0) : 1.0)]);
-      const heat = L.heatLayer(heatPts, {{ radius: 18, blur: 14, maxZoom: 17 }});
-      heat.addTo(mapObj);
-      layers.heat = heat;
-    }}
-
-    if (showInter) {{
-      const groups = groupByRounded(filtered, dInter).slice(0, topN);
-      const layer = L.layerGroup().addTo(mapObj);
-      for (const g of groups) {{
-        const radius = Math.max(7, Math.min(30, 4 + Math.sqrt(g.count) * 3));
-        const c = L.circleMarker([g.lat, g.lng], {{ radius: radius, renderer: renderer }});
-        c.bindPopup(
-          "Rounded intersection<br>Key: " + esc(g.key) + "<br>Count: " + g.count + "<br><br>" + popupHtml(g.sample),
-          {{ maxWidth: 340 }}
-        );
-        c.addTo(layer);
-      }}
-      layers.intersections = layer;
-    }}
-
-    if (showOsmInter) {{
-      const layer = L.layerGroup().addTo(mapObj);
-      if (!OSM_INTERSECTIONS || OSM_INTERSECTIONS.length === 0) {{
-        const center = getCenterFromData();
-        const mk = L.circleMarker([center[0], center[1]], {{ radius: 8, renderer: renderer }});
-        mk.bindPopup("OSM hotspots unavailable.<br>Install osmnx and rebuild once.");
-        mk.addTo(layer);
-      }} else {{
-        const top = OSM_INTERSECTIONS.slice(0, topN);
-        for (const it of top) {{
-          const lat = it[0], lng = it[1], cnt = it[2], nodeId = it[3];
-          const radius = Math.max(8, Math.min(34, 4 + Math.sqrt(cnt) * 3));
-          const c = L.circleMarker([lat, lng], {{ radius: radius, renderer: renderer }});
-          c.bindPopup("OSM hotspot<br>Count: " + cnt + "<br>Node: " + esc(nodeId), {{ maxWidth: 320 }});
-          c.addTo(layer);
-        }}
-      }}
-      layers.osmIntersections = layer;
-    }}
-
-    if (showMicro) {{
-      const groups = groupByRounded(filtered, dMicro).slice(0, topN);
-      const layer = L.layerGroup().addTo(mapObj);
-      for (const g of groups) {{
-        const radius = Math.max(6, Math.min(26, 3 + Math.sqrt(g.count) * 2.5));
-        const c = L.circleMarker([g.lat, g.lng], {{ radius: radius, renderer: renderer }});
-        c.bindPopup(
-          "Micro-hotspot<br>Key: " + esc(g.key) + "<br>Count: " + g.count + "<br><br>" + popupHtml(g.sample),
-          {{ maxWidth: 340 }}
-        );
-        c.addTo(layer);
-      }}
-      layers.micro = layer;
-    }}
-
-    const center = getCenterFromData();
-    const centerLat = center[0];
-    const centerLng = center[1];
-
-    if (showRings) {{
-      const ringLayer = L.layerGroup().addTo(mapObj);
-      const radiiKm = [1, 2, 3, 5, 8];
-      for (const rk of radiiKm) {{
-        const circle = L.circle([centerLat, centerLng], {{ radius: rk * 1000, weight: 1, fill: false }});
-        circle.addTo(ringLayer);
-      }}
-      const centerMarker = L.circleMarker([centerLat, centerLng], {{ radius: 7, renderer: renderer }});
-      centerMarker.bindPopup("Dataset center<br>" + centerLat.toFixed(5) + ", " + centerLng.toFixed(5));
-      centerMarker.addTo(ringLayer);
-      layers.rings = ringLayer;
-    }}
-
-  }}
-
-  function updateInViewOnly(mapObj) {{
-    if (!mapObj) return;
-    const f = currentFilterObj();
-
-    let rows = lastFiltered;
-
-    if (f.inViewOnly) {{
-      rows = filteredIncidents(f, mapObj);
-      lastFiltered = rows;
-      if (els.countFiltered) els.countFiltered.textContent = String(rows.length);
-    }}
-
-    const inView = computeInViewCount(rows, mapObj);
-    if (els.countInView) els.countInView.textContent = String(inView);
-  }}
-
-  function clearAll() {{
-    els.causeSelect.value = "__ALL__";
-    els.causeGroupSelect.value = "__ALL__";
-    els.chkInViewOnly.checked = false;
-
-    els.monthSelect.value = "";
-    els.daySelect.value = "";
-    els.yearSelect.value = "";
-    els.chkTodayOnly.checked = false;
-
-    els.dayTypeSelect.value = "all";
-    els.timeBlockSelect.value = "all";
-
-    els.chkPoints.checked = true;
-    els.chkHeat.checked = false;
-    els.chkIntersections.checked = false;
-    els.chkOsmIntersections.checked = false;
-    els.chkMicro.checked = false;
-    els.chkRings.checked = false;
-
-    els.topNSelect.value = "10";
-    els.precIntersections.value = "3";
-    els.precMicro.value = "4";
-  }}
-
-  function setDateSelectState() {{
-    const disabled = !!els.chkTodayOnly.checked;
-    if (els.monthSelect) els.monthSelect.disabled = disabled;
-    if (els.daySelect) els.daySelect.disabled = disabled;
-    if (els.yearSelect) els.yearSelect.disabled = disabled;
-  }}
-
-  function wireUI(mapObj) {{
-    function setBtnText() {{
-      if (els.panel.classList.contains("collapsed")) els.toggleBtn.textContent = "Filters";
-      else els.toggleBtn.textContent = "Hide";
-    }}
-
-    els.toggleBtn.addEventListener("click", function() {{
-      els.panel.classList.toggle("collapsed");
-      setBtnText();
-    }});
-    setBtnText();
-
-    els.clearBtn.addEventListener("click", function() {{
-      clearAll();
-      setDateSelectState();
-      scheduleRender(mapObj, 0);
-    }});
-
-    const ids = [
-      "causeGroupSelect","causeSelect","chkInViewOnly",
-      "monthSelect","daySelect","yearSelect",
-      "chkTodayOnly",
-      "dayTypeSelect","timeBlockSelect",
-      "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings",
-      "topNSelect","precIntersections","precMicro"
-    ];
-    for (const id of ids) {{
-      const el = document.getElementById(id);
-      if (!el) continue;
-      el.addEventListener("change", function() {{
-        if (id === "chkTodayOnly") {{
-          setDateSelectState();
-        }}
-        scheduleRender(mapObj, 0);
-      }});
-    }}
-
-    mapObj.on("moveend", function() {{
-      if (els.chkInViewOnly.checked) {{
-        if (popupOpen) {{
-          updateInViewOnly(mapObj);
-        }} else {{
-          scheduleRender(mapObj, 80);
-        }}
-      }} else {{
-        updateInViewOnly(mapObj);
-      }}
-    }});
-
-    mapObj.on("zoomend", function() {{
-      updatePointSizing(mapObj);
-      if (els.chkInViewOnly.checked) {{
-        if (popupOpen) {{
-          updateInViewOnly(mapObj);
-        }} else {{
-          scheduleRender(mapObj, 80);
-        }}
-      }} else {{
-        updateInViewOnly(mapObj);
-      }}
-    }});
-
-    mapObj.on("popupopen", function() {{
-      popupOpen = true;
-    }});
-
-    mapObj.on("popupclose", function() {{
-      popupOpen = false;
-      if (els.chkInViewOnly.checked) {{
-        scheduleRender(mapObj, 80);
-      }}
-    }});
-  }}
-
-  function getMapWhenReady(cb) {{
-    let tries = 0;
-    const t = setInterval(function() {{
-      tries++;
-      if (typeof window.{map_var} !== "undefined" && window.{map_var}) {{
-        clearInterval(t);
-        cb(window.{map_var});
-      }}
-      if (tries > 200) {{
-        clearInterval(t);
-      }}
-    }}, 50);
-  }}
-
-  getMapWhenReady(function(mapObj) {{
-    buildCauseDropdown();
-    buildCauseGroupDropdown();
-    setDateSelectState();
-    wireUI(mapObj);
-
-    if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
-    scheduleRender(mapObj, 0);
-  }});
-}})();
-</script>
-"""
-
-    html = html.replace("</body>", f"{inject}\n</body>")
-
-    atomic_write_text(output_map, html)
-    _ensure_world_readable(output_map)
+    _write_map_html(center_lat, center_lng, output_map, output_datajs)
 
     del df
     del df_map
