@@ -1426,6 +1426,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     }}
   }});
 
+  applyFilters();
+  setTimeout(waitForDataThenRender, 0);
   map.whenReady(() => {{
     waitForDataThenRender();
   }});
