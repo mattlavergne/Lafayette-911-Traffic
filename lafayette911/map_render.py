@@ -1014,7 +1014,6 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 <script>
 (function() {{
   let normalizedIncidents = [];
-  let lastIncidentCount = -1;
   let OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
   const renderer = L.canvas({{ padding: 0.5 }});
   const isCoarsePointer = window.matchMedia ? window.matchMedia("(pointer: coarse)").matches : false;
@@ -1120,15 +1119,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
     if (!raw || raw.length === 0) {{
       normalizedIncidents = [];
-      lastIncidentCount = 0;
       return false;
     }}
-
-    if (raw.length === lastIncidentCount) {{
-      return false;
-    }}
-
-    lastIncidentCount = raw.length;
     byCause.clear();
     causeGroups.clear();
 
@@ -1402,7 +1394,21 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
   map.setView(defaultCenter, 12);
 
   map.on("moveend", applyFilters);
-  applyFilters();
+  window.addEventListener("focus", applyFilters);
+  window.addEventListener("load", applyFilters);
+
+  map.whenReady(() => {{
+    applyFilters();
+    let attempts = 0;
+    const refresh = () => {{
+      attempts += 1;
+      applyFilters();
+      if (attempts < 6) {{
+        setTimeout(refresh, 500);
+      }}
+    }};
+    setTimeout(refresh, 0);
+  }});
 }})();
 </script>
 """
