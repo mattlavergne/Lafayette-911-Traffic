@@ -1364,6 +1364,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
   let lastFiltered = [];
   let renderTimer = null;
+  let popupOpen = false;
+  let renderToken = 0;
   let pointMarkers = {{
     singles: [],
     counts: []
@@ -1439,6 +1441,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     const f = currentFilterObj();
     clearLayers(mapObj);
     pointMarkers = {{ singles: [], counts: [] }};
+    renderToken += 1;
+    const thisRender = renderToken;
 
     const showPoints = !!els.chkPoints.checked;
     const showHeat = !!els.chkHeat.checked;
@@ -1464,43 +1468,54 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
       const layer = L.layerGroup().addTo(mapObj);
       const grouped = groupByExactLocation(filtered);
       const sizing = getPointSizing(mapObj);
-      for (const group of grouped) {{
-        let mk = null;
-        if (group.rows.length > 1) {{
-          const count = group.rows.length;
-          const size = sizing.countSize;
-          const fontSize = sizing.countFont;
-          const icon = L.divIcon({{
-            className: "",
-            html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
-            iconSize: [size, size],
-            iconAnchor: [size / 2, size / 2]
-          }});
-          mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
-          mk.__count = count;
-          pointMarkers.counts.push(mk);
-          mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320, autoPan: false }});
-          mk.on("click", function() {{
-            focusMarker(mapObj, mk);
-          }});
-        }} else {{
-          const radius = sizing.radius;
-          mk = L.circleMarker([group.lat, group.lng], {{
-            radius: radius,
-            renderer: renderer,
-            color: "#2b6cb0",
-            weight: isTouch ? 2.2 : 1.4,
-            fillColor: "#cfe1ff",
-            fillOpacity: 0.65
-          }});
-          pointMarkers.singles.push(mk);
-          mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320, autoPan: false }});
-          mk.on("click", function() {{
-            focusMarker(mapObj, mk);
-          }});
+      let idx = 0;
+      const chunkSize = isTouch ? 120 : 220;
+      function addChunk() {{
+        if (thisRender !== renderToken) return;
+        const end = Math.min(grouped.length, idx + chunkSize);
+        for (; idx < end; idx++) {{
+          const group = grouped[idx];
+          let mk = null;
+          if (group.rows.length > 1) {{
+            const count = group.rows.length;
+            const size = sizing.countSize;
+            const fontSize = sizing.countFont;
+            const icon = L.divIcon({{
+              className: "",
+              html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
+              iconSize: [size, size],
+              iconAnchor: [size / 2, size / 2]
+            }});
+            mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
+            mk.__count = count;
+            pointMarkers.counts.push(mk);
+            mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320, autoPan: false }});
+            mk.on("click", function() {{
+              focusMarker(mapObj, mk);
+            }});
+          }} else {{
+            const radius = sizing.radius;
+            mk = L.circleMarker([group.lat, group.lng], {{
+              radius: radius,
+              renderer: renderer,
+              color: "#2b6cb0",
+              weight: isTouch ? 2.2 : 1.4,
+              fillColor: "#cfe1ff",
+              fillOpacity: 0.65
+            }});
+            pointMarkers.singles.push(mk);
+            mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320, autoPan: false }});
+            mk.on("click", function() {{
+              focusMarker(mapObj, mk);
+            }});
+          }}
+          mk.addTo(layer);
         }}
-        mk.addTo(layer);
+        if (idx < grouped.length) {{
+          requestAnimationFrame(addChunk);
+        }}
       }}
+      addChunk();
       layers.points = layer;
     }}
 
@@ -1667,7 +1682,11 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
     mapObj.on("moveend", function() {{
       if (els.chkInViewOnly.checked) {{
-        scheduleRender(mapObj, 80);
+        if (popupOpen) {{
+          updateInViewOnly(mapObj);
+        }} else {{
+          scheduleRender(mapObj, 80);
+        }}
       }} else {{
         updateInViewOnly(mapObj);
       }}
@@ -1676,9 +1695,24 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     mapObj.on("zoomend", function() {{
       updatePointSizing(mapObj);
       if (els.chkInViewOnly.checked) {{
-        scheduleRender(mapObj, 80);
+        if (popupOpen) {{
+          updateInViewOnly(mapObj);
+        }} else {{
+          scheduleRender(mapObj, 80);
+        }}
       }} else {{
         updateInViewOnly(mapObj);
+      }}
+    }});
+
+    mapObj.on("popupopen", function() {{
+      popupOpen = true;
+    }});
+
+    mapObj.on("popupclose", function() {{
+      popupOpen = false;
+      if (els.chkInViewOnly.checked) {{
+        scheduleRender(mapObj, 80);
       }}
     }});
   }}
