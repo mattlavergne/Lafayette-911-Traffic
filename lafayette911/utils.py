@@ -28,6 +28,16 @@ def log_event(logger: logging.Logger, event: str, **fields) -> None:
 def _atomic_tmp_dir(directory: str) -> str:
     tmp_dir = os.path.join(directory, ".tmp")
     os.makedirs(tmp_dir, exist_ok=True)
+    try:
+        for name in os.listdir(tmp_dir):
+            path = os.path.join(tmp_dir, name)
+            if os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    continue
+    except Exception:
+        pass
     return tmp_dir
 
 
@@ -49,27 +59,6 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
         tmp.write(data)
         tmp_path = tmp.name
     os.replace(tmp_path, path)
-
-
-def cleanup_tmp_files(directory: str, prefix: str = "tmp") -> int:
-    try:
-        entries = os.listdir(directory)
-    except Exception:
-        return 0
-
-    removed = 0
-    for name in entries:
-        if not name.startswith(prefix):
-            continue
-        path = os.path.join(directory, name)
-        if not os.path.isfile(path):
-            continue
-        try:
-            os.remove(path)
-            removed += 1
-        except Exception:
-            continue
-    return removed
 
 
 def get_rss_bytes() -> int:
