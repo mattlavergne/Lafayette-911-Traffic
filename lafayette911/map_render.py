@@ -395,7 +395,12 @@ def _load_dataframe_from_csv(input_csv: str) -> pd.DataFrame:
         "tc_first_reported",
         "tc_last_reported",
     }
-    usecols = [c for c in header_cols if c in needed] if header_cols else None
+    if header_cols:
+        normalized = {c.strip().lower(): c for c in header_cols}
+        matched = [orig for key, orig in normalized.items() if key in needed]
+        usecols = matched if matched else None
+    else:
+        usecols = None
 
     df = pd.read_csv(
         input_csv,
