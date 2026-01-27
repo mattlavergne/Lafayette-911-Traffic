@@ -1014,7 +1014,6 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 <script>
 (function() {{
   let normalizedIncidents = [];
-  let lastIncidentCount = -1;
   let OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
   const renderer = L.canvas({{ padding: 0.5 }});
   const isCoarsePointer = window.matchMedia ? window.matchMedia("(pointer: coarse)").matches : false;
@@ -1120,15 +1119,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
     if (!raw || raw.length === 0) {{
       normalizedIncidents = [];
-      lastIncidentCount = 0;
       return false;
     }}
-
-    if (raw.length === lastIncidentCount) {{
-      return false;
-    }}
-
-    lastIncidentCount = raw.length;
     byCause.clear();
     causeGroups.clear();
 
@@ -1401,8 +1393,37 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
   map.setView(defaultCenter, 12);
 
+  function waitForDataThenRender() {{
+    let attempts = 0;
+    const tick = () => {{
+      const raw = window.INCIDENTS_DATA;
+      if (Array.isArray(raw) && raw.length > 0) {{
+        applyFilters();
+        map.invalidateSize();
+        return;
+      }}
+      attempts += 1;
+      if (attempts < 20) {{
+        setTimeout(tick, 500);
+        return;
+      }}
+      applyFilters();
+    }};
+    tick();
+  }}
+
   map.on("moveend", applyFilters);
-  applyFilters();
+  window.addEventListener("focus", waitForDataThenRender);
+  window.addEventListener("load", waitForDataThenRender);
+  document.addEventListener("visibilitychange", () => {{
+    if (document.visibilityState === "visible") {{
+      waitForDataThenRender();
+    }}
+  }});
+
+  map.whenReady(() => {{
+    waitForDataThenRender();
+  }});
 }})();
 </script>
 """
