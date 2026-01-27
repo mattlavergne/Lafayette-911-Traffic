@@ -1073,14 +1073,39 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
   const causeGroups = new Map();
 
   function parseDateParts(reported) {{
-    const match = /^(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{2}}):(\d{{2}})/.exec(reported || "");
-    if (!match) return null;
+    if (!reported) return null;
+    const text = String(reported).trim();
+
+    const isoMatch = /^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})\\s+(\\d{{2}}):(\\d{{2}})/.exec(text);
+    if (isoMatch) {{
+      return {{
+        year: isoMatch[1],
+        month: isoMatch[2],
+        day: isoMatch[3],
+        hour: parseInt(isoMatch[4], 10),
+        date: new Date(`${{isoMatch[1]}}-${{isoMatch[2]}}-${{isoMatch[3]}}T${{isoMatch[4]}}:${{isoMatch[5]}}:00`),
+      }};
+    }}
+
+    const mdYMatch = /(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{4}})(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?/.exec(text);
+    if (!mdYMatch) return null;
+
+    const mm = mdYMatch[1].padStart(2, "0");
+    const dd = mdYMatch[2].padStart(2, "0");
+    const yy = mdYMatch[3];
+    let hh = mdYMatch[4] != null ? parseInt(mdYMatch[4], 10) : 0;
+    const mi = mdYMatch[5] != null ? parseInt(mdYMatch[5], 10) : 0;
+    const ap = mdYMatch[6] ? String(mdYMatch[6]).toLowerCase() : null;
+    if (ap === "pm" && hh < 12) hh += 12;
+    if (ap === "am" && hh === 12) hh = 0;
+    if (hh < 0 || hh > 23) hh = 0;
+
     return {{
-      year: match[1],
-      month: match[2],
-      day: match[3],
-      hour: parseInt(match[4], 10),
-      date: new Date(`${{match[1]}}-${{match[2]}}-${{match[3]}}T${{match[4]}}:${{match[5]}}:00`),
+      year: yy,
+      month: mm,
+      day: dd,
+      hour: hh,
+      date: new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh, mi, 0, 0),
     }};
   }}
 
@@ -1239,7 +1264,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
       }});
     }}
 
-    if (els.chkHeat.checked) {{
+    if (els.chkHeat.checked && typeof L.heatLayer === "function") {{
       const heatPoints = filtered.map((incident) => [incident.lat, incident.lng, incident.weight || 1]);
       const heatLayer = L.heatLayer(heatPoints, {{ radius: 25, blur: 18, maxZoom: 14 }});
       layerGroups.heat.addLayer(heatLayer);
