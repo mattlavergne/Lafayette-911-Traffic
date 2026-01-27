@@ -1013,8 +1013,9 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
 <script>
 (function() {{
-  const INCIDENTS = window.INCIDENTS_DATA || [];
-  const OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
+  let normalizedIncidents = [];
+  let lastIncidentCount = -1;
+  let OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
   const renderer = L.canvas({{ padding: 0.5 }});
   const isCoarsePointer = window.matchMedia ? window.matchMedia("(pointer: coarse)").matches : false;
   const isTouch = (L && L.Browser && L.Browser.touch) || isCoarsePointer;
@@ -1092,43 +1093,6 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     return "latenight";
   }}
 
-  const normalizedIncidents = INCIDENTS.map((item, idx) => {{
-    const [lat, lng, reported, location, cause, assisting, weight, totalCount] = item;
-    const parsed = parseDateParts(reported);
-    const dateObj = parsed ? parsed.date : null;
-    const dayType = dateObj ? classifyDayType(dateObj) : "";
-    const timeBlock = parsed ? classifyTimeBlock(parsed.hour) : "";
-
-    const causeKey = (cause || "").trim();
-    const groupKey = causeKey.split("-")[0].trim();
-
-    if (causeKey) {{
-      if (!byCause.has(causeKey)) byCause.set(causeKey, []);
-      byCause.get(causeKey).push(idx);
-    }}
-
-    if (groupKey) {{
-      if (!causeGroups.has(groupKey)) causeGroups.set(groupKey, new Set());
-      causeGroups.get(groupKey).add(causeKey);
-    }}
-
-    return {{
-      lat,
-      lng,
-      reported,
-      location,
-      cause,
-      assisting,
-      weight,
-      totalCount: totalCount || 1,
-      year: parsed ? parsed.year : "",
-      month: parsed ? parsed.month : "",
-      day: parsed ? parsed.day : "",
-      dayType,
-      timeBlock,
-    }};
-  }});
-
   function populateSelect(select, values) {{
     values.forEach((val) => {{
       const option = document.createElement("option");
@@ -1137,8 +1101,6 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
       select.appendChild(option);
     }});
   }}
-
-  populateSelect(els.causeGroupSelect, Array.from(causeGroups.keys()).sort());
 
   function updateCauseSelect() {{
     const group = els.causeGroupSelect.value;
@@ -1151,7 +1113,72 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     populateSelect(els.causeSelect, causes.sort());
   }}
 
-  updateCauseSelect();
+  function rebuildIncidents() {{
+    const raw = window.INCIDENTS_DATA || [];
+    const osmRaw = window.OSM_INTERSECTIONS_DATA || [];
+    OSM_INTERSECTIONS = osmRaw;
+
+    if (!raw || raw.length === 0) {{
+      normalizedIncidents = [];
+      lastIncidentCount = 0;
+      return false;
+    }}
+
+    if (raw.length === lastIncidentCount) {{
+      return false;
+    }}
+
+    lastIncidentCount = raw.length;
+    byCause.clear();
+    causeGroups.clear();
+
+    normalizedIncidents = raw.map((item, idx) => {{
+      const [lat, lng, reported, location, cause, assisting, weight, totalCount] = item;
+      const latNum = Number(lat);
+      const lngNum = Number(lng);
+      if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {{
+        return null;
+      }}
+      const parsed = parseDateParts(reported);
+      const dateObj = parsed ? parsed.date : null;
+      const dayType = dateObj ? classifyDayType(dateObj) : "";
+      const timeBlock = parsed ? classifyTimeBlock(parsed.hour) : "";
+
+      const causeKey = (cause || "").trim();
+      const groupKey = causeKey.split("-")[0].trim();
+
+      if (causeKey) {{
+        if (!byCause.has(causeKey)) byCause.set(causeKey, []);
+        byCause.get(causeKey).push(idx);
+      }}
+
+      if (groupKey) {{
+        if (!causeGroups.has(groupKey)) causeGroups.set(groupKey, new Set());
+        causeGroups.get(groupKey).add(causeKey);
+      }}
+
+      return {{
+        lat: latNum,
+        lng: lngNum,
+        reported: reported || "",
+        location: location || "",
+        cause: cause || "",
+        assisting: assisting || "",
+        weight,
+        totalCount: totalCount || 1,
+        year: parsed ? parsed.year : "",
+        month: parsed ? parsed.month : "",
+        day: parsed ? parsed.day : "",
+        dayType,
+        timeBlock,
+      }};
+    }}).filter(Boolean);
+
+    els.causeGroupSelect.innerHTML = '<option value="__ALL__">All</option>';
+    populateSelect(els.causeGroupSelect, Array.from(causeGroups.keys()).sort());
+    updateCauseSelect();
+    return true;
+  }}
 
   function getFilters() {{
     return {{
@@ -1311,6 +1338,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
   }}
 
   function applyFilters() {{
+    rebuildIncidents();
     const filters = getFilters();
     let filtered = normalizedIncidents.filter((incident) => matchFilters(incident, filters));
 
