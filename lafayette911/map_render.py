@@ -490,6 +490,19 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
     _write_jsonjs_if_changed(output_datajs, incidents, osm_intersections)
 
+    map_dir = os.path.dirname(output_map) or "."
+    datajs_dir = os.path.dirname(output_datajs) or "."
+    script_src = os.path.basename(output_datajs)
+    if os.path.abspath(map_dir) != os.path.abspath(datajs_dir):
+        map_datajs_path = os.path.join(map_dir, os.path.basename(output_datajs))
+        try:
+            with open(output_datajs, "r", encoding="utf-8") as handle:
+                datajs_text = handle.read()
+            _write_text_if_changed(map_datajs_path, datajs_text)
+            script_src = os.path.basename(map_datajs_path)
+        except Exception:
+            script_src = os.path.basename(output_datajs)
+
     center_lat, center_lng = _compute_center(df_map, lat_col, lon_col)
 
     base_map = folium.Map(location=[center_lat, center_lng], zoom_start=12, control_scale=True)
@@ -510,7 +523,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     html = html.replace(
         "</head>",
         f'<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />\n'
-        f'<script src="{os.path.basename(output_datajs)}"></script>\n'
+        f'<script src="{script_src}"></script>\n'
         f'<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>\n'
         f"</head>",
     )
