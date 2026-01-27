@@ -25,10 +25,17 @@ def log_event(logger: logging.Logger, event: str, **fields) -> None:
     logger.info(json.dumps(payload, sort_keys=True))
 
 
+def _atomic_tmp_dir(directory: str) -> str:
+    tmp_dir = os.path.join(directory, ".tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    return tmp_dir
+
+
 def atomic_write_text(path: str, text: str) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as tmp:
+    tmp_dir = _atomic_tmp_dir(directory)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=tmp_dir, delete=False) as tmp:
         tmp.write(text)
         tmp_path = tmp.name
     os.replace(tmp_path, path)
@@ -37,10 +44,32 @@ def atomic_write_text(path: str, text: str) -> None:
 def atomic_write_bytes(path: str, data: bytes) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    with tempfile.NamedTemporaryFile("wb", dir=directory, delete=False) as tmp:
+    tmp_dir = _atomic_tmp_dir(directory)
+    with tempfile.NamedTemporaryFile("wb", dir=tmp_dir, delete=False) as tmp:
         tmp.write(data)
         tmp_path = tmp.name
     os.replace(tmp_path, path)
+
+
+def cleanup_tmp_files(directory: str, prefix: str = "tmp") -> int:
+    try:
+        entries = os.listdir(directory)
+    except Exception:
+        return 0
+
+    removed = 0
+    for name in entries:
+        if not name.startswith(prefix):
+            continue
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            os.remove(path)
+            removed += 1
+        except Exception:
+            continue
+    return removed
 
 
 def get_rss_bytes() -> int:

@@ -9,7 +9,7 @@ from typing import Optional
 from lafayette911.fetch_incidents import build_session, fetch_traffic_data, geocode_incidents, parse_traffic_data
 from lafayette911.map_render import create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
-from lafayette911.utils import get_rss_bytes, log_event, setup_logging
+from lafayette911.utils import cleanup_tmp_files, get_rss_bytes, log_event, setup_logging
 
 
 LAFAYETTE_PARISH_PLACES = {
@@ -188,6 +188,7 @@ def main(base_dir: Optional[str] = None) -> int:
     config = load_config(base_dir)
     logger = setup_logging(config.log_level)
     log_event(logger, "service_start", mode=config.mode, render_source=config.render_source)
+    cleanup_tmp_files(config.base_dir)
 
     if config.tracemalloc_interval > 0:
         tracemalloc.start()

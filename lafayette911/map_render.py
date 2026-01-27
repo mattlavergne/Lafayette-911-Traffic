@@ -1018,8 +1018,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
 <script>
 (function() {{
-  let normalizedIncidents = [];
-  let OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
+  const INCIDENTS = window.INCIDENTS_DATA || [];
+  const OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
   const renderer = L.canvas({{ padding: 0.5 }});
   const isCoarsePointer = window.matchMedia ? window.matchMedia("(pointer: coarse)").matches : false;
   const isTouch = (L && L.Browser && L.Browser.touch) || isCoarsePointer;
@@ -1041,7 +1041,6 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     daySelect: document.getElementById("daySelect"),
     yearSelect: document.getElementById("yearSelect"),
     chkTodayOnly: document.getElementById("chkTodayOnly"),
-
     dayTypeSelect: document.getElementById("dayTypeSelect"),
     timeBlockSelect: document.getElementById("timeBlockSelect"),
 
@@ -1055,406 +1054,648 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     topNSelect: document.getElementById("topNSelect"),
     precIntersections: document.getElementById("precIntersections"),
     precMicro: document.getElementById("precMicro"),
+
   }};
 
-  const defaultCenter = [30.2241, -92.0198];
-  const map = window.{map_var};
+  function esc(s) {{
+    return String(s || "").replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
+  }}
 
-  const layerGroups = {{
-    points: L.layerGroup(),
-    heat: L.layerGroup(),
-    intersections: L.layerGroup(),
-    osm: L.layerGroup(),
-    micro: L.layerGroup(),
-    rings: L.layerGroup(),
-  }};
+  function popupHtml(row) {{
+    const occurrences = (row.length >= 8 && row[7] != null) ? parseInt(row[7], 10) : 1;
+    const occLine = (occurrences && occurrences > 1) ? ("<br>Occurrences: " + occurrences) : "";
+    return "Location: " + esc(row[3]) +
+           "<br>Type: " + esc(row[4]) +
+           "<br>Reported: " + esc(row[2]) +
+           "<br>Assisting: " + esc(row[5]) +
+           occLine;
+  }}
 
-  const byCause = new Map();
-  const causeGroups = new Map();
+  function createIncidentPopup(rows) {{
+    let idx = 0;
+    const container = document.createElement("div");
+    if (typeof L !== "undefined" && L.DomEvent) {{
+      L.DomEvent.disableClickPropagation(container);
+    }}
 
-  function parseDateParts(reported) {{
+    function render() {{
+      const row = rows[idx];
+      const hasNav = rows.length > 1;
+      container.innerHTML =
+        (hasNav
+          ? (
+            "<div class='incident-nav'>" +
+              "<button class='incident-prev' type='button' aria-label='Previous incident'>&larr;</button>" +
+              "<div class='incident-count'>Incident " + (idx + 1) + " of " + rows.length + "</div>" +
+              "<button class='incident-next' type='button' aria-label='Next incident'>&rarr;</button>" +
+            "</div>"
+          )
+          : ""
+        ) +
+        "<div class='incident-details'>" + popupHtml(row) + "</div>";
+
+      if (hasNav) {{
+        const prevBtn = container.querySelector(".incident-prev");
+        const nextBtn = container.querySelector(".incident-next");
+        prevBtn.disabled = idx <= 0;
+        nextBtn.disabled = idx >= rows.length - 1;
+
+        prevBtn.addEventListener("click", function(e) {{
+          e.preventDefault();
+          e.stopPropagation();
+          if (idx > 0) {{
+            idx -= 1;
+            render();
+          }}
+        }});
+
+        nextBtn.addEventListener("click", function(e) {{
+          e.preventDefault();
+          e.stopPropagation();
+          if (idx < rows.length - 1) {{
+            idx += 1;
+            render();
+          }}
+        }});
+      }}
+    }}
+
+    render();
+    return container;
+  }}
+
+  function parseReported(reported) {{
     if (!reported) return null;
-    const text = String(reported).trim();
+    const s = String(reported).trim();
+    const m1 = s.match(/(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{4}})(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?/);
+    if (!m1) return null;
 
-    const isoMatch = /^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})\\s+(\\d{{2}}):(\\d{{2}})/.exec(text);
-    if (isoMatch) {{
-      return {{
-        year: isoMatch[1],
-        month: isoMatch[2],
-        day: isoMatch[3],
-        hour: parseInt(isoMatch[4], 10),
-        date: new Date(`${{isoMatch[1]}}-${{isoMatch[2]}}-${{isoMatch[3]}}T${{isoMatch[4]}}:${{isoMatch[5]}}:00`),
+    const mm = m1[1].padStart(2, "0");
+    const dd = m1[2].padStart(2, "0");
+    const yy = m1[3];
+
+    let hh = null;
+    let mi = null;
+
+    if (m1[4] != null && m1[5] != null) {{
+      hh = parseInt(m1[4], 10);
+      mi = parseInt(m1[5], 10);
+      const ap = m1[6] ? String(m1[6]).toLowerCase() : null;
+      if (ap === "pm" && hh < 12) hh += 12;
+      if (ap === "am" && hh === 12) hh = 0;
+      if (hh < 0 || hh > 23) hh = null;
+    }}
+
+    const dt = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh || 0, mi || 0, 0, 0);
+    return {{ mm, dd, yy, hh, mi, dt }};
+  }}
+
+  function dayTypeOf(dt) {{
+    const d = dt.getDay();
+    return (d === 0 || d === 6) ? "weekend" : "weekday";
+  }}
+
+  function timeBlockOf(hh) {{
+    if (hh == null) return "unknown";
+    if (hh >= 6 && hh < 10) return "morning";
+    if (hh >= 10 && hh < 15) return "midday";
+    if (hh >= 15 && hh < 19) return "evening";
+    if (hh >= 19 && hh <= 23) return "night";
+    if (hh >= 0 && hh < 6) return "latenight";
+    return "unknown";
+  }}
+
+  function groupByRounded(points, decimals) {{
+    const m = new Map();
+    for (const row of points) {{
+      const key = row[0].toFixed(decimals) + "," + row[1].toFixed(decimals);
+      const v = m.get(key) || {{
+        key,
+        lat: parseFloat(row[0].toFixed(decimals)),
+        lng: parseFloat(row[1].toFixed(decimals)),
+        count: 0,
+        sample: row
       }};
+      v.count += 1;
+      m.set(key, v);
     }}
-
-    const mdYMatch = /(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{4}})(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?/.exec(text);
-    if (!mdYMatch) return null;
-
-    const mm = mdYMatch[1].padStart(2, "0");
-    const dd = mdYMatch[2].padStart(2, "0");
-    const yy = mdYMatch[3];
-    let hh = mdYMatch[4] != null ? parseInt(mdYMatch[4], 10) : 0;
-    const mi = mdYMatch[5] != null ? parseInt(mdYMatch[5], 10) : 0;
-    const ap = mdYMatch[6] ? String(mdYMatch[6]).toLowerCase() : null;
-    if (ap === "pm" && hh < 12) hh += 12;
-    if (ap === "am" && hh === 12) hh = 0;
-    if (hh < 0 || hh > 23) hh = 0;
-
-    return {{
-      year: yy,
-      month: mm,
-      day: dd,
-      hour: hh,
-      date: new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh, mi, 0, 0),
-    }};
+    return Array.from(m.values()).sort((a, b) => b.count - a.count);
   }}
 
-  function classifyDayType(dateObj) {{
-    const day = dateObj.getDay();
-    return (day === 0 || day === 6) ? "weekend" : "weekday";
-  }}
-
-  function classifyTimeBlock(hour) {{
-    if (hour >= 6 && hour < 10) return "morning";
-    if (hour >= 10 && hour < 15) return "midday";
-    if (hour >= 15 && hour < 19) return "evening";
-    if (hour >= 19 && hour < 24) return "night";
-    return "latenight";
-  }}
-
-  function populateSelect(select, values) {{
-    values.forEach((val) => {{
-      const option = document.createElement("option");
-      option.value = val;
-      option.textContent = val;
-      select.appendChild(option);
-    }});
-  }}
-
-  function updateCauseSelect() {{
-    const group = els.causeGroupSelect.value;
-    els.causeSelect.innerHTML = '<option value="__ALL__">All</option>';
-    if (group === "__ALL__") {{
-      populateSelect(els.causeSelect, Array.from(byCause.keys()).sort());
-      return;
-    }}
-    const causes = Array.from(causeGroups.get(group) || []);
-    populateSelect(els.causeSelect, causes.sort());
-  }}
-
-  function rebuildIncidents() {{
-    const raw = window.INCIDENTS_DATA || [];
-    const osmRaw = window.OSM_INTERSECTIONS_DATA || [];
-    OSM_INTERSECTIONS = osmRaw;
-
-    if (!raw || raw.length === 0) {{
-      normalizedIncidents = [];
-      return false;
-    }}
-    byCause.clear();
-    causeGroups.clear();
-
-    normalizedIncidents = raw.map((item, idx) => {{
-      const [lat, lng, reported, location, cause, assisting, weight, totalCount] = item;
-      const latNum = Number(lat);
-      const lngNum = Number(lng);
-      if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {{
-        return null;
-      }}
-      const parsed = parseDateParts(reported);
-      const dateObj = parsed ? parsed.date : null;
-      const dayType = dateObj ? classifyDayType(dateObj) : "";
-      const timeBlock = parsed ? classifyTimeBlock(parsed.hour) : "";
-
-      const causeKey = (cause || "").trim();
-      const groupKey = causeKey.split("-")[0].trim();
-
-      if (causeKey) {{
-        if (!byCause.has(causeKey)) byCause.set(causeKey, []);
-        byCause.get(causeKey).push(idx);
-      }}
-
-      if (groupKey) {{
-        if (!causeGroups.has(groupKey)) causeGroups.set(groupKey, new Set());
-        causeGroups.get(groupKey).add(causeKey);
-      }}
-
-      return {{
-        lat: latNum,
-        lng: lngNum,
-        reported: reported || "",
-        location: location || "",
-        cause: cause || "",
-        assisting: assisting || "",
-        weight,
-        totalCount: totalCount || 1,
-        year: parsed ? parsed.year : "",
-        month: parsed ? parsed.month : "",
-        day: parsed ? parsed.day : "",
-        dayType,
-        timeBlock,
+  function groupByExactLocation(points) {{
+    const m = new Map();
+    for (const row of points) {{
+      const lat = row[0];
+      const lng = row[1];
+      const key = lat.toFixed(6) + "," + lng.toFixed(6);
+      const v = m.get(key) || {{
+        key,
+        lat,
+        lng,
+        rows: []
       }};
-    }}).filter(Boolean);
+      v.rows.push(row);
+      m.set(key, v);
+    }}
+    return Array.from(m.values());
+  }}
 
-    els.causeGroupSelect.innerHTML = '<option value="__ALL__">All</option>';
-    populateSelect(els.causeGroupSelect, Array.from(causeGroups.keys()).sort());
-    updateCauseSelect();
+  function getCenterFromData() {{
+    if (INCIDENTS.length === 0) return [30.2241, -92.0198];
+    let sLat = 0, sLng = 0, n = 0;
+    for (const r of INCIDENTS) {{
+      sLat += r[0];
+      sLng += r[1];
+      n += 1;
+    }}
+    return [sLat / n, sLng / n];
+  }}
+
+  function buildCauseDropdown() {{
+    if (!els.causeSelect) return;
+    const set = new Set();
+    for (const r of INCIDENTS) {{
+      const c = String(r[4] || "").trim();
+      if (c) set.add(c);
+    }}
+    const causes = Array.from(set.values()).sort((a,b) => a.localeCompare(b));
+    while (els.causeSelect.options.length > 1) {{
+      els.causeSelect.remove(1);
+    }}
+    for (const c of causes) {{
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      els.causeSelect.appendChild(opt);
+    }}
+  }}
+
+  const CAUSE_GROUPS = [
+    {{ id: "fire", label: "Fire", keywords: ["FIRE"] }},
+    {{ id: "accident", label: "Accident", keywords: ["ACCIDENT", "CRASH", "COLLISION", "WRECK", "MVA", "MVC"] }}
+  ];
+
+  function buildCauseGroupDropdown() {{
+    if (!els.causeGroupSelect) return;
+    while (els.causeGroupSelect.options.length > 1) {{
+      els.causeGroupSelect.remove(1);
+    }}
+    for (const g of CAUSE_GROUPS) {{
+      const opt = document.createElement("option");
+      opt.value = g.id;
+      opt.textContent = g.label;
+      els.causeGroupSelect.appendChild(opt);
+    }}
+  }}
+
+  function normalizeCause(cause) {{
+    return String(cause || "").trim().toUpperCase();
+  }}
+
+  function matchesCause(row, selected) {{
+    if (!selected || selected === "__ALL__") return true;
+    return String(row[4] || "").trim() === selected;
+  }}
+
+  function matchesCauseGroup(row, selectedGroup) {{
+    if (!selectedGroup || selectedGroup === "__ALL__") return true;
+    const causeNorm = normalizeCause(row[4]);
+    const group = CAUSE_GROUPS.find((g) => g.id === selectedGroup);
+    if (!group) return true;
+    return group.keywords.some((kw) => causeNorm.includes(kw));
+  }}
+
+  function matchesDateFilter(row, f) {{
+    if (!f.todayOnly && !f.mm && !f.dd && !f.yy) return true;
+    const pr = parseReported(row[2]);
+    if (!pr) return false;
+    if (f.todayOnly) {{
+      const now = new Date();
+      const today = {{
+        mm: String(now.getMonth() + 1).padStart(2, "0"),
+        dd: String(now.getDate()).padStart(2, "0"),
+        yy: String(now.getFullYear())
+      }};
+      return pr.yy === today.yy && pr.mm === today.mm && pr.dd === today.dd;
+    }}
+    if (f.yy && pr.yy !== f.yy) return false;
+    if (f.mm && pr.mm !== f.mm) return false;
+    if (f.dd && pr.dd !== f.dd) return false;
     return true;
   }}
 
-  function getFilters() {{
-    return {{
-      group: els.causeGroupSelect.value,
-      cause: els.causeSelect.value,
-      month: els.monthSelect.value,
-      day: els.daySelect.value,
-      year: els.yearSelect.value,
-      dayType: els.dayTypeSelect.value,
-      timeBlock: els.timeBlockSelect.value,
-      todayOnly: els.chkTodayOnly.checked,
-      inViewOnly: els.chkInViewOnly.checked,
-    }};
+  function matchesDayType(row, dayType) {{
+    if (dayType === "all") return true;
+    const pr = parseReported(row[2]);
+    if (!pr || !pr.dt) return false;
+    return dayTypeOf(pr.dt) === dayType;
   }}
 
-  function matchFilters(incident, filters) {{
-    if (filters.group !== "__ALL__" && !incident.cause.startsWith(filters.group)) return false;
-    if (filters.cause !== "__ALL__" && incident.cause !== filters.cause) return false;
-    if (filters.month && incident.month !== filters.month) return false;
-    if (filters.day && incident.day !== filters.day) return false;
-    if (filters.year && incident.year !== filters.year) return false;
-    if (filters.dayType !== "all" && incident.dayType !== filters.dayType) return false;
-    if (filters.timeBlock !== "all" && incident.timeBlock !== filters.timeBlock) return false;
-
-    if (filters.todayOnly) {{
-      const today = new Date();
-      const y = String(today.getFullYear());
-      const m = String(today.getMonth() + 1).padStart(2, "0");
-      const d = String(today.getDate()).padStart(2, "0");
-      if (incident.year !== y || incident.month !== m || incident.day !== d) return false;
-    }}
-
-    return true;
+  function matchesTimeBlock(row, block) {{
+    if (block === "all") return true;
+    const pr = parseReported(row[2]);
+    if (!pr) return false;
+    const tb = timeBlockOf(pr.hh);
+    if (tb === "unknown") return false;
+    return tb === block;
   }}
 
-  function clearLayers() {{
-    Object.values(layerGroups).forEach((layer) => layer.clearLayers());
+  function currentFilterObj() {{
+    const mm = (els.monthSelect.value || "").trim();
+    const dd = (els.daySelect.value || "").trim();
+    const yy = (els.yearSelect.value || "").trim();
+    const dayType = (els.dayTypeSelect.value || "all").trim();
+    const timeBlock = (els.timeBlockSelect.value || "all").trim();
+    const cause = (els.causeSelect.value || "__ALL__").trim();
+    const causeGroup = (els.causeGroupSelect.value || "__ALL__").trim();
+    const inViewOnly = !!els.chkInViewOnly.checked;
+    const todayOnly = !!els.chkTodayOnly.checked;
+    return {{ mm: mm || "", dd: dd || "", yy: yy || "", dayType, timeBlock, cause, causeGroup, todayOnly, inViewOnly }};
   }}
 
-  function renderLayers(filtered) {{
-    clearLayers();
+  function filteredIncidents(filterObj, mapObj) {{
+    const out = [];
+    const bounds = (filterObj.inViewOnly && mapObj) ? mapObj.getBounds() : null;
 
-    if (els.chkPoints.checked) {{
-      filtered.forEach((incident) => {{
-        const marker = L.circleMarker([incident.lat, incident.lng], {{
-          radius: 4,
-          fillColor: "#1f77b4",
-          color: "#1f77b4",
-          weight: 1,
-          fillOpacity: 0.8,
-          renderer,
-        }}).bindPopup(`
-          <div>
-            <div><strong>${{incident.cause}}</strong></div>
-            <div>${{incident.location}}</div>
-            <div>${{incident.reported}}</div>
-            <div>${{incident.assisting}}</div>
-          </div>
-        `);
-        layerGroups.points.addLayer(marker);
-      }});
-    }}
+    for (const row of INCIDENTS) {{
+      if (!matchesCauseGroup(row, filterObj.causeGroup)) continue;
+      if (!matchesCause(row, filterObj.cause)) continue;
+      if (!matchesDateFilter(row, filterObj)) continue;
+      if (!matchesDayType(row, filterObj.dayType)) continue;
+      if (!matchesTimeBlock(row, filterObj.timeBlock)) continue;
 
-    if (els.chkHeat.checked && typeof L.heatLayer === "function") {{
-      const heatPoints = filtered.map((incident) => [incident.lat, incident.lng, incident.weight || 1]);
-      const heatLayer = L.heatLayer(heatPoints, {{ radius: 25, blur: 18, maxZoom: 14 }});
-      layerGroups.heat.addLayer(heatLayer);
-    }}
-
-    const precision = parseInt(els.precIntersections.value, 10);
-    const microPrecision = parseInt(els.precMicro.value, 10);
-
-    if (els.chkIntersections.checked) {{
-      const rounded = new Map();
-      filtered.forEach((incident) => {{
-        const key = `${{incident.lat.toFixed(precision)}},${{incident.lng.toFixed(precision)}}`;
-        rounded.set(key, (rounded.get(key) || 0) + (incident.totalCount || 1));
-      }});
-
-      rounded.forEach((count, key) => {{
-        const [lat, lng] = key.split(",").map(Number);
-        const marker = L.circleMarker([lat, lng], {{
-          radius: 12,
-          fillColor: "#ff7f0e",
-          color: "#c05621",
-          weight: 2,
-          fillOpacity: 0.65,
-          renderer,
-        }}).bindTooltip(`Count: ${{count}}`, {{ permanent: false }});
-        layerGroups.intersections.addLayer(marker);
-      }});
-    }}
-
-    if (els.chkMicro.checked) {{
-      const micro = new Map();
-      filtered.forEach((incident) => {{
-        const key = `${{incident.lat.toFixed(microPrecision)}},${{incident.lng.toFixed(microPrecision)}}`;
-        micro.set(key, (micro.get(key) || 0) + (incident.totalCount || 1));
-      }});
-
-      micro.forEach((count, key) => {{
-        const [lat, lng] = key.split(",").map(Number);
-        const marker = L.circleMarker([lat, lng], {{
-          radius: 6,
-          fillColor: "#2f855a",
-          color: "#22543d",
-          weight: 1,
-          fillOpacity: 0.65,
-          renderer,
-        }}).bindTooltip(`Count: ${{count}}`, {{ permanent: false }});
-        layerGroups.micro.addLayer(marker);
-      }});
-    }}
-
-    if (els.chkRings.checked) {{
-      const rings = new Map();
-      filtered.forEach((incident) => {{
-        const key = `${{incident.lat.toFixed(precision)}},${{incident.lng.toFixed(precision)}}`;
-        rings.set(key, (rings.get(key) || 0) + (incident.totalCount || 1));
-      }});
-
-      rings.forEach((count, key) => {{
-        const [lat, lng] = key.split(",").map(Number);
-        const marker = L.circle([lat, lng], {{
-          radius: 30 + count * 5,
-          fillColor: "#805ad5",
-          color: "#6b46c1",
-          weight: 2,
-          fillOpacity: 0.25,
-          renderer,
-        }}).bindTooltip(`Count: ${{count}}`, {{ permanent: false }});
-        layerGroups.rings.addLayer(marker);
-      }});
-    }}
-
-    if (els.chkOsmIntersections.checked && OSM_INTERSECTIONS.length) {{
-      const topN = parseInt(els.topNSelect.value, 10);
-      OSM_INTERSECTIONS.slice(0, topN).forEach((item) => {{
-        const [lat, lng, count] = item;
-        const marker = L.circleMarker([lat, lng], {{
-          radius: 16,
-          fillColor: "#2b6cb0",
-          color: "#2c5282",
-          weight: 2,
-          fillOpacity: 0.7,
-          renderer,
-        }}).bindTooltip(`Count: ${{count}}`, {{ permanent: false }});
-        layerGroups.osm.addLayer(marker);
-      }});
-    }}
-
-    Object.values(layerGroups).forEach((layer) => {{
-      if (!map.hasLayer(layer)) {{
-        map.addLayer(layer);
+      if (bounds) {{
+        const latlng = L.latLng(row[0], row[1]);
+        if (!bounds.contains(latlng)) continue;
       }}
-    }});
+
+      out.push(row);
+    }}
+    return out;
   }}
 
-  function applyFilters() {{
-    rebuildIncidents();
-    const filters = getFilters();
-    let filtered = normalizedIncidents.filter((incident) => matchFilters(incident, filters));
+  function computeInViewCount(rows, mapObj) {{
+    if (!mapObj) return 0;
+    const b = mapObj.getBounds();
+    let c = 0;
+    for (const row of rows) {{
+      if (b.contains(L.latLng(row[0], row[1]))) c += 1;
+    }}
+    return c;
+  }}
 
-    if (filters.inViewOnly) {{
-      const bounds = map.getBounds();
-      filtered = filtered.filter((incident) => bounds.contains([incident.lat, incident.lng]));
+  let layers = {{
+    points: null,
+    heat: null,
+    intersections: null,
+    osmIntersections: null,
+    micro: null,
+    rings: null
+  }};
+
+  let lastFiltered = [];
+  let renderTimer = null;
+  let pointMarkers = {{
+    singles: [],
+    counts: []
+  }};
+
+  function scheduleRender(mapObj, delayMs) {{
+    const delay = Number.isFinite(delayMs) ? delayMs : 0;
+    if (renderTimer) {{
+      clearTimeout(renderTimer);
+      renderTimer = null;
+    }}
+    renderTimer = setTimeout(function() {{
+      renderTimer = null;
+      renderAll(mapObj);
+    }}, delay);
+  }}
+
+  function clearLayers(mapObj) {{
+    for (const k of Object.keys(layers)) {{
+      if (layers[k]) {{
+        try {{ mapObj.removeLayer(layers[k]); }} catch (e) {{}}
+        layers[k] = null;
+      }}
+    }}
+  }}
+
+  function getPointSizing(mapObj) {{
+    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+    const inverse = 12 - zoom;
+    let radius = 5.6 + inverse * 0.7;
+    radius = Math.max(3.6, Math.min(10.8, radius));
+    if (isTouch) {{
+      radius = Math.min(13.5, radius * 1.35 + 1.2);
+    }}
+    const countSize = Math.max(16, Math.round(radius * 2.05 + (isTouch ? 5 : 3)));
+    const countFont = Math.max(10, Math.round(countSize * 0.55));
+    return {{ radius, countSize, countFont }};
+  }}
+
+  function updatePointSizing(mapObj) {{
+    if (!mapObj) return;
+    const sizing = getPointSizing(mapObj);
+    for (const mk of pointMarkers.singles) {{
+      if (mk && mk.setRadius) {{
+        mk.setRadius(sizing.radius);
+      }}
+    }}
+    for (const mk of pointMarkers.counts) {{
+      if (!mk || !mk.setIcon) continue;
+      const count = mk.__count || 1;
+      const size = sizing.countSize;
+      const fontSize = sizing.countFont;
+      const icon = L.divIcon({{
+        className: "",
+        html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2]
+      }});
+      mk.setIcon(icon);
+    }}
+  }}
+
+  function focusMarker(mapObj, marker) {{
+    if (!mapObj || !marker || !marker.getLatLng) return;
+    const latlng = marker.getLatLng();
+    const currentZoom = mapObj.getZoom ? mapObj.getZoom() : 12;
+    const targetZoom = Math.max(currentZoom, 15);
+    mapObj.setView(latlng, targetZoom, {{ animate: true, duration: 0.35 }});
+    if (marker.openPopup) marker.openPopup();
+  }}
+
+  function renderAll(mapObj) {{
+    const f = currentFilterObj();
+    clearLayers(mapObj);
+    pointMarkers = {{ singles: [], counts: [] }};
+
+    const showPoints = !!els.chkPoints.checked;
+    const showHeat = !!els.chkHeat.checked;
+    const showInter = !!els.chkIntersections.checked;
+    const showOsmInter = !!els.chkOsmIntersections.checked;
+    const showMicro = !!els.chkMicro.checked;
+    const showRings = !!els.chkRings.checked;
+
+    const topN = parseInt(els.topNSelect.value || "10", 10);
+    const dInter = parseInt(els.precIntersections.value || "3", 10);
+    const dMicro = parseInt(els.precMicro.value || "4", 10);
+
+    const filtered = filteredIncidents(f, mapObj);
+    lastFiltered = filtered;
+
+    if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
+    if (els.countFiltered) els.countFiltered.textContent = String(filtered.length);
+
+    const inView = computeInViewCount(filtered, mapObj);
+    if (els.countInView) els.countInView.textContent = String(inView);
+
+    if (showPoints) {{
+      const layer = L.layerGroup().addTo(mapObj);
+      const grouped = groupByExactLocation(filtered);
+      const sizing = getPointSizing(mapObj);
+      for (const group of grouped) {{
+        let mk = null;
+        if (group.rows.length > 1) {{
+          const count = group.rows.length;
+          const size = sizing.countSize;
+          const fontSize = sizing.countFont;
+          const icon = L.divIcon({{
+            className: "",
+            html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
+            iconSize: [size, size],
+            iconAnchor: [size / 2, size / 2]
+          }});
+          mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
+          mk.__count = count;
+          pointMarkers.counts.push(mk);
+          mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320, autoPan: false }});
+          mk.on("click", function() {{
+            focusMarker(mapObj, mk);
+          }});
+        }} else {{
+          const radius = sizing.radius;
+          mk = L.circleMarker([group.lat, group.lng], {{
+            radius: radius,
+            renderer: renderer,
+            color: "#2b6cb0",
+            weight: isTouch ? 2.2 : 1.4,
+            fillColor: "#cfe1ff",
+            fillOpacity: 0.65
+          }});
+          pointMarkers.singles.push(mk);
+          mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320, autoPan: false }});
+          mk.on("click", function() {{
+            focusMarker(mapObj, mk);
+          }});
+        }}
+        mk.addTo(layer);
+      }}
+      layers.points = layer;
     }}
 
-    els.countTotal.textContent = normalizedIncidents.length;
-    els.countFiltered.textContent = filtered.length;
+    if (showHeat && typeof L.heatLayer === "function") {{
+      const heatPts = filtered.map(r => [r[0], r[1], (r.length >= 7 ? (parseFloat(r[6]) || 1.0) : 1.0)]);
+      const heat = L.heatLayer(heatPts, {{ radius: 18, blur: 14, maxZoom: 17 }});
+      heat.addTo(mapObj);
+      layers.heat = heat;
+    }}
 
-    const bounds = map.getBounds();
-    const inView = filtered.filter((incident) => bounds.contains([incident.lat, incident.lng])).length;
-    els.countInView.textContent = inView;
+    if (showInter) {{
+      const groups = groupByRounded(filtered, dInter).slice(0, topN);
+      const layer = L.layerGroup().addTo(mapObj);
+      for (const g of groups) {{
+        const radius = Math.max(7, Math.min(30, 4 + Math.sqrt(g.count) * 3));
+        const c = L.circleMarker([g.lat, g.lng], {{ radius: radius, renderer: renderer }});
+        c.bindPopup(
+          "Rounded intersection<br>Key: " + esc(g.key) + "<br>Count: " + g.count + "<br><br>" + popupHtml(g.sample),
+          {{ maxWidth: 340 }}
+        );
+        c.addTo(layer);
+      }}
+      layers.intersections = layer;
+    }}
 
-    renderLayers(filtered);
+    if (showOsmInter) {{
+      const layer = L.layerGroup().addTo(mapObj);
+      if (!OSM_INTERSECTIONS || OSM_INTERSECTIONS.length === 0) {{
+        const center = getCenterFromData();
+        const mk = L.circleMarker([center[0], center[1]], {{ radius: 8, renderer: renderer }});
+        mk.bindPopup("OSM hotspots unavailable.<br>Install osmnx and rebuild once.");
+        mk.addTo(layer);
+      }} else {{
+        const top = OSM_INTERSECTIONS.slice(0, topN);
+        for (const it of top) {{
+          const lat = it[0], lng = it[1], cnt = it[2], nodeId = it[3];
+          const radius = Math.max(8, Math.min(34, 4 + Math.sqrt(cnt) * 3));
+          const c = L.circleMarker([lat, lng], {{ radius: radius, renderer: renderer }});
+          c.bindPopup("OSM hotspot<br>Count: " + cnt + "<br>Node: " + esc(nodeId), {{ maxWidth: 320 }});
+          c.addTo(layer);
+        }}
+      }}
+      layers.osmIntersections = layer;
+    }}
+
+    if (showMicro) {{
+      const groups = groupByRounded(filtered, dMicro).slice(0, topN);
+      const layer = L.layerGroup().addTo(mapObj);
+      for (const g of groups) {{
+        const radius = Math.max(6, Math.min(26, 3 + Math.sqrt(g.count) * 2.5));
+        const c = L.circleMarker([g.lat, g.lng], {{ radius: radius, renderer: renderer }});
+        c.bindPopup(
+          "Micro-hotspot<br>Key: " + esc(g.key) + "<br>Count: " + g.count + "<br><br>" + popupHtml(g.sample),
+          {{ maxWidth: 340 }}
+        );
+        c.addTo(layer);
+      }}
+      layers.micro = layer;
+    }}
+
+    const center = getCenterFromData();
+    const centerLat = center[0];
+    const centerLng = center[1];
+
+    if (showRings) {{
+      const ringLayer = L.layerGroup().addTo(mapObj);
+      const radiiKm = [1, 2, 3, 5, 8];
+      for (const rk of radiiKm) {{
+        const circle = L.circle([centerLat, centerLng], {{ radius: rk * 1000, weight: 1, fill: false }});
+        circle.addTo(ringLayer);
+      }}
+      const centerMarker = L.circleMarker([centerLat, centerLng], {{ radius: 7, renderer: renderer }});
+      centerMarker.bindPopup("Dataset center<br>" + centerLat.toFixed(5) + ", " + centerLng.toFixed(5));
+      centerMarker.addTo(ringLayer);
+      layers.rings = ringLayer;
+    }}
+
   }}
 
-  function clearFilters() {{
-    els.causeGroupSelect.value = "__ALL__";
-    updateCauseSelect();
+  function updateInViewOnly(mapObj) {{
+    if (!mapObj) return;
+    const f = currentFilterObj();
+
+    let rows = lastFiltered;
+
+    if (f.inViewOnly) {{
+      rows = filteredIncidents(f, mapObj);
+      lastFiltered = rows;
+      if (els.countFiltered) els.countFiltered.textContent = String(rows.length);
+    }}
+
+    const inView = computeInViewCount(rows, mapObj);
+    if (els.countInView) els.countInView.textContent = String(inView);
+  }}
+
+  function clearAll() {{
     els.causeSelect.value = "__ALL__";
+    els.causeGroupSelect.value = "__ALL__";
+    els.chkInViewOnly.checked = false;
+
     els.monthSelect.value = "";
     els.daySelect.value = "";
     els.yearSelect.value = "";
+    els.chkTodayOnly.checked = false;
+
     els.dayTypeSelect.value = "all";
     els.timeBlockSelect.value = "all";
-    els.chkTodayOnly.checked = false;
-    els.chkInViewOnly.checked = false;
-    applyFilters();
+
+    els.chkPoints.checked = true;
+    els.chkHeat.checked = false;
+    els.chkIntersections.checked = false;
+    els.chkOsmIntersections.checked = false;
+    els.chkMicro.checked = false;
+    els.chkRings.checked = false;
+
+    els.topNSelect.value = "10";
+    els.precIntersections.value = "3";
+    els.precMicro.value = "4";
   }}
 
-  els.causeGroupSelect.addEventListener("change", () => {{
-    updateCauseSelect();
-    applyFilters();
-  }});
-  els.causeSelect.addEventListener("change", applyFilters);
-  els.monthSelect.addEventListener("change", applyFilters);
-  els.daySelect.addEventListener("change", applyFilters);
-  els.yearSelect.addEventListener("change", applyFilters);
-  els.dayTypeSelect.addEventListener("change", applyFilters);
-  els.timeBlockSelect.addEventListener("change", applyFilters);
-  els.chkTodayOnly.addEventListener("change", applyFilters);
-  els.chkInViewOnly.addEventListener("change", applyFilters);
-  els.chkPoints.addEventListener("change", applyFilters);
-  els.chkHeat.addEventListener("change", applyFilters);
-  els.chkIntersections.addEventListener("change", applyFilters);
-  els.chkOsmIntersections.addEventListener("change", applyFilters);
-  els.chkMicro.addEventListener("change", applyFilters);
-  els.chkRings.addEventListener("change", applyFilters);
-  els.topNSelect.addEventListener("change", applyFilters);
-  els.precIntersections.addEventListener("change", applyFilters);
-  els.precMicro.addEventListener("change", applyFilters);
-
-  els.clearBtn.addEventListener("click", clearFilters);
-
-  els.toggleBtn.addEventListener("click", () => {{
-    els.panel.classList.toggle("collapsed");
-  }});
-
-  map.setView(defaultCenter, 12);
-
-  function waitForDataThenRender() {{
-    let attempts = 0;
-    const tick = () => {{
-      const raw = window.INCIDENTS_DATA;
-      if (Array.isArray(raw) && raw.length > 0) {{
-        applyFilters();
-        map.invalidateSize();
-        return;
-      }}
-      attempts += 1;
-      if (attempts < 20) {{
-        setTimeout(tick, 500);
-        return;
-      }}
-      applyFilters();
-    }};
-    tick();
+  function setDateSelectState() {{
+    const disabled = !!els.chkTodayOnly.checked;
+    if (els.monthSelect) els.monthSelect.disabled = disabled;
+    if (els.daySelect) els.daySelect.disabled = disabled;
+    if (els.yearSelect) els.yearSelect.disabled = disabled;
   }}
 
-  map.on("moveend", applyFilters);
-  window.addEventListener("focus", waitForDataThenRender);
-  window.addEventListener("load", waitForDataThenRender);
-  document.addEventListener("visibilitychange", () => {{
-    if (document.visibilityState === "visible") {{
-      waitForDataThenRender();
+  function wireUI(mapObj) {{
+    function setBtnText() {{
+      if (els.panel.classList.contains("collapsed")) els.toggleBtn.textContent = "Filters";
+      else els.toggleBtn.textContent = "Hide";
     }}
-  }});
 
-  applyFilters();
-  setTimeout(waitForDataThenRender, 0);
-  map.whenReady(() => {{
-    waitForDataThenRender();
+    els.toggleBtn.addEventListener("click", function() {{
+      els.panel.classList.toggle("collapsed");
+      setBtnText();
+    }});
+    setBtnText();
+
+    els.clearBtn.addEventListener("click", function() {{
+      clearAll();
+      setDateSelectState();
+      scheduleRender(mapObj, 0);
+    }});
+
+    const ids = [
+      "causeGroupSelect","causeSelect","chkInViewOnly",
+      "monthSelect","daySelect","yearSelect",
+      "chkTodayOnly",
+      "dayTypeSelect","timeBlockSelect",
+      "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings",
+      "topNSelect","precIntersections","precMicro"
+    ];
+    for (const id of ids) {{
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.addEventListener("change", function() {{
+        if (id === "chkTodayOnly") {{
+          setDateSelectState();
+        }}
+        scheduleRender(mapObj, 0);
+      }});
+    }}
+
+    mapObj.on("moveend", function() {{
+      if (els.chkInViewOnly.checked) {{
+        scheduleRender(mapObj, 80);
+      }} else {{
+        updateInViewOnly(mapObj);
+      }}
+    }});
+
+    mapObj.on("zoomend", function() {{
+      updatePointSizing(mapObj);
+      if (els.chkInViewOnly.checked) {{
+        scheduleRender(mapObj, 80);
+      }} else {{
+        updateInViewOnly(mapObj);
+      }}
+    }});
+  }}
+
+  function getMapWhenReady(cb) {{
+    let tries = 0;
+    const t = setInterval(function() {{
+      tries++;
+      if (typeof window.{map_var} !== "undefined" && window.{map_var}) {{
+        clearInterval(t);
+        cb(window.{map_var});
+      }}
+      if (tries > 200) {{
+        clearInterval(t);
+      }}
+    }}, 50);
+  }}
+
+  getMapWhenReady(function(mapObj) {{
+    buildCauseDropdown();
+    buildCauseGroupDropdown();
+    setDateSelectState();
+    wireUI(mapObj);
+
+    if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
+    scheduleRender(mapObj, 0);
   }});
 }})();
 </script>
