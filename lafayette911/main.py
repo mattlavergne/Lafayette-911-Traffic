@@ -9,7 +9,7 @@ from typing import Optional
 from lafayette911.fetch_incidents import build_session, fetch_traffic_data, geocode_incidents, parse_traffic_data
 from lafayette911.map_render import create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
-from lafayette911.utils import get_rss_bytes, log_event, setup_logging
+from lafayette911.utils import cleanup_tmp_files, get_rss_bytes, log_event, setup_logging
 
 
 LAFAYETTE_PARISH_PLACES = {
@@ -160,15 +160,17 @@ def run_once(config: Config, store: StateStore, session, logger) -> None:
         raw = fetch_traffic_data(session)
         incidents = parse_traffic_data(raw)
         if incidents:
-            geocode_incidents(
-                session,
-                incidents,
-                config.google_api_key,
-                sleep_seconds=config.geocode_sleep_seconds,
-            )
-            _filter_geocode_results(incidents)
-            new_incidents = store.store_new_incidents(incidents)
-            store.append_to_csv(new_incidents)
+            new_incidents = store.filter_new_incidents(incidents)
+            if new_incidents:
+                geocode_incidents(
+                    session,
+                    new_incidents,
+                    config.google_api_key,
+                    sleep_seconds=config.geocode_sleep_seconds,
+                )
+                _filter_geocode_results(new_incidents)
+                new_incidents = store.store_new_incidents(new_incidents)
+                store.append_to_csv(new_incidents)
 
     if config.mode in {"all", "renderer"}:
         if config.render_source == "db":
@@ -186,6 +188,7 @@ def main(base_dir: Optional[str] = None) -> int:
     config = load_config(base_dir)
     logger = setup_logging(config.log_level)
     log_event(logger, "service_start", mode=config.mode, render_source=config.render_source)
+    cleanup_tmp_files(config.base_dir)
 
     if config.tracemalloc_interval > 0:
         tracemalloc.start()
