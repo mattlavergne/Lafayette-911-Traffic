@@ -523,8 +523,6 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
         except Exception:
             pass
 
-    data_script = _build_incidents_script(incidents, osm_intersections)
-
     center_lat, center_lng = _compute_center(df_map, lat_col, lon_col)
 
     base_map = folium.Map(location=[center_lat, center_lng], zoom_start=12, control_scale=True)
@@ -543,11 +541,13 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     map_var = m.group(1)
 
     rel_datajs = os.path.relpath(output_datajs, os.path.dirname(output_map) or ".").replace(os.sep, "/")
+    if os.path.abspath(map_dir) != os.path.abspath(datajs_dir):
+        rel_datajs = os.path.basename(output_datajs)
 
     html = html.replace(
         "</head>",
         f'<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />\n'
-        f"<script>{data_script}</script>\n"
+        f'<script src="{rel_datajs}"></script>\n'
         f'<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>\n'
         f"</head>",
     )
