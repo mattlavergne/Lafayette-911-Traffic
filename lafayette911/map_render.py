@@ -1216,7 +1216,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const cause = (row[4] || "").toLowerCase();
     const reported = (row[2] || "").toLowerCase();
     const assist = (row[5] || "").toLowerCase();
-    const hay = `${loc} ${cause} ${reported} ${assist}`;
+    const hay = `${{loc}} ${{cause}} ${{reported}} ${{assist}}`;
     if (filterObj.text && !hay.includes(filterObj.text)) return false;
 
     if (filterObj.cause && cause !== filterObj.cause.toLowerCase()) return false;
