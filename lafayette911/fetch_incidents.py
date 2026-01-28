@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from lafayette911.utils import log_event
 
 TRAFFIC_FEED_URL = "https://lafayette911.org/wp-json/traffic-feed/v1/data"
 GOOGLE_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -29,14 +30,20 @@ def build_session() -> requests.Session:
     return session
 
 
-def fetch_traffic_data(session: requests.Session, timeout: int = 30) -> Optional[Dict]:
+def fetch_traffic_data(
+    session: requests.Session,
+    timeout: int = 30,
+    logger=None,
+) -> Optional[Dict]:
     response = None
     try:
         response = session.get(TRAFFIC_FEED_URL, timeout=timeout)
         if response.status_code != 200:
             return None
         return response.json()
-    except requests.RequestException:
+    except requests.RequestException as exc:
+        if logger is not None:
+            log_event(logger, "traffic_fetch_error", error=str(exc))
         return None
     finally:
         if response is not None:

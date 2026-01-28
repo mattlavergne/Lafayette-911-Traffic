@@ -38,6 +38,7 @@ class Config:
     db_path: str
     osm_cache_dir: str
     sleep_seconds: int
+    fetch_timeout_seconds: int
     google_api_key: str
     mode: str
     render_source: str
@@ -86,6 +87,7 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         db_path=db_path,
         osm_cache_dir=osm_cache_dir,
         sleep_seconds=_env_int("LAF911_SLEEP_SECONDS", 300),
+        fetch_timeout_seconds=_env_int("LAF911_FETCH_TIMEOUT", 30),
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         mode=os.getenv("LAF911_MODE", "all"),
         render_source=os.getenv("LAF911_RENDER_SOURCE", "db"),
@@ -157,7 +159,7 @@ def run_once(config: Config, store: StateStore, session, logger) -> None:
     new_incidents = []
 
     if config.mode in {"all", "fetcher"}:
-        raw = fetch_traffic_data(session)
+        raw = fetch_traffic_data(session, timeout=config.fetch_timeout_seconds, logger=logger)
         incidents = parse_traffic_data(raw)
         if incidents:
             new_incidents = store.filter_new_incidents(incidents)
