@@ -47,6 +47,7 @@ class Config:
     tracemalloc_top: int
     debug_memory: bool
     gc_collect: bool
+    render_only_on_new: bool
     log_level: str
 
 
@@ -95,7 +96,8 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         tracemalloc_interval=_env_int("LAF911_TRACEMALLOC_INTERVAL", 0),
         tracemalloc_top=_env_int("LAF911_TRACEMALLOC_TOP", 10),
         debug_memory=_env_bool("LAF911_DEBUG_MEMORY", False),
-        gc_collect=_env_bool("LAF911_GC_COLLECT", False),
+        gc_collect=_env_bool("LAF911_GC_COLLECT", True),
+        render_only_on_new=_env_bool("LAF911_RENDER_ONLY_ON_NEW", True),
         log_level=os.getenv("LAF911_LOG_LEVEL", "INFO"),
     )
 
@@ -154,9 +156,10 @@ def _maybe_log_tracemalloc(logger, snapshot, prev_snapshot, top_n: int, debug: b
     return snapshot
 
 
-def run_once(config: Config, store: StateStore, session, logger) -> None:
+def run_once(config: Config, store: StateStore, session, logger) -> bool:
     incidents = []
     new_incidents = []
+    has_new_incidents = False
 
     if config.mode in {"all", "fetcher"}:
         raw = fetch_traffic_data(session, timeout=config.fetch_timeout_seconds, logger=logger)
@@ -173,17 +176,25 @@ def run_once(config: Config, store: StateStore, session, logger) -> None:
                 _filter_geocode_results(new_incidents)
                 new_incidents = store.store_new_incidents(new_incidents)
                 store.append_to_csv(new_incidents)
+                has_new_incidents = bool(new_incidents)
 
     if config.mode in {"all", "renderer"}:
-        if config.render_source == "db":
-            create_map_from_db(config.db_path, config.map_path, config.datajs_path, config.osm_cache_dir)
+        should_render = True
+        if config.render_only_on_new and config.mode != "renderer":
+            should_render = has_new_incidents
+        if should_render:
+            if config.render_source == "db":
+                create_map_from_db(config.db_path, config.map_path, config.datajs_path, config.osm_cache_dir)
+            else:
+                create_map_from_csv(config.csv_path, config.map_path, config.datajs_path, config.osm_cache_dir)
         else:
-            create_map_from_csv(config.csv_path, config.map_path, config.datajs_path, config.osm_cache_dir)
+            log_event(logger, "render_skipped", reason="no_new_incidents")
 
     if incidents is not None:
         incidents.clear()
     if new_incidents is not None:
         new_incidents.clear()
+    return has_new_incidents
 
 
 def main(base_dir: Optional[str] = None) -> int:
