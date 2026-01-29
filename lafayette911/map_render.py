@@ -779,11 +779,31 @@ def _write_streaming_datajs(
         try:
             cursor = conn.execute(
                 """
-                SELECT location, cause, reported, assisting, incident_number, latitude, longitude
+                SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
+                       weather_temp_f, weather_precip_prob, weather_precip_in,
+                       weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
+                       weather_sky_cover_pct, weather_observed_at, weather_source
                 FROM incidents
                 """
             )
-            for location, cause, reported, assisting, incident_number, lat, lon in cursor:
+            for (
+                location,
+                cause,
+                reported,
+                assisting,
+                incident_number,
+                lat,
+                lon,
+                weather_temp_f,
+                weather_precip_prob,
+                weather_precip_in,
+                weather_wind_speed_mph,
+                weather_wind_gust_mph,
+                weather_visibility_mi,
+                weather_sky_cover_pct,
+                weather_observed_at,
+                weather_source,
+            ) in cursor:
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
                 if lat is None or lon is None:
@@ -834,6 +854,15 @@ def _write_streaming_datajs(
                     assist,
                     1.0,
                     1,
+                    _safe_float(weather_temp_f),
+                    _safe_float(weather_precip_prob),
+                    _safe_float(weather_precip_in),
+                    _safe_float(weather_wind_speed_mph),
+                    _safe_float(weather_wind_gust_mph),
+                    _safe_float(weather_visibility_mi),
+                    _safe_float(weather_sky_cover_pct),
+                    str(weather_observed_at or "").strip(),
+                    str(weather_source or "").strip(),
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
@@ -873,6 +902,15 @@ def _write_streaming_datajs(
                     str(entry.get("assisting") or "").strip(),
                     1.0,
                     int(count),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "",
+                    "",
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 tc_count += 1
@@ -1085,6 +1123,17 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     gap: 8px;
   }}
 
+  .row-note {{
+    font-size: 12px;
+    color: rgba(0,0,0,0.55);
+    margin-top: -2px;
+  }}
+
+  .muted {{
+    color: rgba(0,0,0,0.55);
+    font-size: 12px;
+  }}
+
   .row label {{
     display: inline-flex;
     align-items: center;
@@ -1101,6 +1150,16 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   }}
 
   select {{
+    padding: 6px 8px;
+    border-radius: 10px;
+    border: 1px solid rgba(0,0,0,0.14);
+    background: rgba(255,255,255,0.95);
+    outline: none;
+    width: 100%;
+    box-sizing: border-box;
+  }}
+
+  input[type="number"] {{
     padding: 6px 8px;
     border-radius: 10px;
     border: 1px solid rgba(0,0,0,0.14);
@@ -1376,6 +1435,59 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     </div>
 
     <div class="section">
+      <div class="section-title">Weather (when available)</div>
+      <div class="row row-grid">
+        <label>Temp °F min:
+          <input type="number" id="tempMin" inputmode="numeric" placeholder="Any">
+        </label>
+        <label>Temp °F max:
+          <input type="number" id="tempMax" inputmode="numeric" placeholder="Any">
+        </label>
+      </div>
+      <div class="row row-grid">
+        <label>Precip % min:
+          <input type="number" id="precipMin" min="0" max="100" step="1" inputmode="numeric" placeholder="Any">
+        </label>
+        <label>Precip % max:
+          <input type="number" id="precipMax" min="0" max="100" step="1" inputmode="numeric" placeholder="Any">
+        </label>
+      </div>
+      <div class="row row-grid">
+        <label>Precip in min:
+          <input type="number" id="precipInMin" min="0" step="0.01" inputmode="decimal" placeholder="Any">
+        </label>
+        <label>Precip in max:
+          <input type="number" id="precipInMax" min="0" step="0.01" inputmode="decimal" placeholder="Any">
+        </label>
+      </div>
+      <div class="row row-grid">
+        <label>Wind mph min:
+          <input type="number" id="windMin" min="0" step="1" inputmode="numeric" placeholder="Any">
+        </label>
+        <label>Wind mph max:
+          <input type="number" id="windMax" min="0" step="1" inputmode="numeric" placeholder="Any">
+        </label>
+      </div>
+      <div class="row row-grid">
+        <label>Visibility mi min:
+          <input type="number" id="visMin" min="0" step="0.1" inputmode="decimal" placeholder="Any">
+        </label>
+        <label>Visibility mi max:
+          <input type="number" id="visMax" min="0" step="0.1" inputmode="decimal" placeholder="Any">
+        </label>
+      </div>
+      <div class="row row-grid">
+        <label>Cloud cover % min:
+          <input type="number" id="cloudMin" min="0" max="100" step="1" inputmode="numeric" placeholder="Any">
+        </label>
+        <label>Cloud cover % max:
+          <input type="number" id="cloudMax" min="0" max="100" step="1" inputmode="numeric" placeholder="Any">
+        </label>
+      </div>
+      <div class="row row-note">Weather filters apply only to incidents captured with weather data.</div>
+    </div>
+
+    <div class="section">
       <div class="section-title">Layers</div>
       <div class="row row-checks">
         <label><input type="checkbox" id="chkPoints" checked> Points</label>
@@ -1446,6 +1558,19 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     dayTypeSelect: document.getElementById("dayTypeSelect"),
     timeBlockSelect: document.getElementById("timeBlockSelect"),
 
+    tempMin: document.getElementById("tempMin"),
+    tempMax: document.getElementById("tempMax"),
+    precipMin: document.getElementById("precipMin"),
+    precipMax: document.getElementById("precipMax"),
+    precipInMin: document.getElementById("precipInMin"),
+    precipInMax: document.getElementById("precipInMax"),
+    windMin: document.getElementById("windMin"),
+    windMax: document.getElementById("windMax"),
+    visMin: document.getElementById("visMin"),
+    visMax: document.getElementById("visMax"),
+    cloudMin: document.getElementById("cloudMin"),
+    cloudMax: document.getElementById("cloudMax"),
+
     chkPoints: document.getElementById("chkPoints"),
     chkHeat: document.getElementById("chkHeat"),
     chkIntersections: document.getElementById("chkIntersections"),
@@ -1459,18 +1584,66 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   }};
 
+  const IDX_LAT = 0;
+  const IDX_LNG = 1;
+  const IDX_REPORTED = 2;
+  const IDX_LOCATION = 3;
+  const IDX_CAUSE = 4;
+  const IDX_ASSIST = 5;
+  const IDX_WEIGHT = 6;
+  const IDX_COUNT = 7;
+  const IDX_TEMP_F = 8;
+  const IDX_PRECIP_PROB = 9;
+  const IDX_PRECIP_IN = 10;
+  const IDX_WIND_SPEED = 11;
+  const IDX_WIND_GUST = 12;
+  const IDX_VISIBILITY = 13;
+  const IDX_SKY_COVER = 14;
+  const IDX_WEATHER_AT = 15;
+  const IDX_WEATHER_SOURCE = 16;
+
   function esc(s) {{
     return String(s || "").replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
   }}
 
   function popupHtml(row) {{
-    const occurrences = (row.length >= 8 && row[7] != null) ? parseInt(row[7], 10) : 1;
+    const occurrences = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? parseInt(row[IDX_COUNT], 10) : 1;
     const occLine = (occurrences && occurrences > 1) ? ("<br>Occurrences: " + occurrences) : "";
-    return "Location: " + esc(row[3]) +
-           "<br>Type: " + esc(row[4]) +
-           "<br>Reported: " + esc(row[2]) +
-           "<br>Assisting: " + esc(row[5]) +
-           occLine;
+    const temp = (row.length > IDX_TEMP_F) ? row[IDX_TEMP_F] : null;
+    const pop = (row.length > IDX_PRECIP_PROB) ? row[IDX_PRECIP_PROB] : null;
+    const precipIn = (row.length > IDX_PRECIP_IN) ? row[IDX_PRECIP_IN] : null;
+    const windSpeed = (row.length > IDX_WIND_SPEED) ? row[IDX_WIND_SPEED] : null;
+    const windGust = (row.length > IDX_WIND_GUST) ? row[IDX_WIND_GUST] : null;
+    const visibility = (row.length > IDX_VISIBILITY) ? row[IDX_VISIBILITY] : null;
+    const skyCover = (row.length > IDX_SKY_COVER) ? row[IDX_SKY_COVER] : null;
+    const wAt = (row.length > IDX_WEATHER_AT) ? row[IDX_WEATHER_AT] : "";
+    const wSource = (row.length > IDX_WEATHER_SOURCE) ? row[IDX_WEATHER_SOURCE] : "";
+    const tempText = (temp !== null && temp !== "" && !isNaN(temp)) ? (parseFloat(temp).toFixed(0) + "°F") : null;
+    const popText = (pop !== null && pop !== "" && !isNaN(pop)) ? (parseFloat(pop).toFixed(0) + "% precip") : null;
+    const precipText = (precipIn !== null && precipIn !== "" && !isNaN(precipIn)) ? (parseFloat(precipIn).toFixed(2) + " in precip") : null;
+    const windText = (windSpeed !== null && windSpeed !== "" && !isNaN(windSpeed)) ? (parseFloat(windSpeed).toFixed(0) + " mph wind") : null;
+    const gustText = (windGust !== null && windGust !== "" && !isNaN(windGust)) ? ("gust " + parseFloat(windGust).toFixed(0) + " mph") : null;
+    const visText = (visibility !== null && visibility !== "" && !isNaN(visibility)) ? (parseFloat(visibility).toFixed(1) + " mi vis") : null;
+    const skyText = (skyCover !== null && skyCover !== "" && !isNaN(skyCover)) ? (parseFloat(skyCover).toFixed(0) + "% clouds") : null;
+    const weatherParts = [];
+    if (tempText) weatherParts.push(tempText);
+    if (popText) weatherParts.push(popText);
+    if (precipText) weatherParts.push(precipText);
+    if (windText) weatherParts.push(windText);
+    if (gustText) weatherParts.push(gustText);
+    if (visText) weatherParts.push(visText);
+    if (skyText) weatherParts.push(skyText);
+    const weatherLine = weatherParts.length
+      ? ("<br>Weather: " + weatherParts.join(" · ") + (wAt ? (" <span class='muted'>@" + esc(wAt) + "</span>") : ""))
+      : "";
+    const weatherSource = wSource ? ("<br><span class='muted'>Source: " + esc(wSource) + "</span>") : "";
+    return "Location: " + esc(row[IDX_LOCATION]) +
+           "<br>Type: " + esc(row[IDX_CAUSE]) +
+           "<br>Reported: " + esc(row[IDX_REPORTED]) +
+           "<br>Assisting: " + esc(row[IDX_ASSIST]) +
+           occLine +
+           weatherLine +
+           weatherSource;
   }}
 
   function createIncidentPopup(rows) {{
@@ -1617,7 +1790,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (!els.causeSelect) return;
     const set = new Set();
     for (const r of INCIDENTS) {{
-      const c = String(r[4] || "").trim();
+      const c = String(r[IDX_CAUSE] || "").trim();
       if (c) set.add(c);
     }}
     const causes = Array.from(set.values()).sort((a,b) => a.localeCompare(b));
@@ -1656,12 +1829,12 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function matchesCause(row, selected) {{
     if (!selected || selected === "__ALL__") return true;
-    return String(row[4] || "").trim() === selected;
+    return String(row[IDX_CAUSE] || "").trim() === selected;
   }}
 
   function matchesCauseGroup(row, selectedGroup) {{
     if (!selectedGroup || selectedGroup === "__ALL__") return true;
-    const causeNorm = normalizeCause(row[4]);
+    const causeNorm = normalizeCause(row[IDX_CAUSE]);
     const group = CAUSE_GROUPS.find((g) => g.id === selectedGroup);
     if (!group) return true;
     return group.keywords.some((kw) => causeNorm.includes(kw));
@@ -1669,7 +1842,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function matchesDateFilter(row, f) {{
     if (!f.todayOnly && !f.mm && !f.dd && !f.yy) return true;
-    const pr = parseReported(row[2]);
+    const pr = parseReported(row[IDX_REPORTED]);
     if (!pr) return false;
     if (f.todayOnly) {{
       const now = new Date();
@@ -1688,18 +1861,51 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function matchesDayType(row, dayType) {{
     if (dayType === "all") return true;
-    const pr = parseReported(row[2]);
+    const pr = parseReported(row[IDX_REPORTED]);
     if (!pr || !pr.dt) return false;
     return dayTypeOf(pr.dt) === dayType;
   }}
 
   function matchesTimeBlock(row, block) {{
     if (block === "all") return true;
-    const pr = parseReported(row[2]);
+    const pr = parseReported(row[IDX_REPORTED]);
     if (!pr) return false;
     const tb = timeBlockOf(pr.hh);
     if (tb === "unknown") return false;
     return tb === block;
+  }}
+
+  function parseInputNumber(el) {{
+    if (!el) return null;
+    const raw = String(el.value || "").trim();
+    if (!raw) return null;
+    const num = parseFloat(raw);
+    return Number.isFinite(num) ? num : null;
+  }}
+
+  function matchesRange(value, min, max) {{
+    if (min == null && max == null) return true;
+    const num = (value === "" || value == null) ? null : parseFloat(value);
+    if (!Number.isFinite(num)) return false;
+    if (min != null && num < min) return false;
+    if (max != null && num > max) return false;
+    return true;
+  }}
+
+  function matchesWeather(row, f) {{
+    const temp = (row.length > IDX_TEMP_F) ? row[IDX_TEMP_F] : null;
+    const pop = (row.length > IDX_PRECIP_PROB) ? row[IDX_PRECIP_PROB] : null;
+    const precipIn = (row.length > IDX_PRECIP_IN) ? row[IDX_PRECIP_IN] : null;
+    const windSpeed = (row.length > IDX_WIND_SPEED) ? row[IDX_WIND_SPEED] : null;
+    const visibility = (row.length > IDX_VISIBILITY) ? row[IDX_VISIBILITY] : null;
+    const skyCover = (row.length > IDX_SKY_COVER) ? row[IDX_SKY_COVER] : null;
+    if (!matchesRange(temp, f.tempMin, f.tempMax)) return false;
+    if (!matchesRange(pop, f.precipMin, f.precipMax)) return false;
+    if (!matchesRange(precipIn, f.precipInMin, f.precipInMax)) return false;
+    if (!matchesRange(windSpeed, f.windMin, f.windMax)) return false;
+    if (!matchesRange(visibility, f.visMin, f.visMax)) return false;
+    if (!matchesRange(skyCover, f.cloudMin, f.cloudMax)) return false;
+    return true;
   }}
 
   function currentFilterObj() {{
@@ -1712,7 +1918,41 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const causeGroup = (els.causeGroupSelect.value || "__ALL__").trim();
     const inViewOnly = !!els.chkInViewOnly.checked;
     const todayOnly = !!els.chkTodayOnly.checked;
-    return {{ mm: mm || "", dd: dd || "", yy: yy || "", dayType, timeBlock, cause, causeGroup, todayOnly, inViewOnly }};
+    const tempMin = parseInputNumber(els.tempMin);
+    const tempMax = parseInputNumber(els.tempMax);
+    const precipMin = parseInputNumber(els.precipMin);
+    const precipMax = parseInputNumber(els.precipMax);
+    const precipInMin = parseInputNumber(els.precipInMin);
+    const precipInMax = parseInputNumber(els.precipInMax);
+    const windMin = parseInputNumber(els.windMin);
+    const windMax = parseInputNumber(els.windMax);
+    const visMin = parseInputNumber(els.visMin);
+    const visMax = parseInputNumber(els.visMax);
+    const cloudMin = parseInputNumber(els.cloudMin);
+    const cloudMax = parseInputNumber(els.cloudMax);
+    return {{
+      mm: mm || "",
+      dd: dd || "",
+      yy: yy || "",
+      dayType,
+      timeBlock,
+      cause,
+      causeGroup,
+      todayOnly,
+      inViewOnly,
+      tempMin,
+      tempMax,
+      precipMin,
+      precipMax,
+      precipInMin,
+      precipInMax,
+      windMin,
+      windMax,
+      visMin,
+      visMax,
+      cloudMin,
+      cloudMax
+    }};
   }}
 
   function filteredIncidents(filterObj, mapObj) {{
@@ -1725,6 +1965,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       if (!matchesDateFilter(row, filterObj)) continue;
       if (!matchesDayType(row, filterObj.dayType)) continue;
       if (!matchesTimeBlock(row, filterObj.timeBlock)) continue;
+      if (!matchesWeather(row, filterObj)) continue;
 
       if (bounds) {{
         const latlng = L.latLng(row[0], row[1]);
@@ -2002,6 +2243,19 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     els.dayTypeSelect.value = "all";
     els.timeBlockSelect.value = "all";
 
+    if (els.tempMin) els.tempMin.value = "";
+    if (els.tempMax) els.tempMax.value = "";
+    if (els.precipMin) els.precipMin.value = "";
+    if (els.precipMax) els.precipMax.value = "";
+    if (els.precipInMin) els.precipInMin.value = "";
+    if (els.precipInMax) els.precipInMax.value = "";
+    if (els.windMin) els.windMin.value = "";
+    if (els.windMax) els.windMax.value = "";
+    if (els.visMin) els.visMin.value = "";
+    if (els.visMax) els.visMax.value = "";
+    if (els.cloudMin) els.cloudMin.value = "";
+    if (els.cloudMax) els.cloudMax.value = "";
+
     els.chkPoints.checked = true;
     els.chkHeat.checked = false;
     els.chkIntersections.checked = false;
@@ -2044,6 +2298,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       "monthSelect","daySelect","yearSelect",
       "chkTodayOnly",
       "dayTypeSelect","timeBlockSelect",
+      "tempMin","tempMax","precipMin","precipMax",
+      "precipInMin","precipInMax",
+      "windMin","windMax",
+      "visMin","visMax",
+      "cloudMin","cloudMax",
       "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings",
       "topNSelect","precIntersections","precMicro"
     ];
@@ -2143,6 +2402,15 @@ def _load_dataframe_from_csv(input_csv: str) -> pd.DataFrame:
         "tc_total_count",
         "tc_first_reported",
         "tc_last_reported",
+        "weather_temp_f",
+        "weather_precip_prob",
+        "weather_precip_in",
+        "weather_wind_speed_mph",
+        "weather_wind_gust_mph",
+        "weather_visibility_mi",
+        "weather_sky_cover_pct",
+        "weather_observed_at",
+        "weather_source",
     }
     if header_cols:
         normalized = {c.strip().lower(): c for c in header_cols}
@@ -2174,7 +2442,10 @@ def _load_dataframe_from_db(db_path: str) -> pd.DataFrame:
     try:
         df = pd.read_sql_query(
             """
-            SELECT location, cause, reported, assisting, incident_number, latitude, longitude
+            SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
+                   weather_temp_f, weather_precip_prob, weather_precip_in,
+                   weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
+                   weather_sky_cover_pct, weather_observed_at, weather_source
             FROM incidents
             """,
             conn,
@@ -2254,7 +2525,37 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
             weight = 1.0
             total_count = 1
 
-        incidents.append([lat, lng, reported, loc, cause, assist, weight, total_count])
+        temp_f = _safe_float(r.get("weather_temp_f"))
+        precip_prob = _safe_float(r.get("weather_precip_prob"))
+        precip_in = _safe_float(r.get("weather_precip_in"))
+        wind_speed = _safe_float(r.get("weather_wind_speed_mph"))
+        wind_gust = _safe_float(r.get("weather_wind_gust_mph"))
+        visibility = _safe_float(r.get("weather_visibility_mi"))
+        sky_cover = _safe_float(r.get("weather_sky_cover_pct"))
+        observed_at = str(r.get("weather_observed_at", "")).strip()
+        source = str(r.get("weather_source", "")).strip()
+
+        incidents.append(
+            [
+                lat,
+                lng,
+                reported,
+                loc,
+                cause,
+                assist,
+                weight,
+                total_count,
+                temp_f,
+                precip_prob,
+                precip_in,
+                wind_speed,
+                wind_gust,
+                visibility,
+                sky_cover,
+                observed_at,
+                source,
+            ]
+        )
 
     incidents_latlng: List[Tuple[float, float]] = []
     for _, r in df_map.iterrows():

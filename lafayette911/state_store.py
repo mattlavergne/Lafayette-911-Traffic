@@ -34,11 +34,50 @@ class StateStore:
                 assisting TEXT,
                 latitude REAL,
                 longitude REAL,
-                created_at TEXT
+                created_at TEXT,
+                weather_temp_f REAL,
+                weather_precip_prob REAL,
+                weather_precip_in REAL,
+                weather_wind_speed_mph REAL,
+                weather_wind_gust_mph REAL,
+                weather_visibility_mi REAL,
+                weather_sky_cover_pct REAL,
+                weather_observed_at TEXT,
+                weather_source TEXT
             )
             """
         )
+        self._ensure_incidents_columns()
         self.conn.commit()
+
+    def _ensure_incidents_columns(self) -> None:
+        try:
+            cols = {
+                row[1]
+                for row in self.conn.execute("PRAGMA table_info(incidents)").fetchall()
+                if row and row[1]
+            }
+        except Exception:
+            cols = set()
+
+        additions = [
+            ("weather_temp_f", "REAL"),
+            ("weather_precip_prob", "REAL"),
+            ("weather_precip_in", "REAL"),
+            ("weather_wind_speed_mph", "REAL"),
+            ("weather_wind_gust_mph", "REAL"),
+            ("weather_visibility_mi", "REAL"),
+            ("weather_sky_cover_pct", "REAL"),
+            ("weather_observed_at", "TEXT"),
+            ("weather_source", "TEXT"),
+        ]
+        for name, col_type in additions:
+            if name in cols:
+                continue
+            try:
+                self.conn.execute(f"ALTER TABLE incidents ADD COLUMN {name} {col_type}")
+            except Exception:
+                continue
 
     def _seed_from_csv_if_empty(self) -> None:
         try:
@@ -74,6 +113,15 @@ class StateStore:
                         _safe_float(row.get("latitude")),
                         _safe_float(row.get("longitude")),
                         datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                        _safe_float(row.get("weather_temp_f")),
+                        _safe_float(row.get("weather_precip_prob")),
+                        _safe_float(row.get("weather_precip_in")),
+                        _safe_float(row.get("weather_wind_speed_mph")),
+                        _safe_float(row.get("weather_wind_gust_mph")),
+                        _safe_float(row.get("weather_visibility_mi")),
+                        _safe_float(row.get("weather_sky_cover_pct")),
+                        (row.get("weather_observed_at") or "").strip(),
+                        (row.get("weather_source") or "").strip(),
                     )
                 )
                 if len(rows) >= 500:
@@ -92,8 +140,11 @@ class StateStore:
         self.conn.executemany(
             """
             INSERT OR IGNORE INTO incidents
-            (incident_number, location, cause, reported, assisting, latitude, longitude, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (incident_number, location, cause, reported, assisting, latitude, longitude, created_at,
+             weather_temp_f, weather_precip_prob, weather_precip_in, weather_wind_speed_mph,
+             weather_wind_gust_mph, weather_visibility_mi, weather_sky_cover_pct,
+             weather_observed_at, weather_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -136,6 +187,15 @@ class StateStore:
                     _safe_float(inc.get("latitude")),
                     _safe_float(inc.get("longitude")),
                     datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    _safe_float(inc.get("weather_temp_f")),
+                    _safe_float(inc.get("weather_precip_prob")),
+                    _safe_float(inc.get("weather_precip_in")),
+                    _safe_float(inc.get("weather_wind_speed_mph")),
+                    _safe_float(inc.get("weather_wind_gust_mph")),
+                    _safe_float(inc.get("weather_visibility_mi")),
+                    _safe_float(inc.get("weather_sky_cover_pct")),
+                    (inc.get("weather_observed_at") or "").strip(),
+                    (inc.get("weather_source") or "").strip(),
                 )
             )
 
@@ -165,6 +225,15 @@ class StateStore:
             "incident_number",
             "latitude",
             "longitude",
+            "weather_temp_f",
+            "weather_precip_prob",
+            "weather_precip_in",
+            "weather_wind_speed_mph",
+            "weather_wind_gust_mph",
+            "weather_visibility_mi",
+            "weather_sky_cover_pct",
+            "weather_observed_at",
+            "weather_source",
         ]
 
         write_header = os.path.getsize(self.csv_path) == 0
@@ -179,7 +248,10 @@ class StateStore:
     def read_all_incidents(self) -> List[Dict[str, str]]:
         rows = self.conn.execute(
             """
-            SELECT location, cause, reported, assisting, incident_number, latitude, longitude
+            SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
+                   weather_temp_f, weather_precip_prob, weather_precip_in,
+                   weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
+                   weather_sky_cover_pct, weather_observed_at, weather_source
             FROM incidents
             """
         ).fetchall()
@@ -195,6 +267,15 @@ class StateStore:
                     "incident_number": row[4] or "",
                     "latitude": row[5],
                     "longitude": row[6],
+                    "weather_temp_f": row[7],
+                    "weather_precip_prob": row[8],
+                    "weather_precip_in": row[9],
+                    "weather_wind_speed_mph": row[10],
+                    "weather_wind_gust_mph": row[11],
+                    "weather_visibility_mi": row[12],
+                    "weather_sky_cover_pct": row[13],
+                    "weather_observed_at": row[14] or "",
+                    "weather_source": row[15] or "",
                 }
             )
         return out
@@ -202,11 +283,79 @@ class StateStore:
 
 def ensure_csv_exists(filename: str) -> None:
     if os.path.exists(filename):
+        _ensure_csv_columns(filename)
         return
-    cols = ["location", "cause", "reported", "assisting", "incident_number", "latitude", "longitude"]
+    cols = [
+        "location",
+        "cause",
+        "reported",
+        "assisting",
+        "incident_number",
+        "latitude",
+        "longitude",
+        "weather_temp_f",
+        "weather_precip_prob",
+        "weather_precip_in",
+        "weather_wind_speed_mph",
+        "weather_wind_gust_mph",
+        "weather_visibility_mi",
+        "weather_sky_cover_pct",
+        "weather_observed_at",
+        "weather_source",
+    ]
     with open(filename, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=cols)
         writer.writeheader()
+
+
+def _ensure_csv_columns(filename: str) -> None:
+    try:
+        with open(filename, "r", encoding="utf-8", newline="") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, [])
+    except Exception:
+        header = []
+
+    needed = [
+        "location",
+        "cause",
+        "reported",
+        "assisting",
+        "incident_number",
+        "latitude",
+        "longitude",
+        "weather_temp_f",
+        "weather_precip_prob",
+        "weather_precip_in",
+        "weather_wind_speed_mph",
+        "weather_wind_gust_mph",
+        "weather_visibility_mi",
+        "weather_sky_cover_pct",
+        "weather_observed_at",
+        "weather_source",
+    ]
+
+    if not header:
+        return
+
+    missing = [c for c in needed if c not in header]
+    if not missing:
+        return
+
+    tmp_path = filename + ".tmp"
+    with open(filename, "r", encoding="utf-8", newline="") as src, open(
+        tmp_path, "w", encoding="utf-8", newline=""
+    ) as dst:
+        reader = csv.DictReader(src)
+        fieldnames = list(reader.fieldnames or [])
+        for col in missing:
+            fieldnames.append(col)
+        writer = csv.DictWriter(dst, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            writer.writerow(row)
+
+    os.replace(tmp_path, filename)
 
 
 def _safe_float(value) -> float:
