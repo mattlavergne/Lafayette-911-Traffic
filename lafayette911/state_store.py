@@ -1,4 +1,5 @@
 import csv
+import math
 import os
 import sqlite3
 from datetime import datetime
@@ -120,8 +121,8 @@ class StateStore:
                         _safe_float(row.get("weather_wind_gust_mph")),
                         _safe_float(row.get("weather_visibility_mi")),
                         _safe_float(row.get("weather_sky_cover_pct")),
-                        (row.get("weather_observed_at") or "").strip(),
-                        (row.get("weather_source") or "").strip(),
+                        _safe_text(row.get("weather_observed_at")),
+                        _safe_text(row.get("weather_source")),
                     )
                 )
                 if len(rows) >= 500:
@@ -194,8 +195,8 @@ class StateStore:
                     _safe_float(inc.get("weather_wind_gust_mph")),
                     _safe_float(inc.get("weather_visibility_mi")),
                     _safe_float(inc.get("weather_sky_cover_pct")),
-                    (inc.get("weather_observed_at") or "").strip(),
-                    (inc.get("weather_source") or "").strip(),
+                    _safe_text(inc.get("weather_observed_at")),
+                    _safe_text(inc.get("weather_source")),
                 )
             )
 
@@ -362,6 +363,22 @@ def _safe_float(value) -> float:
     try:
         if value is None or value == "":
             return None
-        return float(value)
+        number = float(value)
+        if math.isnan(number):
+            return None
+        return number
     except Exception:
         return None
+
+
+def _safe_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.lower() in {"nan", "none", "null", "undefined"}:
+        return ""
+    return text

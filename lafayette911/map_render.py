@@ -2,6 +2,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import math
 import multiprocessing
 import os
 import re
@@ -472,9 +473,25 @@ def _safe_float(value):
     try:
         if value is None or value == "":
             return None
-        return float(value)
+        number = float(value)
+        if math.isnan(number):
+            return None
+        return number
     except Exception:
         return None
+
+
+def _safe_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.lower() in {"nan", "none", "null", "undefined"}:
+        return ""
+    return text
 
 
 def _parse_reported(value):
@@ -861,8 +878,8 @@ def _write_streaming_datajs(
                     _safe_float(weather_wind_gust_mph),
                     _safe_float(weather_visibility_mi),
                     _safe_float(weather_sky_cover_pct),
-                    str(weather_observed_at or "").strip(),
-                    str(weather_source or "").strip(),
+                    _safe_text(weather_observed_at),
+                    _safe_text(weather_source),
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
@@ -1643,6 +1660,15 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     return String(s || "").replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
   }}
 
+  function normalizeText(value) {{
+    if (value == null) return "";
+    const text = String(value || "").trim();
+    if (!text) return "";
+    const lower = text.toLowerCase();
+    if (lower === "nan" || lower === "none" || lower === "null" || lower === "undefined") return "";
+    return text;
+  }}
+
   function popupHtml(row) {{
     const occurrences = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? parseInt(row[IDX_COUNT], 10) : 1;
     const occLine = (occurrences && occurrences > 1) ? ("<br>Occurrences: " + occurrences) : "";
@@ -1653,8 +1679,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const windGust = (row.length > IDX_WIND_GUST) ? row[IDX_WIND_GUST] : null;
     const visibility = (row.length > IDX_VISIBILITY) ? row[IDX_VISIBILITY] : null;
     const skyCover = (row.length > IDX_SKY_COVER) ? row[IDX_SKY_COVER] : null;
-    const wAt = (row.length > IDX_WEATHER_AT) ? row[IDX_WEATHER_AT] : "";
-    const wSource = (row.length > IDX_WEATHER_SOURCE) ? row[IDX_WEATHER_SOURCE] : "";
+    const wAt = normalizeText((row.length > IDX_WEATHER_AT) ? row[IDX_WEATHER_AT] : "");
+    const wSource = normalizeText((row.length > IDX_WEATHER_SOURCE) ? row[IDX_WEATHER_SOURCE] : "");
     const tempText = (temp !== null && temp !== "" && !isNaN(temp)) ? (parseFloat(temp).toFixed(0) + "°F") : null;
     const popText = (pop !== null && pop !== "" && !isNaN(pop)) ? (parseFloat(pop).toFixed(0) + "% precip") : null;
     const precipText = (precipIn !== null && precipIn !== "" && !isNaN(precipIn)) ? (parseFloat(precipIn).toFixed(2) + " in precip") : null;
@@ -2751,8 +2777,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
         wind_gust = _safe_float(r.get("weather_wind_gust_mph"))
         visibility = _safe_float(r.get("weather_visibility_mi"))
         sky_cover = _safe_float(r.get("weather_sky_cover_pct"))
-        observed_at = str(r.get("weather_observed_at", "")).strip()
-        source = str(r.get("weather_source", "")).strip()
+        observed_at = _safe_text(r.get("weather_observed_at"))
+        source = _safe_text(r.get("weather_source"))
 
         incidents.append(
             [
