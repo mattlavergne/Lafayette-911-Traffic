@@ -10,7 +10,7 @@ from typing import Optional
 from lafayette911.fetch_incidents import build_session, fetch_traffic_data, geocode_incidents, parse_traffic_data
 from lafayette911.map_render import create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
-from lafayette911.utils import get_rss_bytes, log_event, setup_logging
+from lafayette911.utils import get_rss_bytes, log_event, setup_logging, trim_memory
 from lafayette911.weather import fetch_weather_snapshot
 
 
@@ -319,6 +319,7 @@ def main(base_dir: Optional[str] = None) -> int:
 
                 if config.gc_collect:
                     gc.collect()
+                    trim_memory()
 
             except Exception as exc:
                 log_event(logger, "cycle_error", error=str(exc), cycle=cycle)

@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import tempfile
+from typing import Optional
 from datetime import datetime
 
 
@@ -77,3 +78,15 @@ def get_rss_bytes() -> int:
         return int(rss * 1024)
 
     return 0
+
+
+def trim_memory() -> Optional[bool]:
+    if sys.platform != "linux":
+        return None
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6")
+        return bool(libc.malloc_trim(0))
+    except Exception:
+        return None

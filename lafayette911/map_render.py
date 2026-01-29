@@ -1328,15 +1328,22 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       top: auto;
       bottom: 0;
       width: 100%;
+      height: 100dvh;
       max-height: 100dvh;
       border-radius: 18px 18px 0 0;
       box-shadow: 0 -10px 30px rgba(0,0,0,0.22);
+      display: flex;
+      flex-direction: column;
     }}
 
     #panelBody {{
-      max-height: calc(100dvh - 120px);
+      max-height: none;
+      height: auto;
+      flex: 1 1 auto;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
       padding-top: 8px;
-      padding-bottom: 20px;
+      padding-bottom: 28px;
     }}
 
     #mobileHandle {{
@@ -1402,10 +1409,12 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
 
     .row-grid {{
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
     }}
 
     .row-checks {{
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 6px;
     }}
 
@@ -1424,7 +1433,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
   }}
 
-  @media (max-width: 380px) {{
+  @media (max-width: 340px) {{
     .row-grid {{
       grid-template-columns: 1fr;
     }}
