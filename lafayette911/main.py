@@ -196,6 +196,11 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                         for inc in new_incidents:
                             inc["weather_temp_f"] = snapshot.temperature_f
                             inc["weather_precip_prob"] = snapshot.precip_prob
+                            inc["weather_precip_in"] = snapshot.precip_in
+                            inc["weather_wind_speed_mph"] = snapshot.wind_speed_mph
+                            inc["weather_wind_gust_mph"] = snapshot.wind_gust_mph
+                            inc["weather_visibility_mi"] = snapshot.visibility_mi
+                            inc["weather_sky_cover_pct"] = snapshot.sky_cover_pct
                             inc["weather_observed_at"] = snapshot.observed_at
                             inc["weather_source"] = snapshot.source
                 new_incidents = store.store_new_incidents(new_incidents)

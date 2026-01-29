@@ -37,6 +37,11 @@ class StateStore:
                 created_at TEXT,
                 weather_temp_f REAL,
                 weather_precip_prob REAL,
+                weather_precip_in REAL,
+                weather_wind_speed_mph REAL,
+                weather_wind_gust_mph REAL,
+                weather_visibility_mi REAL,
+                weather_sky_cover_pct REAL,
                 weather_observed_at TEXT,
                 weather_source TEXT
             )
@@ -58,6 +63,11 @@ class StateStore:
         additions = [
             ("weather_temp_f", "REAL"),
             ("weather_precip_prob", "REAL"),
+            ("weather_precip_in", "REAL"),
+            ("weather_wind_speed_mph", "REAL"),
+            ("weather_wind_gust_mph", "REAL"),
+            ("weather_visibility_mi", "REAL"),
+            ("weather_sky_cover_pct", "REAL"),
             ("weather_observed_at", "TEXT"),
             ("weather_source", "TEXT"),
         ]
@@ -105,6 +115,11 @@ class StateStore:
                         datetime.utcnow().isoformat(timespec="seconds") + "Z",
                         _safe_float(row.get("weather_temp_f")),
                         _safe_float(row.get("weather_precip_prob")),
+                        _safe_float(row.get("weather_precip_in")),
+                        _safe_float(row.get("weather_wind_speed_mph")),
+                        _safe_float(row.get("weather_wind_gust_mph")),
+                        _safe_float(row.get("weather_visibility_mi")),
+                        _safe_float(row.get("weather_sky_cover_pct")),
                         (row.get("weather_observed_at") or "").strip(),
                         (row.get("weather_source") or "").strip(),
                     )
@@ -126,8 +141,10 @@ class StateStore:
             """
             INSERT OR IGNORE INTO incidents
             (incident_number, location, cause, reported, assisting, latitude, longitude, created_at,
-             weather_temp_f, weather_precip_prob, weather_observed_at, weather_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             weather_temp_f, weather_precip_prob, weather_precip_in, weather_wind_speed_mph,
+             weather_wind_gust_mph, weather_visibility_mi, weather_sky_cover_pct,
+             weather_observed_at, weather_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -172,6 +189,11 @@ class StateStore:
                     datetime.utcnow().isoformat(timespec="seconds") + "Z",
                     _safe_float(inc.get("weather_temp_f")),
                     _safe_float(inc.get("weather_precip_prob")),
+                    _safe_float(inc.get("weather_precip_in")),
+                    _safe_float(inc.get("weather_wind_speed_mph")),
+                    _safe_float(inc.get("weather_wind_gust_mph")),
+                    _safe_float(inc.get("weather_visibility_mi")),
+                    _safe_float(inc.get("weather_sky_cover_pct")),
                     (inc.get("weather_observed_at") or "").strip(),
                     (inc.get("weather_source") or "").strip(),
                 )
@@ -205,6 +227,11 @@ class StateStore:
             "longitude",
             "weather_temp_f",
             "weather_precip_prob",
+            "weather_precip_in",
+            "weather_wind_speed_mph",
+            "weather_wind_gust_mph",
+            "weather_visibility_mi",
+            "weather_sky_cover_pct",
             "weather_observed_at",
             "weather_source",
         ]
@@ -222,7 +249,9 @@ class StateStore:
         rows = self.conn.execute(
             """
             SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
-                   weather_temp_f, weather_precip_prob, weather_observed_at, weather_source
+                   weather_temp_f, weather_precip_prob, weather_precip_in,
+                   weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
+                   weather_sky_cover_pct, weather_observed_at, weather_source
             FROM incidents
             """
         ).fetchall()
@@ -240,8 +269,13 @@ class StateStore:
                     "longitude": row[6],
                     "weather_temp_f": row[7],
                     "weather_precip_prob": row[8],
-                    "weather_observed_at": row[9] or "",
-                    "weather_source": row[10] or "",
+                    "weather_precip_in": row[9],
+                    "weather_wind_speed_mph": row[10],
+                    "weather_wind_gust_mph": row[11],
+                    "weather_visibility_mi": row[12],
+                    "weather_sky_cover_pct": row[13],
+                    "weather_observed_at": row[14] or "",
+                    "weather_source": row[15] or "",
                 }
             )
         return out
@@ -261,6 +295,11 @@ def ensure_csv_exists(filename: str) -> None:
         "longitude",
         "weather_temp_f",
         "weather_precip_prob",
+        "weather_precip_in",
+        "weather_wind_speed_mph",
+        "weather_wind_gust_mph",
+        "weather_visibility_mi",
+        "weather_sky_cover_pct",
         "weather_observed_at",
         "weather_source",
     ]
@@ -287,6 +326,11 @@ def _ensure_csv_columns(filename: str) -> None:
         "longitude",
         "weather_temp_f",
         "weather_precip_prob",
+        "weather_precip_in",
+        "weather_wind_speed_mph",
+        "weather_wind_gust_mph",
+        "weather_visibility_mi",
+        "weather_sky_cover_pct",
         "weather_observed_at",
         "weather_source",
     ]
