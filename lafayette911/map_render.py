@@ -1103,6 +1103,32 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     transition: max-height 0.28s ease, opacity 0.2s ease, transform 0.28s ease;
   }}
 
+  #weatherWidget {{
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 9999998;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 10px 12px;
+    max-width: 240px;
+    backdrop-filter: blur(10px);
+    pointer-events: none;
+  }}
+
+  #weatherWidget .weather-title {{
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(0,0,0,0.55);
+    margin-bottom: 6px;
+  }}
+
   .section {{
     padding: 6px 0;
     border-bottom: 1px solid rgba(0,0,0,0.06);
@@ -1302,15 +1328,22 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       top: auto;
       bottom: 0;
       width: 100%;
-      max-height: 92vh;
+      height: 100dvh;
+      max-height: 100dvh;
       border-radius: 18px 18px 0 0;
       box-shadow: 0 -10px 30px rgba(0,0,0,0.22);
+      display: flex;
+      flex-direction: column;
     }}
 
     #panelBody {{
-      max-height: calc(92vh - 90px);
+      max-height: none;
+      height: auto;
+      flex: 1 1 auto;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
       padding-top: 8px;
-      padding-bottom: 20px;
+      padding-bottom: 28px;
     }}
 
     #mobileHandle {{
@@ -1376,15 +1409,37 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
 
     .row-grid {{
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
     }}
 
     .row-checks {{
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 6px;
     }}
 
     #controlPanel.collapsed {{
       max-height: 120px;
+    }}
+
+    #weatherWidget {{
+      top: 12px;
+      bottom: auto;
+      right: 12px;
+      left: 12px;
+      max-width: none;
+      border-radius: 14px;
+      pointer-events: none;
+    }}
+  }}
+
+  @media (max-width: 340px) {{
+    .row-grid {{
+      grid-template-columns: 1fr;
+    }}
+
+    #panelActions button {{
+      font-size: 14px;
     }}
   }}
 
@@ -1600,6 +1655,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   </div>
 </div>
 
+<div id="weatherWidget" aria-live="polite">
+  <div class="weather-title">Current weather</div>
+  <div id="weatherWidgetBody">Loading latest snapshot...</div>
+</div>
+
 <script>
 (function() {{
   const INCIDENTS = window.INCIDENTS_DATA || [];
@@ -1636,6 +1696,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     visBand: document.getElementById("visBand"),
     cloudBand: document.getElementById("cloudBand"),
     currentWeather: document.getElementById("currentWeather"),
+    weatherWidgetBody: document.getElementById("weatherWidgetBody"),
 
     chkPoints: document.getElementById("chkPoints"),
     chkHeat: document.getElementById("chkHeat"),
@@ -2200,7 +2261,6 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     singles: [],
     counts: []
   }};
-  let weatherMarker = null;
 
   function updateCurrentWeather(mapObj) {{
     const row = latestWeatherRow();
@@ -2208,29 +2268,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (els.currentWeather) {{
       els.currentWeather.innerHTML = summary.html;
     }}
-    if (!mapObj) return;
-    if (!summary.hasData) {{
-      if (weatherMarker) {{
-        try {{ mapObj.removeLayer(weatherMarker); }} catch (e) {{}}
-        weatherMarker = null;
-      }}
-      return;
+    if (els.weatherWidgetBody) {{
+      els.weatherWidgetBody.innerHTML = summary.html;
     }}
-    const center = getCenterFromData();
-    if (!weatherMarker) {{
-      weatherMarker = L.circleMarker([center[0], center[1]], {{
-        radius: 7,
-        renderer: renderer,
-        color: "#2f855a",
-        weight: 2,
-        fillColor: "#c6f6d5",
-        fillOpacity: 0.9
-      }});
-      weatherMarker.addTo(mapObj);
-    }} else {{
-      weatherMarker.setLatLng([center[0], center[1]]);
-    }}
-    weatherMarker.bindPopup(summary.popup, {{ maxWidth: 260 }});
   }}
 
   function scheduleRender(mapObj, delayMs) {{
