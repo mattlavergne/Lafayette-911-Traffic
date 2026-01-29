@@ -1151,6 +1151,20 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     font-size: 12px;
   }}
 
+  .weather-summary {{
+    display: grid;
+    gap: 4px;
+  }}
+
+  .weather-summary .weather-main {{
+    font-weight: 600;
+  }}
+
+  .weather-summary .weather-meta {{
+    font-size: 12px;
+    color: rgba(0,0,0,0.55);
+  }}
+
   .row label {{
     display: inline-flex;
     align-items: center;
@@ -1294,8 +1308,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
 
     #panelBody {{
-      max-height: calc(92vh - 120px);
+      max-height: calc(92vh - 90px);
       padding-top: 8px;
+      padding-bottom: 20px;
     }}
 
     #mobileHandle {{
@@ -1515,6 +1530,16 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         </label>
       </div>
       <div class="row row-grid">
+        <label>Liquid precip:
+          <select id="precipAmountBand">
+            <option value="any">Any</option>
+            <option value="none">None (0 in)</option>
+            <option value="light">Light (≤0.10 in)</option>
+            <option value="moderate">Moderate (0.10-0.50 in)</option>
+            <option value="heavy">Heavy (≥0.50 in)</option>
+          </select>
+        </label>
+
         <label>Cloud cover:
           <select id="cloudBand">
             <option value="any">Any</option>
@@ -1606,6 +1631,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     chkWeatherOnly: document.getElementById("chkWeatherOnly"),
     tempBand: document.getElementById("tempBand"),
     precipBand: document.getElementById("precipBand"),
+    precipAmountBand: document.getElementById("precipAmountBand"),
     windBand: document.getElementById("windBand"),
     visBand: document.getElementById("visBand"),
     cloudBand: document.getElementById("cloudBand"),
@@ -1655,6 +1681,26 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     return text;
   }}
 
+  function formatCentralTime(value) {{
+    const text = normalizeText(value);
+    if (!text) return "";
+    const dt = new Date(text);
+    if (Number.isNaN(dt.getTime())) return text;
+    try {{
+      const formatter = new Intl.DateTimeFormat("en-US", {{
+        timeZone: "America/Chicago",
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit"
+      }});
+      return formatter.format(dt) + " CT";
+    }} catch (e) {{
+      return text;
+    }}
+  }}
+
   function popupHtml(row) {{
     const occurrences = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? parseInt(row[IDX_COUNT], 10) : 1;
     const occLine = (occurrences && occurrences > 1) ? ("<br>Occurrences: " + occurrences) : "";
@@ -1665,7 +1711,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const windGust = (row.length > IDX_WIND_GUST) ? row[IDX_WIND_GUST] : null;
     const visibility = (row.length > IDX_VISIBILITY) ? row[IDX_VISIBILITY] : null;
     const skyCover = (row.length > IDX_SKY_COVER) ? row[IDX_SKY_COVER] : null;
-    const wAt = normalizeText((row.length > IDX_WEATHER_AT) ? row[IDX_WEATHER_AT] : "");
+    const wAt = formatCentralTime((row.length > IDX_WEATHER_AT) ? row[IDX_WEATHER_AT] : "");
     const wSource = normalizeText((row.length > IDX_WEATHER_SOURCE) ? row[IDX_WEATHER_SOURCE] : "");
     const tempText = (temp !== null && temp !== "" && !isNaN(temp)) ? (parseFloat(temp).toFixed(0) + "°F") : null;
     const popText = (pop !== null && pop !== "" && !isNaN(pop)) ? (parseFloat(pop).toFixed(0) + "% precip") : null;
@@ -1704,7 +1750,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const windGust = weatherNumber(row, IDX_WIND_GUST);
     const visibility = weatherNumber(row, IDX_VISIBILITY);
     const skyCover = weatherNumber(row, IDX_SKY_COVER);
-    const wAt = normalizeText((row.length > IDX_WEATHER_AT) ? row[IDX_WEATHER_AT] : "");
+    const wAt = formatCentralTime((row.length > IDX_WEATHER_AT) ? row[IDX_WEATHER_AT] : "");
     const wSource = normalizeText((row.length > IDX_WEATHER_SOURCE) ? row[IDX_WEATHER_SOURCE] : "");
     const parts = [];
     if (temp != null) parts.push(temp.toFixed(0) + "°F");
@@ -1719,12 +1765,12 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const meta = [];
     if (wAt) meta.push("Observed " + esc(wAt));
     if (wSource) meta.push("Source: " + esc(wSource));
-    const metaLine = meta.length ? ("<span class='muted'>" + meta.join(" · ") + "</span>") : "";
+    const metaLine = meta.length ? ("<div class='weather-meta'>" + meta.join(" · ") + "</div>") : "";
     const html = hasData
-      ? (esc(mainLine) + (metaLine ? ("<br>" + metaLine) : ""))
+      ? ("<div class='weather-summary'><div class='weather-main'>" + esc(mainLine) + "</div>" + metaLine + "</div>")
       : "No weather snapshot available.";
     const popup = hasData
-      ? ("Current weather<br>" + esc(mainLine) + (metaLine ? ("<br>" + metaLine) : ""))
+      ? ("<div class='weather-summary'><div class='weather-main'>Current weather</div><div>" + esc(mainLine) + "</div>" + metaLine + "</div>")
       : "Current weather unavailable.";
     return {{ hasData, html, popup }};
   }}
@@ -1975,6 +2021,27 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     );
   }}
 
+  function latestWeatherRow() {{
+    let best = null;
+    let bestTs = null;
+    for (const row of INCIDENTS) {{
+      if (!hasWeatherData(row)) continue;
+      const raw = normalizeText(row.length > IDX_WEATHER_AT ? row[IDX_WEATHER_AT] : "");
+      const dt = raw ? new Date(raw) : null;
+      const ts = dt && !Number.isNaN(dt.getTime()) ? dt.getTime() : null;
+      if (!best) {{
+        best = row;
+        bestTs = ts;
+        continue;
+      }}
+      if (ts != null && (bestTs == null || ts > bestTs)) {{
+        best = row;
+        bestTs = ts;
+      }}
+    }}
+    return best;
+  }}
+
   function matchesTempBand(temp, band) {{
     if (band === "any") return true;
     if (temp == null) return false;
@@ -1991,6 +2058,16 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (band === "low") return pop < 20;
     if (band === "med") return pop >= 20 && pop < 60;
     if (band === "high") return pop >= 60;
+    return true;
+  }}
+
+  function matchesPrecipAmountBand(precipIn, band) {{
+    if (band === "any") return true;
+    if (precipIn == null) return false;
+    if (band === "none") return precipIn <= 0.01;
+    if (band === "light") return precipIn > 0.01 && precipIn <= 0.10;
+    if (band === "moderate") return precipIn > 0.10 && precipIn < 0.50;
+    if (band === "heavy") return precipIn >= 0.50;
     return true;
   }}
 
@@ -2024,6 +2101,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   function matchesWeather(row, f) {{
     const temp = weatherNumber(row, IDX_TEMP_F);
     const pop = weatherNumber(row, IDX_PRECIP_PROB);
+    const precipIn = weatherNumber(row, IDX_PRECIP_IN);
     const windSpeed = weatherNumber(row, IDX_WIND_SPEED);
     const visibility = weatherNumber(row, IDX_VISIBILITY);
     const skyCover = weatherNumber(row, IDX_SKY_COVER);
@@ -2031,6 +2109,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (f.weatherOnly && !hasWeather) return false;
     if (!matchesTempBand(temp, f.tempBand)) return false;
     if (!matchesPrecipBand(pop, f.precipBand)) return false;
+    if (!matchesPrecipAmountBand(precipIn, f.precipAmountBand)) return false;
     if (!matchesWindBand(windSpeed, f.windBand)) return false;
     if (!matchesVisibilityBand(visibility, f.visBand)) return false;
     if (!matchesCloudBand(skyCover, f.cloudBand)) return false;
@@ -2050,6 +2129,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const weatherOnly = !!els.chkWeatherOnly.checked;
     const tempBand = (els.tempBand.value || "any").trim();
     const precipBand = (els.precipBand.value || "any").trim();
+    const precipAmountBand = (els.precipAmountBand.value || "any").trim();
     const windBand = (els.windBand.value || "any").trim();
     const visBand = (els.visBand.value || "any").trim();
     const cloudBand = (els.cloudBand.value || "any").trim();
@@ -2066,6 +2146,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       weatherOnly,
       tempBand,
       precipBand,
+      precipAmountBand,
       windBand,
       visBand,
       cloudBand
@@ -2122,7 +2203,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   let weatherMarker = null;
 
   function updateCurrentWeather(mapObj) {{
-    const row = INCIDENTS.find((r) => hasWeatherData(r));
+    const row = latestWeatherRow();
     const summary = buildWeatherSummary(row);
     if (els.currentWeather) {{
       els.currentWeather.innerHTML = summary.html;
@@ -2395,6 +2476,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     els.chkWeatherOnly.checked = false;
     els.tempBand.value = "any";
     els.precipBand.value = "any";
+    els.precipAmountBand.value = "any";
     els.windBand.value = "any";
     els.visBand.value = "any";
     els.cloudBand.value = "any";
@@ -2441,7 +2523,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       "monthSelect","daySelect","yearSelect",
       "chkTodayOnly",
       "dayTypeSelect","timeBlockSelect",
-      "chkWeatherOnly","tempBand","precipBand","windBand","visBand","cloudBand",
+      "chkWeatherOnly","tempBand","precipBand","precipAmountBand","windBand","visBand","cloudBand",
       "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings",
       "topNSelect","precIntersections","precMicro"
     ];
