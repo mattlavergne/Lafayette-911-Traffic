@@ -1,4 +1,5 @@
 import gc
+import multiprocessing
 import os
 import sys
 import time
@@ -49,6 +50,8 @@ class Config:
     debug_memory: bool
     gc_collect: bool
     render_only_on_new: bool
+    render_in_subprocess: bool
+    render_subprocess_timeout_seconds: int
     log_level: str
     weather_enabled: bool
     weather_lat: float
@@ -103,6 +106,8 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         debug_memory=_env_bool("LAF911_DEBUG_MEMORY", False),
         gc_collect=_env_bool("LAF911_GC_COLLECT", True),
         render_only_on_new=_env_bool("LAF911_RENDER_ONLY_ON_NEW", True),
+        render_in_subprocess=_env_bool("LAF911_RENDER_SUBPROCESS", False),
+        render_subprocess_timeout_seconds=_env_int("LAF911_RENDER_SUBPROCESS_TIMEOUT", 600),
         log_level=os.getenv("LAF911_LOG_LEVEL", "INFO"),
         weather_enabled=_env_bool("LAF911_WEATHER_ENABLED", True),
         weather_lat=_env_float("LAF911_WEATHER_LAT", 30.22126),
@@ -165,6 +170,57 @@ def _maybe_log_tracemalloc(logger, snapshot, prev_snapshot, top_n: int, debug: b
     return snapshot
 
 
+def _render_map_from_source(config: Config) -> None:
+    if config.render_source == "db":
+        create_map_from_db(config.db_path, config.map_path, config.datajs_path, config.osm_cache_dir)
+    else:
+        create_map_from_csv(config.csv_path, config.map_path, config.datajs_path, config.osm_cache_dir)
+
+
+def _render_map_worker(conn, config: Config) -> None:
+    try:
+        _render_map_from_source(config)
+        conn.send(None)
+    except Exception as exc:
+        try:
+            conn.send(str(exc))
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _render_map_in_subprocess(config: Config, logger) -> None:
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=_render_map_worker, args=(child_conn, config))
+    proc.start()
+    child_conn.close()
+    error = None
+    try:
+        if parent_conn.poll(config.render_subprocess_timeout_seconds):
+            error = parent_conn.recv()
+        else:
+            error = "render_timeout"
+    except Exception as exc:
+        error = str(exc)
+    finally:
+        try:
+            parent_conn.close()
+        except Exception:
+            pass
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=2)
+    if error:
+        log_event(logger, "render_error", reason="subprocess", error=error)
+        raise RuntimeError(error)
+
+
 def run_once(config: Config, store: StateStore, session, logger) -> bool:
     incidents = []
     new_incidents = []
@@ -212,10 +268,10 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
         if config.render_only_on_new and config.mode != "renderer":
             should_render = has_new_incidents
         if should_render:
-            if config.render_source == "db":
-                create_map_from_db(config.db_path, config.map_path, config.datajs_path, config.osm_cache_dir)
+            if config.render_in_subprocess:
+                _render_map_in_subprocess(config, logger)
             else:
-                create_map_from_csv(config.csv_path, config.map_path, config.datajs_path, config.osm_cache_dir)
+                _render_map_from_source(config)
         else:
             log_event(logger, "render_skipped", reason="no_new_incidents")
 
