@@ -10,6 +10,7 @@ from lafayette911.fetch_incidents import build_session, fetch_traffic_data, geoc
 from lafayette911.map_render import create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
 from lafayette911.utils import get_rss_bytes, log_event, setup_logging
+from lafayette911.weather import fetch_weather_snapshot
 
 
 LAFAYETTE_PARISH_PLACES = {
@@ -49,6 +50,10 @@ class Config:
     gc_collect: bool
     render_only_on_new: bool
     log_level: str
+    weather_enabled: bool
+    weather_lat: float
+    weather_lon: float
+    weather_cache_ttl_seconds: int
 
 
 def _env_int(name: str, default: int) -> int:
@@ -99,6 +104,10 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         gc_collect=_env_bool("LAF911_GC_COLLECT", True),
         render_only_on_new=_env_bool("LAF911_RENDER_ONLY_ON_NEW", True),
         log_level=os.getenv("LAF911_LOG_LEVEL", "INFO"),
+        weather_enabled=_env_bool("LAF911_WEATHER_ENABLED", False),
+        weather_lat=_env_float("LAF911_WEATHER_LAT", 30.22126),
+        weather_lon=_env_float("LAF911_WEATHER_LON", -92.018773),
+        weather_cache_ttl_seconds=_env_int("LAF911_WEATHER_CACHE_TTL_SECONDS", 1800),
     )
 
 
@@ -174,6 +183,26 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                     sleep_seconds=config.geocode_sleep_seconds,
                 )
                 _filter_geocode_results(new_incidents)
+                if config.weather_enabled:
+                    snapshot = fetch_weather_snapshot(
+                        session,
+                        config.weather_lat,
+                        config.weather_lon,
+                        timeout=config.fetch_timeout_seconds,
+                        cache_ttl_seconds=config.weather_cache_ttl_seconds,
+                        logger=logger,
+                    )
+                    if snapshot is not None:
+                        for inc in new_incidents:
+                            inc["weather_temp_f"] = snapshot.temperature_f
+                            inc["weather_precip_prob"] = snapshot.precip_prob
+                            inc["weather_precip_in"] = snapshot.precip_in
+                            inc["weather_wind_speed_mph"] = snapshot.wind_speed_mph
+                            inc["weather_wind_gust_mph"] = snapshot.wind_gust_mph
+                            inc["weather_visibility_mi"] = snapshot.visibility_mi
+                            inc["weather_sky_cover_pct"] = snapshot.sky_cover_pct
+                            inc["weather_observed_at"] = snapshot.observed_at
+                            inc["weather_source"] = snapshot.source
                 new_incidents = store.store_new_incidents(new_incidents)
                 store.append_to_csv(new_incidents)
                 has_new_incidents = bool(new_incidents)

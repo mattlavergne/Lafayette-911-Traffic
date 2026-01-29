@@ -779,11 +779,31 @@ def _write_streaming_datajs(
         try:
             cursor = conn.execute(
                 """
-                SELECT location, cause, reported, assisting, incident_number, latitude, longitude
+                SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
+                       weather_temp_f, weather_precip_prob, weather_precip_in,
+                       weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
+                       weather_sky_cover_pct, weather_observed_at, weather_source
                 FROM incidents
                 """
             )
-            for location, cause, reported, assisting, incident_number, lat, lon in cursor:
+            for (
+                location,
+                cause,
+                reported,
+                assisting,
+                incident_number,
+                lat,
+                lon,
+                weather_temp_f,
+                weather_precip_prob,
+                weather_precip_in,
+                weather_wind_speed_mph,
+                weather_wind_gust_mph,
+                weather_visibility_mi,
+                weather_sky_cover_pct,
+                weather_observed_at,
+                weather_source,
+            ) in cursor:
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
                 if lat is None or lon is None:
@@ -834,6 +854,15 @@ def _write_streaming_datajs(
                     assist,
                     1.0,
                     1,
+                    _safe_float(weather_temp_f),
+                    _safe_float(weather_precip_prob),
+                    _safe_float(weather_precip_in),
+                    _safe_float(weather_wind_speed_mph),
+                    _safe_float(weather_wind_gust_mph),
+                    _safe_float(weather_visibility_mi),
+                    _safe_float(weather_sky_cover_pct),
+                    str(weather_observed_at or "").strip(),
+                    str(weather_source or "").strip(),
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
@@ -873,6 +902,15 @@ def _write_streaming_datajs(
                     str(entry.get("assisting") or "").strip(),
                     1.0,
                     int(count),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "",
+                    "",
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 tc_count += 1
@@ -1043,7 +1081,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   #panelBody {{
     padding: 10px 12px 12px 12px;
-    overflow: hidden;
+    overflow-y: auto;
     max-height: calc(82vh - 140px);
     transition: max-height 0.28s ease, opacity 0.2s ease, transform 0.28s ease;
   }}
@@ -1085,6 +1123,17 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     gap: 8px;
   }}
 
+  .row-note {{
+    font-size: 12px;
+    color: rgba(0,0,0,0.55);
+    margin-top: -2px;
+  }}
+
+  .muted {{
+    color: rgba(0,0,0,0.55);
+    font-size: 12px;
+  }}
+
   .row label {{
     display: inline-flex;
     align-items: center;
@@ -1108,6 +1157,35 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     outline: none;
     width: 100%;
     box-sizing: border-box;
+  }}
+
+  input[type="range"] {{
+    width: 100%;
+  }}
+
+  .range-field {{
+    background: rgba(0,0,0,0.03);
+    border-radius: 12px;
+    padding: 10px 12px;
+    display: grid;
+    gap: 6px;
+  }}
+
+  .range-label {{
+    font-weight: 600;
+    font-size: 12px;
+  }}
+
+  .range-values {{
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: rgba(0,0,0,0.6);
+  }}
+
+  .range-inputs {{
+    display: grid;
+    gap: 6px;
   }}
 
   input[type="checkbox"] {{
@@ -1376,6 +1454,65 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     </div>
 
     <div class="section">
+      <div class="section-title">Weather (when available)</div>
+      <div class="row row-grid">
+        <div class="range-field">
+          <div class="range-label">Temp °F</div>
+          <div class="range-values"><span id="tempMinVal">Any</span><span id="tempMaxVal">Any</span></div>
+          <div class="range-inputs">
+            <input type="range" id="tempMin" step="1">
+            <input type="range" id="tempMax" step="1">
+          </div>
+        </div>
+        <div class="range-field">
+          <div class="range-label">Precip %</div>
+          <div class="range-values"><span id="precipMinVal">Any</span><span id="precipMaxVal">Any</span></div>
+          <div class="range-inputs">
+            <input type="range" id="precipMin" step="1">
+            <input type="range" id="precipMax" step="1">
+          </div>
+        </div>
+      </div>
+      <div class="row row-grid">
+        <div class="range-field">
+          <div class="range-label">Precip inches</div>
+          <div class="range-values"><span id="precipInMinVal">Any</span><span id="precipInMaxVal">Any</span></div>
+          <div class="range-inputs">
+            <input type="range" id="precipInMin" step="0.01">
+            <input type="range" id="precipInMax" step="0.01">
+          </div>
+        </div>
+        <div class="range-field">
+          <div class="range-label">Wind mph</div>
+          <div class="range-values"><span id="windMinVal">Any</span><span id="windMaxVal">Any</span></div>
+          <div class="range-inputs">
+            <input type="range" id="windMin" step="1">
+            <input type="range" id="windMax" step="1">
+          </div>
+        </div>
+      </div>
+      <div class="row row-grid">
+        <div class="range-field">
+          <div class="range-label">Visibility mi</div>
+          <div class="range-values"><span id="visMinVal">Any</span><span id="visMaxVal">Any</span></div>
+          <div class="range-inputs">
+            <input type="range" id="visMin" step="0.1">
+            <input type="range" id="visMax" step="0.1">
+          </div>
+        </div>
+        <div class="range-field">
+          <div class="range-label">Cloud cover %</div>
+          <div class="range-values"><span id="cloudMinVal">Any</span><span id="cloudMaxVal">Any</span></div>
+          <div class="range-inputs">
+            <input type="range" id="cloudMin" step="1">
+            <input type="range" id="cloudMax" step="1">
+          </div>
+        </div>
+      </div>
+      <div class="row row-note">Weather filters apply only to incidents captured with weather data.</div>
+    </div>
+
+    <div class="section">
       <div class="section-title">Layers</div>
       <div class="row row-checks">
         <label><input type="checkbox" id="chkPoints" checked> Points</label>
@@ -1446,6 +1583,31 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     dayTypeSelect: document.getElementById("dayTypeSelect"),
     timeBlockSelect: document.getElementById("timeBlockSelect"),
 
+    tempMin: document.getElementById("tempMin"),
+    tempMax: document.getElementById("tempMax"),
+    tempMinVal: document.getElementById("tempMinVal"),
+    tempMaxVal: document.getElementById("tempMaxVal"),
+    precipMin: document.getElementById("precipMin"),
+    precipMax: document.getElementById("precipMax"),
+    precipMinVal: document.getElementById("precipMinVal"),
+    precipMaxVal: document.getElementById("precipMaxVal"),
+    precipInMin: document.getElementById("precipInMin"),
+    precipInMax: document.getElementById("precipInMax"),
+    precipInMinVal: document.getElementById("precipInMinVal"),
+    precipInMaxVal: document.getElementById("precipInMaxVal"),
+    windMin: document.getElementById("windMin"),
+    windMax: document.getElementById("windMax"),
+    windMinVal: document.getElementById("windMinVal"),
+    windMaxVal: document.getElementById("windMaxVal"),
+    visMin: document.getElementById("visMin"),
+    visMax: document.getElementById("visMax"),
+    visMinVal: document.getElementById("visMinVal"),
+    visMaxVal: document.getElementById("visMaxVal"),
+    cloudMin: document.getElementById("cloudMin"),
+    cloudMax: document.getElementById("cloudMax"),
+    cloudMinVal: document.getElementById("cloudMinVal"),
+    cloudMaxVal: document.getElementById("cloudMaxVal"),
+
     chkPoints: document.getElementById("chkPoints"),
     chkHeat: document.getElementById("chkHeat"),
     chkIntersections: document.getElementById("chkIntersections"),
@@ -1459,18 +1621,66 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   }};
 
+  const IDX_LAT = 0;
+  const IDX_LNG = 1;
+  const IDX_REPORTED = 2;
+  const IDX_LOCATION = 3;
+  const IDX_CAUSE = 4;
+  const IDX_ASSIST = 5;
+  const IDX_WEIGHT = 6;
+  const IDX_COUNT = 7;
+  const IDX_TEMP_F = 8;
+  const IDX_PRECIP_PROB = 9;
+  const IDX_PRECIP_IN = 10;
+  const IDX_WIND_SPEED = 11;
+  const IDX_WIND_GUST = 12;
+  const IDX_VISIBILITY = 13;
+  const IDX_SKY_COVER = 14;
+  const IDX_WEATHER_AT = 15;
+  const IDX_WEATHER_SOURCE = 16;
+
   function esc(s) {{
     return String(s || "").replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
   }}
 
   function popupHtml(row) {{
-    const occurrences = (row.length >= 8 && row[7] != null) ? parseInt(row[7], 10) : 1;
+    const occurrences = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? parseInt(row[IDX_COUNT], 10) : 1;
     const occLine = (occurrences && occurrences > 1) ? ("<br>Occurrences: " + occurrences) : "";
-    return "Location: " + esc(row[3]) +
-           "<br>Type: " + esc(row[4]) +
-           "<br>Reported: " + esc(row[2]) +
-           "<br>Assisting: " + esc(row[5]) +
-           occLine;
+    const temp = (row.length > IDX_TEMP_F) ? row[IDX_TEMP_F] : null;
+    const pop = (row.length > IDX_PRECIP_PROB) ? row[IDX_PRECIP_PROB] : null;
+    const precipIn = (row.length > IDX_PRECIP_IN) ? row[IDX_PRECIP_IN] : null;
+    const windSpeed = (row.length > IDX_WIND_SPEED) ? row[IDX_WIND_SPEED] : null;
+    const windGust = (row.length > IDX_WIND_GUST) ? row[IDX_WIND_GUST] : null;
+    const visibility = (row.length > IDX_VISIBILITY) ? row[IDX_VISIBILITY] : null;
+    const skyCover = (row.length > IDX_SKY_COVER) ? row[IDX_SKY_COVER] : null;
+    const wAt = (row.length > IDX_WEATHER_AT) ? row[IDX_WEATHER_AT] : "";
+    const wSource = (row.length > IDX_WEATHER_SOURCE) ? row[IDX_WEATHER_SOURCE] : "";
+    const tempText = (temp !== null && temp !== "" && !isNaN(temp)) ? (parseFloat(temp).toFixed(0) + "°F") : null;
+    const popText = (pop !== null && pop !== "" && !isNaN(pop)) ? (parseFloat(pop).toFixed(0) + "% precip") : null;
+    const precipText = (precipIn !== null && precipIn !== "" && !isNaN(precipIn)) ? (parseFloat(precipIn).toFixed(2) + " in precip") : null;
+    const windText = (windSpeed !== null && windSpeed !== "" && !isNaN(windSpeed)) ? (parseFloat(windSpeed).toFixed(0) + " mph wind") : null;
+    const gustText = (windGust !== null && windGust !== "" && !isNaN(windGust)) ? ("gust " + parseFloat(windGust).toFixed(0) + " mph") : null;
+    const visText = (visibility !== null && visibility !== "" && !isNaN(visibility)) ? (parseFloat(visibility).toFixed(1) + " mi vis") : null;
+    const skyText = (skyCover !== null && skyCover !== "" && !isNaN(skyCover)) ? (parseFloat(skyCover).toFixed(0) + "% clouds") : null;
+    const weatherParts = [];
+    if (tempText) weatherParts.push(tempText);
+    if (popText) weatherParts.push(popText);
+    if (precipText) weatherParts.push(precipText);
+    if (windText) weatherParts.push(windText);
+    if (gustText) weatherParts.push(gustText);
+    if (visText) weatherParts.push(visText);
+    if (skyText) weatherParts.push(skyText);
+    const weatherLine = weatherParts.length
+      ? ("<br>Weather: " + weatherParts.join(" · ") + (wAt ? (" <span class='muted'>@" + esc(wAt) + "</span>") : ""))
+      : "";
+    const weatherSource = wSource ? ("<br><span class='muted'>Source: " + esc(wSource) + "</span>") : "";
+    return "Location: " + esc(row[IDX_LOCATION]) +
+           "<br>Type: " + esc(row[IDX_CAUSE]) +
+           "<br>Reported: " + esc(row[IDX_REPORTED]) +
+           "<br>Assisting: " + esc(row[IDX_ASSIST]) +
+           occLine +
+           weatherLine +
+           weatherSource;
   }}
 
   function createIncidentPopup(rows) {{
@@ -1617,7 +1827,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (!els.causeSelect) return;
     const set = new Set();
     for (const r of INCIDENTS) {{
-      const c = String(r[4] || "").trim();
+      const c = String(r[IDX_CAUSE] || "").trim();
       if (c) set.add(c);
     }}
     const causes = Array.from(set.values()).sort((a,b) => a.localeCompare(b));
@@ -1656,12 +1866,12 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function matchesCause(row, selected) {{
     if (!selected || selected === "__ALL__") return true;
-    return String(row[4] || "").trim() === selected;
+    return String(row[IDX_CAUSE] || "").trim() === selected;
   }}
 
   function matchesCauseGroup(row, selectedGroup) {{
     if (!selectedGroup || selectedGroup === "__ALL__") return true;
-    const causeNorm = normalizeCause(row[4]);
+    const causeNorm = normalizeCause(row[IDX_CAUSE]);
     const group = CAUSE_GROUPS.find((g) => g.id === selectedGroup);
     if (!group) return true;
     return group.keywords.some((kw) => causeNorm.includes(kw));
@@ -1669,7 +1879,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function matchesDateFilter(row, f) {{
     if (!f.todayOnly && !f.mm && !f.dd && !f.yy) return true;
-    const pr = parseReported(row[2]);
+    const pr = parseReported(row[IDX_REPORTED]);
     if (!pr) return false;
     if (f.todayOnly) {{
       const now = new Date();
@@ -1688,18 +1898,233 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function matchesDayType(row, dayType) {{
     if (dayType === "all") return true;
-    const pr = parseReported(row[2]);
+    const pr = parseReported(row[IDX_REPORTED]);
     if (!pr || !pr.dt) return false;
     return dayTypeOf(pr.dt) === dayType;
   }}
 
   function matchesTimeBlock(row, block) {{
     if (block === "all") return true;
-    const pr = parseReported(row[2]);
+    const pr = parseReported(row[IDX_REPORTED]);
     if (!pr) return false;
     const tb = timeBlockOf(pr.hh);
     if (tb === "unknown") return false;
     return tb === block;
+  }}
+
+  function parseInputNumber(el) {{
+    if (!el) return null;
+    if (el.disabled) return null;
+    const raw = String(el.value || "").trim();
+    if (!raw) return null;
+    const num = parseFloat(raw);
+    return Number.isFinite(num) ? num : null;
+  }}
+
+  function parseRangeValue(el, edge) {{
+    if (!el || el.disabled) return null;
+    const value = parseFloat(el.value);
+    if (!Number.isFinite(value)) return null;
+    const min = parseFloat(el.min);
+    const max = parseFloat(el.max);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
+    if (edge === "min" && value <= min + 1e-6) return null;
+    if (edge === "max" && value >= max - 1e-6) return null;
+    return value;
+  }}
+
+  function clamp(value, min, max) {{
+    return Math.min(Math.max(value, min), max);
+  }}
+
+  function formatRangeValue(value, min, max, decimals) {{
+    if (value == null || min == null || max == null) return "Any";
+    const v = parseFloat(value);
+    if (!Number.isFinite(v)) return "Any";
+    if (Math.abs(v - min) < 1e-6 || Math.abs(v - max) < 1e-6) return "Any";
+    return v.toFixed(decimals);
+  }}
+
+  function setRangePair(config) {{
+    const {{ minEl, maxEl, minLabel, maxLabel, min, max, step, decimals }} = config;
+    if (!minEl || !maxEl) return;
+    if (min == null || max == null) {{
+      minEl.disabled = true;
+      maxEl.disabled = true;
+      if (minLabel) minLabel.textContent = "Any";
+      if (maxLabel) maxLabel.textContent = "Any";
+      return;
+    }}
+
+    const rangeMin = Math.min(min, max);
+    const rangeMax = Math.max(min, max);
+    minEl.min = String(rangeMin);
+    maxEl.min = String(rangeMin);
+    minEl.max = String(rangeMax);
+    maxEl.max = String(rangeMax);
+    minEl.step = String(step);
+    maxEl.step = String(step);
+    if (!minEl.value) minEl.value = String(rangeMin);
+    if (!maxEl.value) maxEl.value = String(rangeMax);
+    minEl.disabled = false;
+    maxEl.disabled = false;
+
+    const updateLabels = () => {{
+      let minVal = parseFloat(minEl.value);
+      let maxVal = parseFloat(maxEl.value);
+      if (!Number.isFinite(minVal)) minVal = rangeMin;
+      if (!Number.isFinite(maxVal)) maxVal = rangeMax;
+      if (minVal > maxVal) {{
+        const swap = minVal;
+        minVal = maxVal;
+        maxVal = swap;
+      }}
+      minEl.value = String(minVal);
+      maxEl.value = String(maxVal);
+      if (minLabel) minLabel.textContent = formatRangeValue(minVal, rangeMin, rangeMax, decimals);
+      if (maxLabel) maxLabel.textContent = formatRangeValue(maxVal, rangeMin, rangeMax, decimals);
+    }};
+
+    minEl.addEventListener("input", updateLabels);
+    maxEl.addEventListener("input", updateLabels);
+    updateLabels();
+  }}
+
+  function resetRangePair(minEl, maxEl) {{
+    if (!minEl || !maxEl || minEl.disabled || maxEl.disabled) return;
+    if (minEl.min) minEl.value = minEl.min;
+    if (maxEl.max) maxEl.value = maxEl.max;
+    minEl.dispatchEvent(new Event("input"));
+    maxEl.dispatchEvent(new Event("input"));
+  }}
+
+  function computeRange(values, pad, clampMin, clampMax) {{
+    if (!values.length) return {{ min: null, max: null }};
+    let min = Math.min(...values);
+    let max = Math.max(...values);
+    if (min === max) {{
+      min -= pad;
+      max += pad;
+    }}
+    min = clamp(min - pad, clampMin, clampMax);
+    max = clamp(max + pad, clampMin, clampMax);
+    return {{ min, max }};
+  }}
+
+  function setupWeatherRanges() {{
+    const tempVals = [];
+    const popVals = [];
+    const precipVals = [];
+    const windVals = [];
+    const visVals = [];
+    const cloudVals = [];
+    for (const row of INCIDENTS) {{
+      const temp = row.length > IDX_TEMP_F ? parseFloat(row[IDX_TEMP_F]) : NaN;
+      const pop = row.length > IDX_PRECIP_PROB ? parseFloat(row[IDX_PRECIP_PROB]) : NaN;
+      const precip = row.length > IDX_PRECIP_IN ? parseFloat(row[IDX_PRECIP_IN]) : NaN;
+      const wind = row.length > IDX_WIND_SPEED ? parseFloat(row[IDX_WIND_SPEED]) : NaN;
+      const vis = row.length > IDX_VISIBILITY ? parseFloat(row[IDX_VISIBILITY]) : NaN;
+      const cloud = row.length > IDX_SKY_COVER ? parseFloat(row[IDX_SKY_COVER]) : NaN;
+      if (Number.isFinite(temp)) tempVals.push(temp);
+      if (Number.isFinite(pop)) popVals.push(pop);
+      if (Number.isFinite(precip)) precipVals.push(precip);
+      if (Number.isFinite(wind)) windVals.push(wind);
+      if (Number.isFinite(vis)) visVals.push(vis);
+      if (Number.isFinite(cloud)) cloudVals.push(cloud);
+    }}
+
+    const tempRange = computeRange(tempVals, 5, -10, 115);
+    const popRange = computeRange(popVals, 5, 0, 100);
+    const precipRange = computeRange(precipVals, 0.1, 0, 10);
+    const windRange = computeRange(windVals, 3, 0, 80);
+    const visRange = computeRange(visVals, 0.5, 0, 20);
+    const cloudRange = computeRange(cloudVals, 5, 0, 100);
+
+    setRangePair({{
+      minEl: els.tempMin,
+      maxEl: els.tempMax,
+      minLabel: els.tempMinVal,
+      maxLabel: els.tempMaxVal,
+      min: tempRange.min,
+      max: tempRange.max,
+      step: 1,
+      decimals: 0
+    }});
+    setRangePair({{
+      minEl: els.precipMin,
+      maxEl: els.precipMax,
+      minLabel: els.precipMinVal,
+      maxLabel: els.precipMaxVal,
+      min: popRange.min,
+      max: popRange.max,
+      step: 1,
+      decimals: 0
+    }});
+    setRangePair({{
+      minEl: els.precipInMin,
+      maxEl: els.precipInMax,
+      minLabel: els.precipInMinVal,
+      maxLabel: els.precipInMaxVal,
+      min: precipRange.min,
+      max: precipRange.max,
+      step: 0.01,
+      decimals: 2
+    }});
+    setRangePair({{
+      minEl: els.windMin,
+      maxEl: els.windMax,
+      minLabel: els.windMinVal,
+      maxLabel: els.windMaxVal,
+      min: windRange.min,
+      max: windRange.max,
+      step: 1,
+      decimals: 0
+    }});
+    setRangePair({{
+      minEl: els.visMin,
+      maxEl: els.visMax,
+      minLabel: els.visMinVal,
+      maxLabel: els.visMaxVal,
+      min: visRange.min,
+      max: visRange.max,
+      step: 0.1,
+      decimals: 1
+    }});
+    setRangePair({{
+      minEl: els.cloudMin,
+      maxEl: els.cloudMax,
+      minLabel: els.cloudMinVal,
+      maxLabel: els.cloudMaxVal,
+      min: cloudRange.min,
+      max: cloudRange.max,
+      step: 1,
+      decimals: 0
+    }});
+  }}
+
+  function matchesRange(value, min, max) {{
+    if (min == null && max == null) return true;
+    const num = (value === "" || value == null) ? null : parseFloat(value);
+    if (!Number.isFinite(num)) return false;
+    if (min != null && num < min) return false;
+    if (max != null && num > max) return false;
+    return true;
+  }}
+
+  function matchesWeather(row, f) {{
+    const temp = (row.length > IDX_TEMP_F) ? row[IDX_TEMP_F] : null;
+    const pop = (row.length > IDX_PRECIP_PROB) ? row[IDX_PRECIP_PROB] : null;
+    const precipIn = (row.length > IDX_PRECIP_IN) ? row[IDX_PRECIP_IN] : null;
+    const windSpeed = (row.length > IDX_WIND_SPEED) ? row[IDX_WIND_SPEED] : null;
+    const visibility = (row.length > IDX_VISIBILITY) ? row[IDX_VISIBILITY] : null;
+    const skyCover = (row.length > IDX_SKY_COVER) ? row[IDX_SKY_COVER] : null;
+    if (!matchesRange(temp, f.tempMin, f.tempMax)) return false;
+    if (!matchesRange(pop, f.precipMin, f.precipMax)) return false;
+    if (!matchesRange(precipIn, f.precipInMin, f.precipInMax)) return false;
+    if (!matchesRange(windSpeed, f.windMin, f.windMax)) return false;
+    if (!matchesRange(visibility, f.visMin, f.visMax)) return false;
+    if (!matchesRange(skyCover, f.cloudMin, f.cloudMax)) return false;
+    return true;
   }}
 
   function currentFilterObj() {{
@@ -1712,7 +2137,41 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const causeGroup = (els.causeGroupSelect.value || "__ALL__").trim();
     const inViewOnly = !!els.chkInViewOnly.checked;
     const todayOnly = !!els.chkTodayOnly.checked;
-    return {{ mm: mm || "", dd: dd || "", yy: yy || "", dayType, timeBlock, cause, causeGroup, todayOnly, inViewOnly }};
+    const tempMin = parseRangeValue(els.tempMin, "min");
+    const tempMax = parseRangeValue(els.tempMax, "max");
+    const precipMin = parseRangeValue(els.precipMin, "min");
+    const precipMax = parseRangeValue(els.precipMax, "max");
+    const precipInMin = parseRangeValue(els.precipInMin, "min");
+    const precipInMax = parseRangeValue(els.precipInMax, "max");
+    const windMin = parseRangeValue(els.windMin, "min");
+    const windMax = parseRangeValue(els.windMax, "max");
+    const visMin = parseRangeValue(els.visMin, "min");
+    const visMax = parseRangeValue(els.visMax, "max");
+    const cloudMin = parseRangeValue(els.cloudMin, "min");
+    const cloudMax = parseRangeValue(els.cloudMax, "max");
+    return {{
+      mm: mm || "",
+      dd: dd || "",
+      yy: yy || "",
+      dayType,
+      timeBlock,
+      cause,
+      causeGroup,
+      todayOnly,
+      inViewOnly,
+      tempMin,
+      tempMax,
+      precipMin,
+      precipMax,
+      precipInMin,
+      precipInMax,
+      windMin,
+      windMax,
+      visMin,
+      visMax,
+      cloudMin,
+      cloudMax
+    }};
   }}
 
   function filteredIncidents(filterObj, mapObj) {{
@@ -1725,6 +2184,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       if (!matchesDateFilter(row, filterObj)) continue;
       if (!matchesDayType(row, filterObj.dayType)) continue;
       if (!matchesTimeBlock(row, filterObj.timeBlock)) continue;
+      if (!matchesWeather(row, filterObj)) continue;
 
       if (bounds) {{
         const latlng = L.latLng(row[0], row[1]);
@@ -2002,6 +2462,13 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     els.dayTypeSelect.value = "all";
     els.timeBlockSelect.value = "all";
 
+    resetRangePair(els.tempMin, els.tempMax);
+    resetRangePair(els.precipMin, els.precipMax);
+    resetRangePair(els.precipInMin, els.precipInMax);
+    resetRangePair(els.windMin, els.windMax);
+    resetRangePair(els.visMin, els.visMax);
+    resetRangePair(els.cloudMin, els.cloudMax);
+
     els.chkPoints.checked = true;
     els.chkHeat.checked = false;
     els.chkIntersections.checked = false;
@@ -2044,6 +2511,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       "monthSelect","daySelect","yearSelect",
       "chkTodayOnly",
       "dayTypeSelect","timeBlockSelect",
+      "tempMin","tempMax","precipMin","precipMax",
+      "precipInMin","precipInMax",
+      "windMin","windMax",
+      "visMin","visMax",
+      "cloudMin","cloudMax",
       "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings",
       "topNSelect","precIntersections","precMicro"
     ];
@@ -2056,6 +2528,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         }}
         scheduleRender(mapObj, 0);
       }});
+      if (el.type === "range") {{
+        el.addEventListener("input", function() {{
+          scheduleRender(mapObj, 0);
+        }});
+      }}
     }}
 
     mapObj.on("moveend", function() {{
@@ -2094,6 +2571,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     buildCauseDropdown();
     buildCauseGroupDropdown();
     setDateSelectState();
+    setupWeatherRanges();
     wireUI(mapObj);
 
     if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
@@ -2143,6 +2621,15 @@ def _load_dataframe_from_csv(input_csv: str) -> pd.DataFrame:
         "tc_total_count",
         "tc_first_reported",
         "tc_last_reported",
+        "weather_temp_f",
+        "weather_precip_prob",
+        "weather_precip_in",
+        "weather_wind_speed_mph",
+        "weather_wind_gust_mph",
+        "weather_visibility_mi",
+        "weather_sky_cover_pct",
+        "weather_observed_at",
+        "weather_source",
     }
     if header_cols:
         normalized = {c.strip().lower(): c for c in header_cols}
@@ -2174,7 +2661,10 @@ def _load_dataframe_from_db(db_path: str) -> pd.DataFrame:
     try:
         df = pd.read_sql_query(
             """
-            SELECT location, cause, reported, assisting, incident_number, latitude, longitude
+            SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
+                   weather_temp_f, weather_precip_prob, weather_precip_in,
+                   weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
+                   weather_sky_cover_pct, weather_observed_at, weather_source
             FROM incidents
             """,
             conn,
@@ -2254,7 +2744,37 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
             weight = 1.0
             total_count = 1
 
-        incidents.append([lat, lng, reported, loc, cause, assist, weight, total_count])
+        temp_f = _safe_float(r.get("weather_temp_f"))
+        precip_prob = _safe_float(r.get("weather_precip_prob"))
+        precip_in = _safe_float(r.get("weather_precip_in"))
+        wind_speed = _safe_float(r.get("weather_wind_speed_mph"))
+        wind_gust = _safe_float(r.get("weather_wind_gust_mph"))
+        visibility = _safe_float(r.get("weather_visibility_mi"))
+        sky_cover = _safe_float(r.get("weather_sky_cover_pct"))
+        observed_at = str(r.get("weather_observed_at", "")).strip()
+        source = str(r.get("weather_source", "")).strip()
+
+        incidents.append(
+            [
+                lat,
+                lng,
+                reported,
+                loc,
+                cause,
+                assist,
+                weight,
+                total_count,
+                temp_f,
+                precip_prob,
+                precip_in,
+                wind_speed,
+                wind_gust,
+                visibility,
+                sky_cover,
+                observed_at,
+                source,
+            ]
+        )
 
     incidents_latlng: List[Tuple[float, float]] = []
     for _, r in df_map.iterrows():
