@@ -2,10 +2,12 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import multiprocessing
 import os
 import re
 import sqlite3
 import tempfile
+import time
 from datetime import datetime
 from typing import Dict, Iterable, List, Tuple
 
@@ -22,6 +24,30 @@ LAF_LON_MAX = -91.90
 
 OSM_PAD_DEG = 0.02
 OSM_INTERSECTION_MIN_STREETS = 3
+
+
+def _osm_cache_ttl_seconds() -> int:
+    try:
+        return max(int(os.getenv("LAF911_OSM_CACHE_TTL_SECONDS", "0")), 0)
+    except Exception:
+        return 0
+
+
+def _osm_intersections_subprocess_enabled() -> bool:
+    val = os.getenv("LAF911_OSM_INTERSECTION_SUBPROCESS")
+    if val is None:
+        return False
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cache_is_fresh(path: str, ttl_seconds: int) -> bool:
+    if ttl_seconds <= 0:
+        return False
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        return False
+    return (time.time() - mtime) <= ttl_seconds
 
 
 def _write_text_if_changed(path: str, text: str) -> bool:
@@ -149,7 +175,7 @@ def _osm_cache_paths(osm_cache_dir: str, bbox_id, n_points):
     return graphml_path, cache_json
 
 
-def _compute_osm_context_for_incidents(df_all, lat_col, lon_col, incidents_latlng, osm_cache_dir: str):
+def _compute_osm_context_for_bbox(bbox, incidents_latlng, osm_cache_dir: str):
     if not importlib.util.find_spec("osmnx"):
         return {}, [], []
 
@@ -160,7 +186,7 @@ def _compute_osm_context_for_incidents(df_all, lat_col, lon_col, incidents_latln
 
     os.makedirs(osm_cache_dir, exist_ok=True)
 
-    south, north, west, east = _bbox_from_points(df_all, lat_col, lon_col, pad_deg=OSM_PAD_DEG)
+    south, north, west, east = bbox
     bbox_id = _hash_bbox((south, north, west, east))
 
     n_points = len(incidents_latlng)
@@ -298,6 +324,68 @@ def _compute_osm_context_for_incidents(df_all, lat_col, lon_col, incidents_latln
     return node_info, point_nodes, overall_counts
 
 
+def _compute_osm_context_for_incidents(
+    df_all,
+    lat_col,
+    lon_col,
+    incidents_latlng,
+    osm_cache_dir: str,
+    allow_subprocess: bool = True,
+):
+    if not incidents_latlng:
+        return {}, [], []
+    bbox = _bbox_from_points(df_all, lat_col, lon_col, pad_deg=OSM_PAD_DEG)
+    if allow_subprocess and _osm_intersections_subprocess_enabled():
+        return _compute_osm_context_in_subprocess(
+            bbox,
+            incidents_latlng,
+            osm_cache_dir,
+        )
+    return _compute_osm_context_for_bbox(bbox, incidents_latlng, osm_cache_dir)
+
+
+def _compute_osm_context_worker(conn, bbox, incidents_latlng, osm_cache_dir: str) -> None:
+    try:
+        result = _compute_osm_context_for_bbox(bbox, incidents_latlng, osm_cache_dir)
+        conn.send(result)
+    except Exception:
+        try:
+            conn.send(({}, [], []))
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _compute_osm_context_in_subprocess(bbox, incidents_latlng, osm_cache_dir: str):
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    proc = ctx.Process(
+        target=_compute_osm_context_worker,
+        args=(child_conn, bbox, incidents_latlng, osm_cache_dir),
+    )
+    proc.start()
+    child_conn.close()
+    try:
+        if parent_conn.poll(600):
+            return parent_conn.recv()
+    except Exception:
+        return {}, [], []
+    finally:
+        try:
+            parent_conn.close()
+        except Exception:
+            pass
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=2)
+    return {}, [], []
+
+
 def _normalize_location(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().upper())
 
@@ -431,6 +519,71 @@ def _compute_bbox_from_points(lat_min, lat_max, lon_min, lon_max, pad_deg=OSM_PA
     return (south, north, west, east)
 
 
+def _stream_osm_intersections_worker(
+    conn,
+    db_path: str,
+    bbox,
+    total_points: int,
+    osm_cache_dir: str,
+    tc_points: List[Tuple[float, float]],
+    chunk_size: int,
+) -> None:
+    try:
+        result = _stream_osm_intersections(
+            db_path,
+            bbox,
+            total_points,
+            osm_cache_dir,
+            tc_points,
+            chunk_size=chunk_size,
+            allow_subprocess=False,
+        )
+        conn.send(result)
+    except Exception:
+        try:
+            conn.send([])
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _stream_osm_intersections_in_subprocess(
+    db_path: str,
+    bbox,
+    total_points: int,
+    osm_cache_dir: str,
+    tc_points: List[Tuple[float, float]],
+    chunk_size: int,
+) -> List[List]:
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    proc = ctx.Process(
+        target=_stream_osm_intersections_worker,
+        args=(child_conn, db_path, bbox, total_points, osm_cache_dir, tc_points, chunk_size),
+    )
+    proc.start()
+    child_conn.close()
+    try:
+        if parent_conn.poll(600):
+            return parent_conn.recv()
+    except Exception:
+        return []
+    finally:
+        try:
+            parent_conn.close()
+        except Exception:
+            pass
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=2)
+    return []
+
+
 def _stream_osm_intersections(
     db_path: str,
     bbox,
@@ -438,7 +591,12 @@ def _stream_osm_intersections(
     osm_cache_dir: str,
     tc_points: List[Tuple[float, float]],
     chunk_size: int = 800,
+    allow_subprocess: bool = True,
 ):
+    if allow_subprocess and _osm_intersections_subprocess_enabled():
+        return _stream_osm_intersections_in_subprocess(
+            db_path, bbox, total_points, osm_cache_dir, tc_points, chunk_size
+        )
     if not importlib.util.find_spec("osmnx"):
         return []
 
@@ -454,6 +612,9 @@ def _stream_osm_intersections(
             with open(cache_json, "r", encoding="utf-8") as handle:
                 cached = json.load(handle)
             overall_counts = cached.get("overall_counts", []) or []
+            ttl_seconds = _osm_cache_ttl_seconds()
+            if ttl_seconds and _cache_is_fresh(cache_json, ttl_seconds):
+                return overall_counts
             if len(cached.get("point_nodes", [])) == total_points or cached.get("point_count") == total_points:
                 return overall_counts
         except Exception:
