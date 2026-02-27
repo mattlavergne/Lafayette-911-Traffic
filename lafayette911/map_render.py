@@ -1247,6 +1247,12 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     border-bottom: 1px solid rgba(0,0,0,0.06);
   }}
 
+  @keyframes pill-pop {{
+    0% {{ transform: scale(1); }}
+    40% {{ transform: scale(1.12); }}
+    100% {{ transform: scale(1); }}
+  }}
+
   .pill {{
     display: inline-flex;
     align-items: center;
@@ -1256,6 +1262,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     background: rgba(0,0,0,0.05);
     font-size: 12px;
     white-space: nowrap;
+    transition: background 0.2s ease;
+  }}
+
+  .pill.updated {{
+    animation: pill-pop 0.25s ease;
   }}
 
   #panelBody {{
@@ -1289,6 +1300,14 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     letter-spacing: 0.08em;
     color: rgba(0,0,0,0.55);
     margin-bottom: 6px;
+  }}
+
+  #weatherWidgetBody {{
+    transition: opacity 0.35s ease;
+  }}
+
+  #weatherWidgetBody.updating {{
+    opacity: 0.5;
   }}
 
   .section {{
@@ -1376,6 +1395,24 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     outline: none;
     width: 100%;
     box-sizing: border-box;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23999'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 26px;
+  }}
+
+  select:hover:not(:disabled) {{
+    border-color: rgba(0,0,0,0.3);
+    background-color: #fff;
+  }}
+
+  select:focus {{
+    border-color: #2b6cb0;
+    box-shadow: 0 0 0 3px rgba(43,108,176,0.15);
   }}
 
   input[type="range"] {{
@@ -1414,8 +1451,24 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   select:disabled {{
     background: #f2f2f2;
-    color: rgba(0,0,0,0.45);
+    background-image: none;
+    color: rgba(0,0,0,0.38);
     cursor: not-allowed;
+  }}
+
+  input[type="checkbox"] {{
+    cursor: pointer;
+    accent-color: #2b6cb0;
+    transition: opacity 0.15s ease;
+  }}
+
+  .row label, .row-checks label {{
+    cursor: pointer;
+    transition: color 0.12s ease;
+  }}
+
+  .row label:hover, .row-checks label:hover {{
+    color: #2b6cb0;
   }}
 
   button {{
@@ -1423,10 +1476,20 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     border-radius: 12px;
     border: 1px solid rgba(0,0,0,0.14);
     background: rgba(255,255,255,0.95);
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.1s ease, box-shadow 0.12s ease;
+    -webkit-tap-highlight-color: transparent;
+  }}
+
+  button:hover {{
+    background: #fff;
+    border-color: rgba(0,0,0,0.25);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.10);
   }}
 
   button:active {{
-    transform: translateY(1px);
+    transform: scale(0.97);
+    box-shadow: none;
   }}
 
   .incident-nav {{
@@ -2133,27 +2196,40 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   function parseReported(reported) {{
     if (!reported) return null;
     const s = String(reported).trim();
+
+    // Primary format: MM/DD/YYYY [HH:MM [AM/PM]]
     const m1 = s.match(/(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{4}})(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?/);
-    if (!m1) return null;
-
-    const mm = m1[1].padStart(2, "0");
-    const dd = m1[2].padStart(2, "0");
-    const yy = m1[3];
-
-    let hh = null;
-    let mi = null;
-
-    if (m1[4] != null && m1[5] != null) {{
-      hh = parseInt(m1[4], 10);
-      mi = parseInt(m1[5], 10);
-      const ap = m1[6] ? String(m1[6]).toLowerCase() : null;
-      if (ap === "pm" && hh < 12) hh += 12;
-      if (ap === "am" && hh === 12) hh = 0;
-      if (hh < 0 || hh > 23) hh = null;
+    if (m1) {{
+      const mm = m1[1].padStart(2, "0");
+      const dd = m1[2].padStart(2, "0");
+      const yy = m1[3];
+      let hh = null;
+      let mi = null;
+      if (m1[4] != null && m1[5] != null) {{
+        hh = parseInt(m1[4], 10);
+        mi = parseInt(m1[5], 10);
+        const ap = m1[6] ? String(m1[6]).toLowerCase() : null;
+        if (ap === "pm" && hh < 12) hh += 12;
+        if (ap === "am" && hh === 12) hh = 0;
+        if (hh < 0 || hh > 23) hh = null;
+      }}
+      const dt = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh || 0, mi || 0, 0, 0);
+      return {{ mm, dd, yy, hh, mi, dt }};
     }}
 
-    const dt = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh || 0, mi || 0, 0, 0);
-    return {{ mm, dd, yy, hh, mi, dt }};
+    // Fallback: YYYY-MM-DD[T ][HH:MM] (ISO-style)
+    const m2 = s.match(/(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[T ](\\d{{2}}):(\\d{{2}}))?/);
+    if (m2) {{
+      const yy = m2[1];
+      const mm = m2[2];
+      const dd = m2[3];
+      const hh = m2[4] != null ? parseInt(m2[4], 10) : 0;
+      const mi = m2[5] != null ? parseInt(m2[5], 10) : 0;
+      const dt = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh, mi, 0, 0);
+      return {{ mm, dd, yy, hh, mi, dt }};
+    }}
+
+    return null;
   }}
 
   function dayTypeOf(dt) {{
@@ -2596,14 +2672,77 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   }};
 
   function updateCurrentWeather(mapObj) {{
+    // Show the best available stored weather immediately as a placeholder
     const row = latestWeatherRow();
     const summary = buildWeatherSummary(row);
-    if (els.currentWeather) {{
-      els.currentWeather.innerHTML = summary.html;
-    }}
-    if (els.weatherWidgetBody) {{
-      els.weatherWidgetBody.innerHTML = summary.html;
-    }}
+    if (els.currentWeather) els.currentWeather.innerHTML = summary.html;
+    if (els.weatherWidgetBody) els.weatherWidgetBody.innerHTML = summary.html;
+    // Kick off an async live fetch from NWS; updates the widget when it arrives
+    fetchLiveNWSWeather();
+  }}
+
+  // Fetches current conditions from NWS KLFT (Lafayette Regional Airport) station.
+  // The NWS public API supports CORS so this works directly from the browser.
+  function fetchLiveNWSWeather() {{
+    var NWS_OBS_URL = "https://api.weather.gov/stations/KLFT/observations/latest";
+    // Subtle dimming while the live fetch is in flight
+    if (els.weatherWidgetBody) els.weatherWidgetBody.classList.add("updating");
+    fetch(NWS_OBS_URL, {{ headers: {{ "Accept": "application/geo+json" }} }})
+      .then(function(resp) {{ return resp.ok ? resp.json() : Promise.reject(resp.status); }})
+      .then(function(data) {{
+        var props = data && data.properties;
+        if (!props) return;
+
+        function toF(c) {{ return (c != null && !isNaN(c)) ? (c * 9 / 5) + 32 : null; }}
+        function toMph(kmh) {{ return (kmh != null && !isNaN(kmh)) ? kmh / 1.609344 : null; }}
+        function toMi(m) {{ return (m != null && !isNaN(m)) ? m / 1609.344 : null; }}
+        function toIn(mm) {{ return (mm != null && !isNaN(mm)) ? mm / 25.4 : null; }}
+
+        var tempF = toF(props.temperature && props.temperature.value);
+        var windMph = toMph(props.windSpeed && props.windSpeed.value);
+        var gustMph = toMph(props.windGust && props.windGust.value);
+        var visMi = toMi(props.visibility && props.visibility.value);
+        var precipIn = toIn(props.precipitationLastHour && props.precipitationLastHour.value);
+
+        // Derive sky cover % from cloud layers
+        var skyCover = null;
+        var coverMap = {{ CLR: 0, SKC: 0, FEW: 15, SCT: 38, BKN: 75, OVC: 100 }};
+        var layers = props.cloudLayers || [];
+        if (layers.length > 0) {{
+          var maxCover = 0;
+          for (var i = 0; i < layers.length; i++) {{
+            var pct = coverMap[layers[i].amount];
+            if (pct != null && pct > maxCover) maxCover = pct;
+          }}
+          skyCover = maxCover;
+        }}
+
+        var parts = [];
+        if (tempF != null) parts.push(tempF.toFixed(0) + "\u00b0F");
+        if (precipIn != null && precipIn > 0) parts.push(precipIn.toFixed(2) + " in precip");
+        if (windMph != null) parts.push(windMph.toFixed(0) + " mph wind");
+        if (gustMph != null) parts.push("gust " + gustMph.toFixed(0) + " mph");
+        if (visMi != null) parts.push(visMi.toFixed(1) + " mi vis");
+        if (skyCover != null) parts.push(skyCover.toFixed(0) + "% clouds");
+        if (parts.length === 0) return;
+
+        var obsAt = props.timestamp ? formatCentralTime(props.timestamp) : "";
+        var metaLine = "<div class='weather-meta'>"
+          + (obsAt ? "Observed " + esc(obsAt) + " \u00b7 " : "")
+          + "Source: NWS KLFT</div>";
+        var html = "<div class='weather-summary'><div class='weather-main'>"
+          + esc(parts.join(" \u00b7 ")) + "</div>" + metaLine + "</div>";
+
+        if (els.currentWeather) els.currentWeather.innerHTML = html;
+        if (els.weatherWidgetBody) {{
+          els.weatherWidgetBody.classList.remove("updating");
+          els.weatherWidgetBody.innerHTML = html;
+        }}
+      }})
+      .catch(function() {{
+        // NWS unavailable – stale stored data remains visible; silently ignore
+        if (els.weatherWidgetBody) els.weatherWidgetBody.classList.remove("updating");
+      }});
   }}
 
   function scheduleRender(mapObj, delayMs) {{
@@ -2614,7 +2753,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
     renderTimer = setTimeout(function() {{
       renderTimer = null;
-      renderAll(mapObj);
+      // Defer the actual DOM work to the next animation frame so the browser
+      // can batch the canvas redraws and avoid mid-paint flicker.
+      requestAnimationFrame(function() {{ renderAll(mapObj); }});
     }}, delay);
   }}
 
@@ -2668,8 +2809,18 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const latlng = marker.getLatLng();
     const currentZoom = mapObj.getZoom ? mapObj.getZoom() : 12;
     const targetZoom = Math.max(currentZoom, 15);
-    mapObj.setView(latlng, targetZoom, {{ animate: true, duration: 0.35 }});
-    if (marker.openPopup) marker.openPopup();
+    if (currentZoom >= targetZoom) {{
+      // Already at the right zoom — just pan smoothly then show popup
+      if (marker.openPopup) marker.openPopup();
+      mapObj.panTo(latlng, {{ animate: true, duration: 0.25 }});
+    }} else {{
+      // Need to zoom in — open the popup once the animation finishes so it
+      // lands at the correct screen position.
+      mapObj.once("moveend", function() {{
+        if (marker.openPopup) marker.openPopup();
+      }});
+      mapObj.setView(latlng, targetZoom, {{ animate: true, duration: 0.35 }});
+    }}
   }}
 
   function renderAll(mapObj) {{
@@ -2692,16 +2843,30 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const filtered = filteredIncidents(f, mapObj);
     lastFiltered = filtered;
 
-    if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
-    if (els.countFiltered) els.countFiltered.textContent = String(filtered.length);
+    function setPillCount(el, value) {{
+      if (!el) return;
+      const next = String(value);
+      if (el.textContent !== next) {{
+        el.textContent = next;
+        // Brief pop animation to signal the count changed
+        const pill = el.closest(".pill");
+        if (pill) {{
+          pill.classList.remove("updated");
+          void pill.offsetWidth; // force reflow to restart animation
+          pill.classList.add("updated");
+        }}
+      }}
+    }}
+    setPillCount(els.countTotal, INCIDENTS.length);
+    setPillCount(els.countFiltered, filtered.length);
 
     const inView = computeInViewCount(filtered, mapObj);
-    if (els.countInView) els.countInView.textContent = String(inView);
+    setPillCount(els.countInView, inView);
 
     if (showPoints) {{
-      const layer = L.layerGroup().addTo(mapObj);
       const grouped = groupByExactLocation(filtered);
       const sizing = getPointSizing(mapObj);
+      const mkList = [];
       for (const group of grouped) {{
         let mk = null;
         if (group.rows.length > 1) {{
@@ -2717,10 +2882,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
           mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
           mk.__count = count;
           pointMarkers.counts.push(mk);
-          mk.bindPopup(createIncidentPopup(group.rows), {{ maxWidth: 320, autoPan: false }});
-          mk.on("click", function() {{
-            focusMarker(mapObj, mk);
-          }});
+          // Lazy popup: DOM is only built when the popup first opens
+          (function(rows) {{
+            mk.bindPopup(function() {{ return createIncidentPopup(rows); }}, {{ maxWidth: 320, autoPan: false }});
+          }})(group.rows);
+          (function(m) {{ mk.on("click", function() {{ focusMarker(mapObj, m); }}); }})(mk);
         }} else {{
           const radius = sizing.radius;
           mk = L.circleMarker([group.lat, group.lng], {{
@@ -2732,13 +2898,16 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
             fillOpacity: 0.65
           }});
           pointMarkers.singles.push(mk);
-          mk.bindPopup(popupHtml(group.rows[0]), {{ maxWidth: 320, autoPan: false }});
-          mk.on("click", function() {{
-            focusMarker(mapObj, mk);
-          }});
+          // Lazy popup: HTML string is only built when the popup first opens
+          (function(row) {{
+            mk.bindPopup(function() {{ return popupHtml(row); }}, {{ maxWidth: 320, autoPan: false }});
+          }})(group.rows[0]);
+          (function(m) {{ mk.on("click", function() {{ focusMarker(mapObj, m); }}); }})(mk);
         }}
-        mk.addTo(layer);
+        mkList.push(mk);
       }}
+      // Add all markers to the layer in one shot to minimise map repaints
+      const layer = L.layerGroup(mkList).addTo(mapObj);
       layers.points = layer;
     }}
 
@@ -2912,9 +3081,18 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function setDateSelectState() {{
     const disabled = !!els.chkTodayOnly.checked;
-    if (els.monthSelect) els.monthSelect.disabled = disabled;
-    if (els.daySelect) els.daySelect.disabled = disabled;
-    if (els.yearSelect) els.yearSelect.disabled = disabled;
+    if (els.monthSelect) {{
+      els.monthSelect.disabled = disabled;
+      if (disabled) els.monthSelect.value = "";
+    }}
+    if (els.daySelect) {{
+      els.daySelect.disabled = disabled;
+      if (disabled) els.daySelect.value = "";
+    }}
+    if (els.yearSelect) {{
+      els.yearSelect.disabled = disabled;
+      if (disabled) els.yearSelect.value = "";
+    }}
   }}
 
   function wireUI(mapObj) {{
