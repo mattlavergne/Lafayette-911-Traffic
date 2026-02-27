@@ -61,14 +61,14 @@ class Config:
 
 def _env_int(name: str, default: int) -> int:
     try:
-        return int(os.getenv(name, default))
+        return int(os.getenv(name, str(default)))
     except Exception:
         return default
 
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.getenv(name, default))
+        return float(os.getenv(name, str(default)))
     except Exception:
         return default
 

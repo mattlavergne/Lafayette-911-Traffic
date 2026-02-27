@@ -789,11 +789,14 @@ def _write_streaming_datajs(
     tmp_dir = os.path.join(map_dir, ".tmp")
     os.makedirs(tmp_dir, exist_ok=True)
 
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=tmp_dir, delete=False) as handle:
-        tmp_path = handle.name
-        _stream_jsonjs_header(handle)
-        first = True
-        try:
+    osm_intersections: List[List] = []
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=tmp_dir, delete=False) as handle:
+            tmp_path = handle.name
+            _stream_jsonjs_header(handle)
+            first = True
+
             cursor = conn.execute(
                 """
                 SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
@@ -948,9 +951,8 @@ def _write_streaming_datajs(
                 db_path, bbox, total_points, osm_cache_dir, tc_points
             )
             _stream_jsonjs_footer(handle, osm_intersections)
-
-        finally:
-            conn.close()
+    finally:
+        conn.close()
 
     os.replace(tmp_path, output_datajs)
     _ensure_world_readable(output_datajs)
@@ -980,24 +982,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
     base_map = folium.Map(location=[center_lat, center_lng], zoom_start=12, control_scale=True)
 
-    tmp_map_path = output_map + ".tmp"
-    try:
-        if os.path.exists(tmp_map_path):
-            os.remove(tmp_map_path)
-    except Exception:
-        pass
+    html = base_map.get_root().render()
 
-    base_map.save(tmp_map_path)
-
-    with open(tmp_map_path, "r", encoding="utf-8") as handle:
-        html = handle.read()
-
-    try:
-        os.remove(tmp_map_path)
-    except Exception:
-        pass
-
-    m = re.search(r"var\s+(map_[a-zA-Z0-9_]+)\s*=\s*L\.map\(", html)
+    m = re.search(r"(?:var|let|const)\s+(map_[a-zA-Z0-9_]+)\s*=\s*L\.map\(", html)
     if not m:
         return
     map_var = m.group(1)
@@ -1014,11 +1001,10 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         f"</head>",
     )
 
-    year_options = (
-        '<option value="">--</option>'
-        '<option value="2024">2024</option>'
-        '<option value="2025">2025</option>'
-        '<option value="2026">2026</option>'
+    _current_year = datetime.now().year
+    year_options = '<option value="">--</option>' + "".join(
+        f'<option value="{y}">{y}</option>'
+        for y in range(_current_year - 2, _current_year + 1)
     )
 
     inject = f"""
@@ -2698,8 +2684,6 @@ def _load_dataframe_from_csv(input_csv: str) -> pd.DataFrame:
 
 
 def _load_dataframe_from_db(db_path: str) -> pd.DataFrame:
-    import sqlite3
-
     conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
@@ -2770,6 +2754,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     ].copy()
 
     incidents = []
+    incidents_latlng: List[Tuple[float, float]] = []
     for _, r in df_map.iterrows():
         lat = round(float(r[lat_col]), 6)
         lng = round(float(r[lon_col]), 6)
@@ -2818,13 +2803,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
                 source,
             ]
         )
-
-    incidents_latlng: List[Tuple[float, float]] = []
-    for _, r in df_map.iterrows():
-        try:
-            incidents_latlng.append((float(r[lat_col]), float(r[lon_col])))
-        except Exception:
-            incidents_latlng.append((None, None))
+        incidents_latlng.append((lat, lng))
 
     _, _, osm_overall_counts = _compute_osm_context_for_incidents(
         df_map, lat_col, lon_col, incidents_latlng, osm_cache_dir

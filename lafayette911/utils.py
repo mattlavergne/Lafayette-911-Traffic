@@ -4,8 +4,8 @@ import logging
 import os
 import sys
 import tempfile
+from datetime import datetime, timezone
 from typing import Optional
-from datetime import datetime
 
 
 def setup_logging(level: str = "INFO") -> logging.Logger:
@@ -19,7 +19,7 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
 
 def log_event(logger: logging.Logger, event: str, **fields) -> None:
     payload = {
-        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "event": event,
         **fields,
     }

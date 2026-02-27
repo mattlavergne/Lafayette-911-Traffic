@@ -2,8 +2,8 @@ import csv
 import math
 import os
 import sqlite3
-from datetime import datetime
-from typing import Dict, Iterable, List, Sequence, Tuple
+from datetime import datetime, timezone
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 class StateStore:
@@ -113,7 +113,7 @@ class StateStore:
                         row.get("assisting", ""),
                         _safe_float(row.get("latitude")),
                         _safe_float(row.get("longitude")),
-                        datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                         _safe_float(row.get("weather_temp_f")),
                         _safe_float(row.get("weather_precip_prob")),
                         _safe_float(row.get("weather_precip_in")),
@@ -359,7 +359,7 @@ def _ensure_csv_columns(filename: str) -> None:
     os.replace(tmp_path, filename)
 
 
-def _safe_float(value) -> float:
+def _safe_float(value) -> Optional[float]:
     try:
         if value is None or value == "":
             return None
