@@ -66,17 +66,20 @@ def _write_text_if_changed(path: str, text: str) -> bool:
         return True
 
 
-def _build_incidents_script(incidents, osm_intersections) -> str:
+def _build_incidents_script(incidents, osm_intersections, hot_spots=None) -> str:
     s = "window.INCIDENTS_DATA=" + json.dumps(incidents, ensure_ascii=False, separators=(",", ":"))
     s += ";\nwindow.OSM_INTERSECTIONS_DATA=" + json.dumps(
         osm_intersections, ensure_ascii=False, separators=(",", ":")
+    )
+    s += ";\nwindow.HOT_SPOTS_DATA=" + json.dumps(
+        hot_spots or [], ensure_ascii=False, separators=(",", ":")
     )
     s += ";"
     return s
 
 
-def _write_jsonjs_if_changed(path: str, incidents, osm_intersections) -> bool:
-    return _write_text_if_changed(path, _build_incidents_script(incidents, osm_intersections))
+def _write_jsonjs_if_changed(path: str, incidents, osm_intersections, hot_spots=None) -> bool:
+    return _write_text_if_changed(path, _build_incidents_script(incidents, osm_intersections, hot_spots))
 
 
 def _stream_jsonjs_header(handle) -> None:
@@ -90,9 +93,11 @@ def _stream_jsonjs_incident(handle, incident, first: bool) -> bool:
     return False
 
 
-def _stream_jsonjs_footer(handle, osm_intersections) -> None:
+def _stream_jsonjs_footer(handle, osm_intersections, hot_spots=None) -> None:
     handle.write("];\nwindow.OSM_INTERSECTIONS_DATA=")
     handle.write(json.dumps(osm_intersections, ensure_ascii=False, separators=(",", ":")))
+    handle.write(";\nwindow.HOT_SPOTS_DATA=")
+    handle.write(json.dumps(hot_spots or [], ensure_ascii=False, separators=(",", ":")))
     handle.write(";")
 
 
@@ -385,6 +390,143 @@ def _compute_osm_context_in_subprocess(bbox, incidents_latlng, osm_cache_dir: st
             proc.terminate()
             proc.join(timeout=2)
     return {}, [], []
+
+
+def _precompute_osm_road_types(db_path: str, osm_cache_dir: str) -> dict:
+    """
+    Return {(round(lat,6), round(lon,6)): highway_type_str} for every geocoded
+    incident in the DB.  Uses the already-cached GraphML file; returns {} if
+    osmnx is not installed or any error occurs.
+    """
+    if not importlib.util.find_spec("osmnx"):
+        return {}
+
+    ox = importlib.import_module("osmnx")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT latitude, longitude FROM incidents WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    pts = []
+    for lat, lon in rows:
+        lat = _safe_float(lat)
+        lon = _safe_float(lon)
+        if lat is None or lon is None:
+            continue
+        if not _in_lafayette_bounds(lat, lon):
+            continue
+        pts.append((round(lat, 6), round(lon, 6)))
+
+    if not pts:
+        return {}
+
+    unique_pts = list({p for p in pts})
+    lat_min = min(p[0] for p in unique_pts)
+    lat_max = max(p[0] for p in unique_pts)
+    lon_min = min(p[1] for p in unique_pts)
+    lon_max = max(p[1] for p in unique_pts)
+
+    bbox = _compute_bbox_from_points(lat_min, lat_max, lon_min, lon_max)
+    south, north, west, east = bbox
+    bbox_id = _hash_bbox((south, north, west, east))
+
+    os.makedirs(osm_cache_dir, exist_ok=True)
+    graphml_path = os.path.join(osm_cache_dir, f"drive_{bbox_id}.graphml")
+
+    try:
+        if os.path.exists(graphml_path):
+            G = ox.load_graphml(graphml_path)
+        else:
+            G = ox.graph_from_bbox(bbox=(west, south, east, north), network_type="drive", simplify=True)
+            ox.save_graphml(G, graphml_path)
+    except Exception:
+        return {}
+
+    xs = [float(p[1]) for p in unique_pts]
+    ys = [float(p[0]) for p in unique_pts]
+
+    result: dict = {}
+    try:
+        nearest_edges = ox.distance.nearest_edges(G, X=xs, Y=ys)
+        for i, edge in enumerate(nearest_edges):
+            try:
+                u, v = edge[0], edge[1]
+                k = edge[2] if len(edge) > 2 else 0
+                edge_data = G.edges[u, v, k]
+                highway = edge_data.get("highway", None)
+                if isinstance(highway, list):
+                    highway = highway[0] if highway else None
+                highway = str(highway) if highway else None
+            except Exception:
+                highway = None
+            result[unique_pts[i]] = highway
+    except Exception:
+        pass
+
+    return result
+
+
+def _compute_hot_spots_from_db(db_path: str, top_n: int = 100, min_count: int = 2) -> List[List]:
+    """
+    Compute recency-weighted hot spots from the incident DB.
+
+    Groups incidents by a ~100 m grid (3 decimal-place rounding), then scores
+    each location as sum(exp(-days_since / 30)) so that recent incidents count
+    more.  Returns a list of [lat, lng, count, hot_score, label] sorted by
+    hot_score descending.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT latitude, longitude, location, reported FROM incidents "
+            "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        )
+        now = datetime.now()
+        spots: Dict[tuple, dict] = {}
+        for lat, lon, location, reported in cursor:
+            lat = _safe_float(lat)
+            lon = _safe_float(lon)
+            if lat is None or lon is None:
+                continue
+            if not _in_lafayette_bounds(lat, lon):
+                continue
+            key = (round(lat, 3), round(lon, 3))
+            if key not in spots:
+                spots[key] = {
+                    "lat": round(lat, 3),
+                    "lon": round(lon, 3),
+                    "count": 0,
+                    "hot_score": 0.0,
+                    "label": str(location or "").strip(),
+                }
+            spots[key]["count"] += 1
+            reported_dt = _parse_reported(reported)
+            if reported_dt is not None:
+                try:
+                    days_old = max(0.0, (now - reported_dt.replace(tzinfo=None)).total_seconds() / 86400.0)
+                    weight = math.exp(-days_old / 30.0)
+                except Exception:
+                    weight = 0.1
+            else:
+                weight = 0.1
+            spots[key]["hot_score"] += weight
+
+        sorted_spots = sorted(
+            [s for s in spots.values() if s["count"] >= min_count],
+            key=lambda x: x["hot_score"],
+            reverse=True,
+        )[:top_n]
+
+        return [
+            [s["lat"], s["lon"], s["count"], round(s["hot_score"], 3), s["label"]]
+            for s in sorted_spots
+        ]
+    finally:
+        conn.close()
 
 
 def _normalize_location(s: str) -> str:
@@ -772,6 +914,20 @@ def _stream_osm_intersections(
 def _write_streaming_datajs(
     db_path: str, output_datajs: str, osm_cache_dir: str
 ) -> Tuple[float, float, List[List]]:
+    # Pre-compute OSM road types per incident coordinate (optional, requires osmnx)
+    osm_road_types: dict = {}
+    try:
+        osm_road_types = _precompute_osm_road_types(db_path, osm_cache_dir)
+    except Exception:
+        pass
+
+    # Pre-compute recency-weighted hot spots
+    hot_spots: List[List] = []
+    try:
+        hot_spots = _compute_hot_spots_from_db(db_path)
+    except Exception:
+        pass
+
     conn = sqlite3.connect(db_path)
     tc_groups: Dict[str, Dict[str, object]] = {}
 
@@ -802,7 +958,9 @@ def _write_streaming_datajs(
                 SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
                        weather_temp_f, weather_precip_prob, weather_precip_in,
                        weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
-                       weather_sky_cover_pct, weather_observed_at, weather_source
+                       weather_sky_cover_pct, weather_observed_at, weather_source,
+                       hour_of_day, day_of_week, is_school_day,
+                       nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch
                 FROM incidents
                 """
             )
@@ -823,6 +981,12 @@ def _write_streaming_datajs(
                 weather_sky_cover_pct,
                 weather_observed_at,
                 weather_source,
+                hour_of_day,
+                day_of_week,
+                is_school_day,
+                nws_flood,
+                nws_storm,
+                nws_tornado,
             ) in cursor:
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
@@ -865,9 +1029,12 @@ def _write_streaming_datajs(
                 loc = str(location or "").strip()
                 assist = str(assisting or "").strip()
                 reported_str = str(reported or "").strip()
+                lat_r = round(float(lat), 6)
+                lon_r = round(float(lon), 6)
+                highway_type = osm_road_types.get((lat_r, lon_r))
                 incident = [
-                    round(float(lat), 6),
-                    round(float(lon), 6),
+                    lat_r,
+                    lon_r,
                     reported_str,
                     loc,
                     cause_str,
@@ -883,6 +1050,15 @@ def _write_streaming_datajs(
                     _safe_float(weather_sky_cover_pct),
                     _safe_text(weather_observed_at),
                     _safe_text(weather_source),
+                    # New enrichment fields (indices 17-22)
+                    hour_of_day,
+                    day_of_week,
+                    is_school_day,
+                    nws_flood,
+                    nws_storm,
+                    nws_tornado,
+                    # OSM road classification (index 23)
+                    highway_type,
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
@@ -950,7 +1126,7 @@ def _write_streaming_datajs(
             osm_intersections = _stream_osm_intersections(
                 db_path, bbox, total_points, osm_cache_dir, tc_points
             )
-            _stream_jsonjs_footer(handle, osm_intersections)
+            _stream_jsonjs_footer(handle, osm_intersections, hot_spots)
     finally:
         conn.close()
 
@@ -1523,8 +1699,49 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
       <div class="row row-checks">
         <label><input type="checkbox" id="chkTodayOnly"> Today only</label>
+        <label><input type="checkbox" id="chkRushHour"> Rush hour only</label>
+        <label><input type="checkbox" id="chkSchoolDay"> School days only</label>
+      </div>
+
+      <div class="row row-grid">
+        <label>Day of week:
+          <select id="dowSelect">
+            <option value="all">All</option>
+            <option value="1">Monday</option>
+            <option value="2">Tuesday</option>
+            <option value="3">Wednesday</option>
+            <option value="4">Thursday</option>
+            <option value="5">Friday</option>
+            <option value="6">Saturday</option>
+            <option value="0">Sunday</option>
+          </select>
+        </label>
+
+        <label>Road type:
+          <select id="roadTypeSelect">
+            <option value="any">Any</option>
+            <option value="motorway">Motorway / Hwy</option>
+            <option value="trunk">Trunk road</option>
+            <option value="primary">Primary arterial</option>
+            <option value="secondary">Secondary road</option>
+            <option value="tertiary">Tertiary road</option>
+            <option value="residential">Residential</option>
+            <option value="service">Service road</option>
+          </select>
+        </label>
       </div>
     </div>
+
+    <div class="section">
+      <div class="section-title">NWS Active Alerts</div>
+      <div class="row row-checks">
+        <label><input type="checkbox" id="chkFloodWarning"> Flash flood warning</label>
+        <label><input type="checkbox" id="chkThunderstormWarning"> Severe storm warning</label>
+        <label><input type="checkbox" id="chkTornadoWatch"> Tornado watch</label>
+      </div>
+      <div class="row row-note">Show only incidents recorded during active NWS alerts for Lafayette Parish.</div>
+    </div>
+
 
     <div class="section">
       <div class="section-title">Weather (when available)</div>
@@ -1607,6 +1824,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         <label><input type="checkbox" id="chkOsmIntersections"> OSM</label>
         <label><input type="checkbox" id="chkMicro"> Micro</label>
         <label><input type="checkbox" id="chkRings"> Rings</label>
+        <label><input type="checkbox" id="chkHotSpots"> Hot Spots</label>
       </div>
     </div>
 
@@ -1650,6 +1868,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 (function() {{
   const INCIDENTS = window.INCIDENTS_DATA || [];
   const OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
+  const HOT_SPOTS = window.HOT_SPOTS_DATA || [];
   const renderer = L.canvas({{ padding: 0.5 }});
   const isCoarsePointer = window.matchMedia ? window.matchMedia("(pointer: coarse)").matches : false;
   const isTouch = (L && L.Browser && L.Browser.touch) || isCoarsePointer;
@@ -1684,12 +1903,22 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     currentWeather: document.getElementById("currentWeather"),
     weatherWidgetBody: document.getElementById("weatherWidgetBody"),
 
+    chkRushHour: document.getElementById("chkRushHour"),
+    chkSchoolDay: document.getElementById("chkSchoolDay"),
+    dowSelect: document.getElementById("dowSelect"),
+    roadTypeSelect: document.getElementById("roadTypeSelect"),
+
+    chkFloodWarning: document.getElementById("chkFloodWarning"),
+    chkThunderstormWarning: document.getElementById("chkThunderstormWarning"),
+    chkTornadoWatch: document.getElementById("chkTornadoWatch"),
+
     chkPoints: document.getElementById("chkPoints"),
     chkHeat: document.getElementById("chkHeat"),
     chkIntersections: document.getElementById("chkIntersections"),
     chkOsmIntersections: document.getElementById("chkOsmIntersections"),
     chkMicro: document.getElementById("chkMicro"),
     chkRings: document.getElementById("chkRings"),
+    chkHotSpots: document.getElementById("chkHotSpots"),
 
     topNSelect: document.getElementById("topNSelect"),
     precIntersections: document.getElementById("precIntersections"),
@@ -1714,6 +1943,13 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   const IDX_SKY_COVER = 14;
   const IDX_WEATHER_AT = 15;
   const IDX_WEATHER_SOURCE = 16;
+  const IDX_HOUR = 17;
+  const IDX_DOW = 18;
+  const IDX_SCHOOL_DAY = 19;
+  const IDX_NWS_FLOOD = 20;
+  const IDX_NWS_STORM = 21;
+  const IDX_NWS_TORNADO = 22;
+  const IDX_HIGHWAY = 23;
 
   function esc(s) {{
     return String(s || "").replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
@@ -1779,11 +2015,30 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       ? ("<br>Weather: " + weatherParts.join(" · ") + (wAt ? (" <span class='muted'>@" + esc(wAt) + "</span>") : ""))
       : "";
     const weatherSource = wSource ? ("<br><span class='muted'>Source: " + esc(wSource) + "</span>") : "";
+    const hw = (row.length > IDX_HIGHWAY && row[IDX_HIGHWAY]) ? row[IDX_HIGHWAY] : null;
+    const hwLine = hw ? ("<br>Road type: " + esc(hw)) : "";
+    const hourVal = (row.length > IDX_HOUR && row[IDX_HOUR] != null) ? row[IDX_HOUR] : null;
+    const dowVal = (row.length > IDX_DOW && row[IDX_DOW] != null) ? row[IDX_DOW] : null;
+    const dowNames = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+    const contextParts = [];
+    if (dowVal !== null) contextParts.push(dowNames[dowVal] || "");
+    if (hourVal !== null) contextParts.push(String(hourVal).padStart(2,"0") + ":xx");
+    const schoolDayVal = (row.length > IDX_SCHOOL_DAY) ? row[IDX_SCHOOL_DAY] : null;
+    if (schoolDayVal === 1) contextParts.push("school day");
+    const ctxLine = contextParts.length ? ("<br>Context: " + esc(contextParts.join(" · "))) : "";
+    const alertParts = [];
+    if (row.length > IDX_NWS_FLOOD && (row[IDX_NWS_FLOOD] === 1 || row[IDX_NWS_FLOOD] === true)) alertParts.push("Flash Flood Warning");
+    if (row.length > IDX_NWS_STORM && (row[IDX_NWS_STORM] === 1 || row[IDX_NWS_STORM] === true)) alertParts.push("Severe Thunderstorm Warning");
+    if (row.length > IDX_NWS_TORNADO && (row[IDX_NWS_TORNADO] === 1 || row[IDX_NWS_TORNADO] === true)) alertParts.push("Tornado Watch");
+    const alertLine = alertParts.length ? ("<br><b>NWS Active: " + esc(alertParts.join(", ")) + "</b>") : "";
     return "Location: " + esc(row[IDX_LOCATION]) +
            "<br>Type: " + esc(row[IDX_CAUSE]) +
            "<br>Reported: " + esc(row[IDX_REPORTED]) +
            "<br>Assisting: " + esc(row[IDX_ASSIST]) +
            occLine +
+           hwLine +
+           ctxLine +
+           alertLine +
            weatherLine +
            weatherSource;
   }}
@@ -2145,6 +2400,78 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     return true;
   }}
 
+  function isRushHourFromParsed(pr) {{
+    if (!pr || pr.hh == null) return false;
+    const dow = pr.dt ? pr.dt.getDay() : -1;  // 0=Sun, 6=Sat in JS
+    if (dow === 0 || dow === 6) return false;  // weekend
+    const h = pr.hh;
+    return (h >= 7 && h < 9) || (h >= 16 && h < 19);
+  }}
+
+  function matchesRushHour(row, checked) {{
+    if (!checked) return true;
+    // Prefer stored hour_of_day/day_of_week if available
+    const storedHour = (row.length > IDX_HOUR && row[IDX_HOUR] != null) ? row[IDX_HOUR] : null;
+    const storedDow = (row.length > IDX_DOW && row[IDX_DOW] != null) ? row[IDX_DOW] : null;
+    if (storedHour !== null && storedDow !== null) {{
+      // Stored as Python weekday: 0=Mon, 6=Sun
+      if (storedDow >= 5) return false;
+      return (storedHour >= 7 && storedHour < 9) || (storedHour >= 16 && storedHour < 19);
+    }}
+    const pr = parseReported(row[IDX_REPORTED]);
+    if (!pr) return false;
+    return isRushHourFromParsed(pr);
+  }}
+
+  function matchesSchoolDay(row, checked) {{
+    if (!checked) return true;
+    const val = (row.length > IDX_SCHOOL_DAY) ? row[IDX_SCHOOL_DAY] : null;
+    if (val == null) return true;  // no data — don't exclude
+    return val === 1 || val === true;
+  }}
+
+  function matchesDow(row, dowValue) {{
+    if (!dowValue || dowValue === "all") return true;
+    const target = parseInt(dowValue, 10);
+    const storedDow = (row.length > IDX_DOW && row[IDX_DOW] != null) ? row[IDX_DOW] : null;
+    if (storedDow !== null) {{
+      // Stored as Python weekday (0=Mon, 6=Sun); JS getDay() is 0=Sun,1=Mon,...,6=Sat
+      // DOW select values use JS convention: 0=Sun,1=Mon,...,6=Sat
+      // Convert Python dow to JS: jsDow = (pyDow + 1) % 7
+      const jsDow = (storedDow + 1) % 7;
+      return jsDow === target;
+    }}
+    const pr = parseReported(row[IDX_REPORTED]);
+    if (!pr || !pr.dt) return false;
+    return pr.dt.getDay() === target;
+  }}
+
+  function matchesRoadType(row, roadType) {{
+    if (!roadType || roadType === "any") return true;
+    const hw = (row.length > IDX_HIGHWAY) ? row[IDX_HIGHWAY] : null;
+    if (!hw) return false;
+    const hwLower = String(hw).toLowerCase();
+    if (roadType === "motorway") return hwLower.includes("motorway");
+    if (roadType === "trunk") return hwLower.includes("trunk");
+    if (roadType === "primary") return hwLower.includes("primary");
+    if (roadType === "secondary") return hwLower.includes("secondary");
+    if (roadType === "tertiary") return hwLower.includes("tertiary");
+    if (roadType === "residential") return hwLower.includes("residential");
+    if (roadType === "service") return hwLower.includes("service");
+    return true;
+  }}
+
+  function matchesNwsAlerts(row, f) {{
+    if (!f.chkFlood && !f.chkStorm && !f.chkTornado) return true;
+    const flood = (row.length > IDX_NWS_FLOOD) ? row[IDX_NWS_FLOOD] : null;
+    const storm = (row.length > IDX_NWS_STORM) ? row[IDX_NWS_STORM] : null;
+    const tornado = (row.length > IDX_NWS_TORNADO) ? row[IDX_NWS_TORNADO] : null;
+    if (f.chkFlood && !(flood === 1 || flood === true)) return false;
+    if (f.chkStorm && !(storm === 1 || storm === true)) return false;
+    if (f.chkTornado && !(tornado === 1 || tornado === true)) return false;
+    return true;
+  }}
+
   function matchesWeather(row, f) {{
     const temp = weatherNumber(row, IDX_TEMP_F);
     const pop = weatherNumber(row, IDX_PRECIP_PROB);
@@ -2180,6 +2507,13 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const windBand = (els.windBand.value || "any").trim();
     const visBand = (els.visBand.value || "any").trim();
     const cloudBand = (els.cloudBand.value || "any").trim();
+    const rushHour = !!(els.chkRushHour && els.chkRushHour.checked);
+    const schoolDay = !!(els.chkSchoolDay && els.chkSchoolDay.checked);
+    const dowValue = els.dowSelect ? (els.dowSelect.value || "all").trim() : "all";
+    const roadType = els.roadTypeSelect ? (els.roadTypeSelect.value || "any").trim() : "any";
+    const chkFlood = !!(els.chkFloodWarning && els.chkFloodWarning.checked);
+    const chkStorm = !!(els.chkThunderstormWarning && els.chkThunderstormWarning.checked);
+    const chkTornado = !!(els.chkTornadoWatch && els.chkTornadoWatch.checked);
     return {{
       mm: mm || "",
       dd: dd || "",
@@ -2196,7 +2530,14 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       precipAmountBand,
       windBand,
       visBand,
-      cloudBand
+      cloudBand,
+      rushHour,
+      schoolDay,
+      dowValue,
+      roadType,
+      chkFlood,
+      chkStorm,
+      chkTornado,
     }};
   }}
 
@@ -2211,6 +2552,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       if (!matchesDayType(row, filterObj.dayType)) continue;
       if (!matchesTimeBlock(row, filterObj.timeBlock)) continue;
       if (!matchesWeather(row, filterObj)) continue;
+      if (!matchesRushHour(row, filterObj.rushHour)) continue;
+      if (!matchesSchoolDay(row, filterObj.schoolDay)) continue;
+      if (!matchesDow(row, filterObj.dowValue)) continue;
+      if (!matchesRoadType(row, filterObj.roadType)) continue;
+      if (!matchesNwsAlerts(row, filterObj)) continue;
 
       if (bounds) {{
         const latlng = L.latLng(row[0], row[1]);
@@ -2238,7 +2584,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     intersections: null,
     osmIntersections: null,
     micro: null,
-    rings: null
+    rings: null,
+    hotSpots: null
   }};
 
   let lastFiltered = [];
@@ -2336,6 +2683,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const showOsmInter = !!els.chkOsmIntersections.checked;
     const showMicro = !!els.chkMicro.checked;
     const showRings = !!els.chkRings.checked;
+    const showHotSpots = !!(els.chkHotSpots && els.chkHotSpots.checked);
 
     const topN = parseInt(els.topNSelect.value || "10", 10);
     const dInter = parseInt(els.precIntersections.value || "3", 10);
@@ -2468,6 +2816,39 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       layers.rings = ringLayer;
     }}
 
+    if (showHotSpots && HOT_SPOTS.length > 0) {{
+      const hsLayer = L.layerGroup().addTo(mapObj);
+      const maxScore = HOT_SPOTS[0][3] || 1;
+      const sliced = HOT_SPOTS.slice(0, parseInt(els.topNSelect.value || "10", 10));
+      for (const hs of sliced) {{
+        const hsLat = hs[0], hsLng = hs[1], cnt = hs[2], score = hs[3], label = hs[4];
+        const t = Math.max(0, Math.min(1, score / maxScore));
+        const r = Math.max(10, Math.min(40, 8 + Math.sqrt(score) * 4));
+        // Color: cool (low) → hot (high)
+        const red = Math.round(255 * t);
+        const blue = Math.round(255 * (1 - t));
+        const fillColor = "rgb(" + red + ",60," + blue + ")";
+        const c = L.circleMarker([hsLat, hsLng], {{
+          radius: r,
+          renderer: renderer,
+          color: fillColor,
+          weight: 2,
+          fillColor: fillColor,
+          fillOpacity: 0.35
+        }});
+        c.bindPopup(
+          "<b>Hot Spot</b><br>" +
+          esc(label || "Unknown location") +
+          "<br>Incidents: " + cnt +
+          "<br>Recency score: " + score.toFixed(2) +
+          "<br><span class='muted'>(score weights recent incidents higher)</span>",
+          {{ maxWidth: 320 }}
+        );
+        c.addTo(hsLayer);
+      }}
+      layers.hotSpots = hsLayer;
+    }}
+
   }}
 
   function updateInViewOnly(mapObj) {{
@@ -2507,12 +2888,22 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     els.visBand.value = "any";
     els.cloudBand.value = "any";
 
+    if (els.chkRushHour) els.chkRushHour.checked = false;
+    if (els.chkSchoolDay) els.chkSchoolDay.checked = false;
+    if (els.dowSelect) els.dowSelect.value = "all";
+    if (els.roadTypeSelect) els.roadTypeSelect.value = "any";
+
+    if (els.chkFloodWarning) els.chkFloodWarning.checked = false;
+    if (els.chkThunderstormWarning) els.chkThunderstormWarning.checked = false;
+    if (els.chkTornadoWatch) els.chkTornadoWatch.checked = false;
+
     els.chkPoints.checked = true;
     els.chkHeat.checked = false;
     els.chkIntersections.checked = false;
     els.chkOsmIntersections.checked = false;
     els.chkMicro.checked = false;
     els.chkRings.checked = false;
+    if (els.chkHotSpots) els.chkHotSpots.checked = false;
 
     els.topNSelect.value = "10";
     els.precIntersections.value = "3";
@@ -2549,8 +2940,10 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       "monthSelect","daySelect","yearSelect",
       "chkTodayOnly",
       "dayTypeSelect","timeBlockSelect",
+      "chkRushHour","chkSchoolDay","dowSelect","roadTypeSelect",
+      "chkFloodWarning","chkThunderstormWarning","chkTornadoWatch",
       "chkWeatherOnly","tempBand","precipBand","precipAmountBand","windBand","visBand","cloudBand",
-      "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings",
+      "chkPoints","chkHeat","chkIntersections","chkOsmIntersections","chkMicro","chkRings","chkHotSpots",
       "topNSelect","precIntersections","precMicro"
     ];
     for (const id of ids) {{
@@ -2801,6 +3194,14 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
                 sky_cover,
                 observed_at,
                 source,
+                # New enrichment fields — not available from CSV path
+                None,  # hour_of_day
+                None,  # day_of_week
+                None,  # is_school_day
+                None,  # nws_flash_flood_warning
+                None,  # nws_severe_thunderstorm_warning
+                None,  # nws_tornado_watch
+                None,  # osm_highway_type
             ]
         )
         incidents_latlng.append((lat, lng))
@@ -2810,7 +3211,45 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     )
     osm_intersections = osm_overall_counts
 
-    _write_jsonjs_if_changed(output_datajs, incidents, osm_intersections)
+    # Compute hot spots from the dataframe (CSV path)
+    hot_spots: List[List] = []
+    try:
+        spots: Dict[tuple, dict] = {}
+        now_dt = datetime.now()
+        for _, r in df_map.iterrows():
+            lat_v = _safe_float(r.get(lat_col))
+            lon_v = _safe_float(r.get(lon_col))
+            if lat_v is None or lon_v is None:
+                continue
+            key = (round(lat_v, 3), round(lon_v, 3))
+            if key not in spots:
+                spots[key] = {
+                    "lat": round(lat_v, 3),
+                    "lon": round(lon_v, 3),
+                    "count": 0,
+                    "hot_score": 0.0,
+                    "label": str(r.get("location", "") or "").strip(),
+                }
+            spots[key]["count"] += 1
+            reported_dt = _parse_reported(r.get("reported"))
+            if reported_dt is not None:
+                try:
+                    days_old = max(0.0, (now_dt - reported_dt.replace(tzinfo=None)).total_seconds() / 86400.0)
+                    weight = math.exp(-days_old / 30.0)
+                except Exception:
+                    weight = 0.1
+            else:
+                weight = 0.1
+            spots[key]["hot_score"] += weight
+        hot_spots = [
+            [s["lat"], s["lon"], s["count"], round(s["hot_score"], 3), s["label"]]
+            for s in sorted(spots.values(), key=lambda x: x["hot_score"], reverse=True)
+            if s["count"] >= 2
+        ][:100]
+    except Exception:
+        hot_spots = []
+
+    _write_jsonjs_if_changed(output_datajs, incidents, osm_intersections, hot_spots)
     _ensure_world_readable(output_datajs)
 
     map_dir = os.path.dirname(output_map) or "."
