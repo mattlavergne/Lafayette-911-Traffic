@@ -1,17 +1,19 @@
 import gc
 import multiprocessing
 import os
+import re
 import sys
 import time
 import tracemalloc
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 from lafayette911.fetch_incidents import build_session, fetch_traffic_data, geocode_incidents, parse_traffic_data
 from lafayette911.map_render import create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
 from lafayette911.utils import get_rss_bytes, log_event, setup_logging, trim_memory
-from lafayette911.weather import fetch_weather_snapshot
+from lafayette911.weather import fetch_nws_alerts, fetch_weather_snapshot
 
 
 LAFAYETTE_PARISH_PLACES = {
@@ -57,6 +59,8 @@ class Config:
     weather_lat: float
     weather_lon: float
     weather_cache_ttl_seconds: int
+    alerts_enabled: bool
+    alerts_cache_ttl_seconds: int
 
 
 def _env_int(name: str, default: int) -> int:
@@ -113,7 +117,102 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         weather_lat=_env_float("LAF911_WEATHER_LAT", 30.22126),
         weather_lon=_env_float("LAF911_WEATHER_LON", -92.018773),
         weather_cache_ttl_seconds=_env_int("LAF911_WEATHER_CACHE_TTL_SECONDS", 1800),
+        alerts_enabled=_env_bool("LAF911_ALERTS_ENABLED", True),
+        alerts_cache_ttl_seconds=_env_int("LAF911_ALERTS_CACHE_TTL_SECONDS", 900),
     )
+
+
+_REPORTED_RE = re.compile(
+    r"(\d{1,2})/(\d{1,2})/(\d{4})"
+    r"(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?"
+)
+
+
+def _parse_reported_dt(reported: str) -> Optional[datetime]:
+    """Parse a reported timestamp string (MM/DD/YYYY HH:MM [AM/PM]) into a datetime."""
+    if not reported:
+        return None
+    m = _REPORTED_RE.search(reported.strip())
+    if not m:
+        return None
+    try:
+        mm, dd, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        hh = int(m.group(4)) if m.group(4) is not None else 0
+        mi = int(m.group(5)) if m.group(5) is not None else 0
+        ap = (m.group(6) or "").lower()
+        if ap == "pm" and hh < 12:
+            hh += 12
+        elif ap == "am" and hh == 12:
+            hh = 0
+        return datetime(yy, mm, dd, hh, mi)
+    except (ValueError, TypeError):
+        return None
+
+
+def _is_school_day(dt: Optional[datetime]) -> bool:
+    """
+    Heuristic for Lafayette Parish School System (LPSS) school days.
+    Returns True on Mon-Fri during the academic year (roughly mid-Aug through May),
+    excluding major holiday breaks.
+    """
+    if dt is None:
+        return False
+    dow = dt.weekday()  # 0=Monday, 6=Sunday
+    if dow >= 5:
+        return False
+    month = dt.month
+    day = dt.day
+    # Summer break: June and July
+    if month in {6, 7}:
+        return False
+    # School year starts mid-August
+    if month == 8 and day < 15:
+        return False
+    # Christmas / winter break: Dec 20 – Jan 3
+    if month == 12 and day >= 20:
+        return False
+    if month == 1 and day <= 3:
+        return False
+    # Thanksgiving week: approximate Wed–Fri around the fourth Thursday of November
+    if month == 11 and 21 <= day <= 27:
+        try:
+            # Find fourth Thursday of November
+            first_nov = datetime(dt.year, 11, 1)
+            # Thursday is weekday 3
+            offset = (3 - first_nov.weekday()) % 7
+            fourth_thursday_day = 1 + offset + 21  # 1st Thu + 3 weeks
+            thanksgiving = datetime(dt.year, 11, fourth_thursday_day)
+            # Flag Wed before through Fri after
+            if thanksgiving.day - 1 <= day <= thanksgiving.day + 1:
+                return False
+        except (ValueError, TypeError):
+            pass
+    return True
+
+
+def _enrich_incident_time(inc: dict) -> None:
+    """Derive time-context fields from the reported timestamp and attach to the incident dict."""
+    reported = inc.get("reported", "")
+    dt = _parse_reported_dt(str(reported))
+    if dt is None:
+        inc["hour_of_day"] = None
+        inc["day_of_week"] = None
+        inc["is_weekend"] = None
+        inc["is_rush_hour"] = None
+        inc["month"] = None
+        inc["is_school_day"] = None
+        return
+    hour = dt.hour
+    dow = dt.weekday()  # 0=Mon, 6=Sun
+    is_weekend = 1 if dow >= 5 else 0
+    # Rush hour: Mon-Fri 7-9 AM or 4-7 PM (Central)
+    is_rush = 1 if (dow < 5 and ((7 <= hour < 9) or (16 <= hour < 19))) else 0
+    inc["hour_of_day"] = hour
+    inc["day_of_week"] = dow
+    inc["is_weekend"] = is_weekend
+    inc["is_rush_hour"] = is_rush
+    inc["month"] = dt.month
+    inc["is_school_day"] = 1 if _is_school_day(dt) else 0
 
 
 def _in_lafayette_bounds(lat, lng) -> bool:
@@ -259,6 +358,32 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                             inc["weather_sky_cover_pct"] = snapshot.sky_cover_pct
                             inc["weather_observed_at"] = snapshot.observed_at
                             inc["weather_source"] = snapshot.source
+
+                # Time-context enrichment
+                for inc in new_incidents:
+                    _enrich_incident_time(inc)
+
+                # NWS active alerts enrichment
+                alert_snapshot = None
+                if config.alerts_enabled:
+                    alert_snapshot = fetch_nws_alerts(
+                        session,
+                        timeout=config.fetch_timeout_seconds,
+                        cache_ttl_seconds=config.alerts_cache_ttl_seconds,
+                        logger=logger,
+                    )
+                for inc in new_incidents:
+                    if alert_snapshot is not None:
+                        inc["nws_flash_flood_warning"] = 1 if alert_snapshot.flash_flood_warning else 0
+                        inc["nws_severe_thunderstorm_warning"] = 1 if alert_snapshot.severe_thunderstorm_warning else 0
+                        inc["nws_tornado_watch"] = 1 if alert_snapshot.tornado_watch else 0
+                        inc["nws_active_alert_count"] = alert_snapshot.active_alert_count
+                    else:
+                        inc["nws_flash_flood_warning"] = None
+                        inc["nws_severe_thunderstorm_warning"] = None
+                        inc["nws_tornado_watch"] = None
+                        inc["nws_active_alert_count"] = None
+
                 new_incidents = store.store_new_incidents(new_incidents)
                 store.append_to_csv(new_incidents)
                 has_new_incidents = bool(new_incidents)

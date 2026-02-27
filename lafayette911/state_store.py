@@ -71,6 +71,18 @@ class StateStore:
             ("weather_sky_cover_pct", "REAL"),
             ("weather_observed_at", "TEXT"),
             ("weather_source", "TEXT"),
+            # Time-context enrichment
+            ("hour_of_day", "INTEGER"),
+            ("day_of_week", "INTEGER"),
+            ("is_weekend", "INTEGER"),
+            ("is_rush_hour", "INTEGER"),
+            ("month", "INTEGER"),
+            ("is_school_day", "INTEGER"),
+            # NWS active alerts
+            ("nws_flash_flood_warning", "INTEGER"),
+            ("nws_severe_thunderstorm_warning", "INTEGER"),
+            ("nws_tornado_watch", "INTEGER"),
+            ("nws_active_alert_count", "INTEGER"),
         ]
         for name, col_type in additions:
             if name in cols:
@@ -123,6 +135,16 @@ class StateStore:
                         _safe_float(row.get("weather_sky_cover_pct")),
                         _safe_text(row.get("weather_observed_at")),
                         _safe_text(row.get("weather_source")),
+                        _safe_int(row.get("hour_of_day")),
+                        _safe_int(row.get("day_of_week")),
+                        _safe_int(row.get("is_weekend")),
+                        _safe_int(row.get("is_rush_hour")),
+                        _safe_int(row.get("month")),
+                        _safe_int(row.get("is_school_day")),
+                        _safe_int(row.get("nws_flash_flood_warning")),
+                        _safe_int(row.get("nws_severe_thunderstorm_warning")),
+                        _safe_int(row.get("nws_tornado_watch")),
+                        _safe_int(row.get("nws_active_alert_count")),
                     )
                 )
                 if len(rows) >= 500:
@@ -144,8 +166,11 @@ class StateStore:
             (incident_number, location, cause, reported, assisting, latitude, longitude, created_at,
              weather_temp_f, weather_precip_prob, weather_precip_in, weather_wind_speed_mph,
              weather_wind_gust_mph, weather_visibility_mi, weather_sky_cover_pct,
-             weather_observed_at, weather_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             weather_observed_at, weather_source,
+             hour_of_day, day_of_week, is_weekend, is_rush_hour, month, is_school_day,
+             nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch,
+             nws_active_alert_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -197,6 +222,16 @@ class StateStore:
                     _safe_float(inc.get("weather_sky_cover_pct")),
                     _safe_text(inc.get("weather_observed_at")),
                     _safe_text(inc.get("weather_source")),
+                    _safe_int(inc.get("hour_of_day")),
+                    _safe_int(inc.get("day_of_week")),
+                    _safe_int(inc.get("is_weekend")),
+                    _safe_int(inc.get("is_rush_hour")),
+                    _safe_int(inc.get("month")),
+                    _safe_int(inc.get("is_school_day")),
+                    _safe_int(inc.get("nws_flash_flood_warning")),
+                    _safe_int(inc.get("nws_severe_thunderstorm_warning")),
+                    _safe_int(inc.get("nws_tornado_watch")),
+                    _safe_int(inc.get("nws_active_alert_count")),
                 )
             )
 
@@ -235,6 +270,16 @@ class StateStore:
             "weather_sky_cover_pct",
             "weather_observed_at",
             "weather_source",
+            "hour_of_day",
+            "day_of_week",
+            "is_weekend",
+            "is_rush_hour",
+            "month",
+            "is_school_day",
+            "nws_flash_flood_warning",
+            "nws_severe_thunderstorm_warning",
+            "nws_tornado_watch",
+            "nws_active_alert_count",
         ]
 
         write_header = os.path.getsize(self.csv_path) == 0
@@ -252,7 +297,10 @@ class StateStore:
             SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
                    weather_temp_f, weather_precip_prob, weather_precip_in,
                    weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
-                   weather_sky_cover_pct, weather_observed_at, weather_source
+                   weather_sky_cover_pct, weather_observed_at, weather_source,
+                   hour_of_day, day_of_week, is_weekend, is_rush_hour, month, is_school_day,
+                   nws_flash_flood_warning, nws_severe_thunderstorm_warning,
+                   nws_tornado_watch, nws_active_alert_count
             FROM incidents
             """
         ).fetchall()
@@ -277,35 +325,57 @@ class StateStore:
                     "weather_sky_cover_pct": row[13],
                     "weather_observed_at": row[14] or "",
                     "weather_source": row[15] or "",
+                    "hour_of_day": row[16],
+                    "day_of_week": row[17],
+                    "is_weekend": row[18],
+                    "is_rush_hour": row[19],
+                    "month": row[20],
+                    "is_school_day": row[21],
+                    "nws_flash_flood_warning": row[22],
+                    "nws_severe_thunderstorm_warning": row[23],
+                    "nws_tornado_watch": row[24],
+                    "nws_active_alert_count": row[25],
                 }
             )
         return out
+
+
+_ALL_CSV_COLS = [
+    "location",
+    "cause",
+    "reported",
+    "assisting",
+    "incident_number",
+    "latitude",
+    "longitude",
+    "weather_temp_f",
+    "weather_precip_prob",
+    "weather_precip_in",
+    "weather_wind_speed_mph",
+    "weather_wind_gust_mph",
+    "weather_visibility_mi",
+    "weather_sky_cover_pct",
+    "weather_observed_at",
+    "weather_source",
+    "hour_of_day",
+    "day_of_week",
+    "is_weekend",
+    "is_rush_hour",
+    "month",
+    "is_school_day",
+    "nws_flash_flood_warning",
+    "nws_severe_thunderstorm_warning",
+    "nws_tornado_watch",
+    "nws_active_alert_count",
+]
 
 
 def ensure_csv_exists(filename: str) -> None:
     if os.path.exists(filename):
         _ensure_csv_columns(filename)
         return
-    cols = [
-        "location",
-        "cause",
-        "reported",
-        "assisting",
-        "incident_number",
-        "latitude",
-        "longitude",
-        "weather_temp_f",
-        "weather_precip_prob",
-        "weather_precip_in",
-        "weather_wind_speed_mph",
-        "weather_wind_gust_mph",
-        "weather_visibility_mi",
-        "weather_sky_cover_pct",
-        "weather_observed_at",
-        "weather_source",
-    ]
     with open(filename, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=cols)
+        writer = csv.DictWriter(handle, fieldnames=_ALL_CSV_COLS)
         writer.writeheader()
 
 
@@ -317,24 +387,7 @@ def _ensure_csv_columns(filename: str) -> None:
     except Exception:
         header = []
 
-    needed = [
-        "location",
-        "cause",
-        "reported",
-        "assisting",
-        "incident_number",
-        "latitude",
-        "longitude",
-        "weather_temp_f",
-        "weather_precip_prob",
-        "weather_precip_in",
-        "weather_wind_speed_mph",
-        "weather_wind_gust_mph",
-        "weather_visibility_mi",
-        "weather_sky_cover_pct",
-        "weather_observed_at",
-        "weather_source",
-    ]
+    needed = _ALL_CSV_COLS
 
     if not header:
         return
@@ -382,3 +435,12 @@ def _safe_text(value) -> str:
     if text.lower() in {"nan", "none", "null", "undefined"}:
         return ""
     return text
+
+
+def _safe_int(value) -> Optional[int]:
+    try:
+        if value is None or value == "":
+            return None
+        return int(float(value))
+    except Exception:
+        return None

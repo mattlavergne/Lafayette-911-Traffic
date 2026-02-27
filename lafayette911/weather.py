@@ -259,3 +259,88 @@ def fetch_weather_snapshot(
     )
     _WEATHER_CACHE.update(snapshot, cache_ttl_seconds)
     return snapshot
+
+
+# ---------------------------------------------------------------------------
+# NWS Active Alerts
+# ---------------------------------------------------------------------------
+
+NWS_ALERTS_URL = "https://api.weather.gov/alerts/active"
+LAFAYETTE_ZONE = "LAZ034"
+
+
+@dataclass
+class NWSAlertSnapshot:
+    flash_flood_warning: bool
+    severe_thunderstorm_warning: bool
+    tornado_watch: bool
+    active_alert_count: int
+    observed_at: str
+
+
+class NWSAlertCache:
+    def __init__(self) -> None:
+        self.expires_at = 0.0
+        self.snapshot: Optional[NWSAlertSnapshot] = None
+
+    def is_fresh(self) -> bool:
+        return bool(self.snapshot) and time.time() < self.expires_at
+
+    def update(self, snapshot: NWSAlertSnapshot, ttl_seconds: int) -> None:
+        self.snapshot = snapshot
+        self.expires_at = time.time() + max(ttl_seconds, 0)
+
+
+_ALERTS_CACHE = NWSAlertCache()
+
+
+def fetch_nws_alerts(
+    session,
+    timeout: int,
+    cache_ttl_seconds: int,
+    logger=None,
+) -> Optional[NWSAlertSnapshot]:
+    """Fetch active NWS alerts for Lafayette Parish (zone LAZ034)."""
+    if _ALERTS_CACHE.is_fresh():
+        return _ALERTS_CACHE.snapshot
+
+    headers = {"User-Agent": _get_user_agent()}
+    params = {"zone": LAFAYETTE_ZONE}
+    response = None
+    try:
+        response = session.get(NWS_ALERTS_URL, params=params, headers=headers, timeout=timeout)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+    except Exception as exc:
+        if logger is not None:
+            log_event(logger, "nws_alerts_fetch_error", error=str(exc))
+        return None
+    finally:
+        if response is not None:
+            response.close()
+
+    features = data.get("features") or []
+    flash_flood = False
+    severe_thunderstorm = False
+    tornado_watch = False
+
+    for feat in features:
+        props = feat.get("properties") or {}
+        event = (props.get("event") or "").upper()
+        if "FLASH FLOOD" in event and "WARNING" in event:
+            flash_flood = True
+        if "SEVERE THUNDERSTORM" in event and "WARNING" in event:
+            severe_thunderstorm = True
+        if "TORNADO" in event and "WATCH" in event:
+            tornado_watch = True
+
+    snapshot = NWSAlertSnapshot(
+        flash_flood_warning=flash_flood,
+        severe_thunderstorm_warning=severe_thunderstorm,
+        tornado_watch=tornado_watch,
+        active_alert_count=len(features),
+        observed_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    _ALERTS_CACHE.update(snapshot, cache_ttl_seconds)
+    return snapshot
