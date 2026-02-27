@@ -78,11 +78,14 @@ class StateStore:
             ("is_rush_hour", "INTEGER"),
             ("month", "INTEGER"),
             ("is_school_day", "INTEGER"),
+            ("is_holiday", "INTEGER"),
             # NWS active alerts
             ("nws_flash_flood_warning", "INTEGER"),
             ("nws_severe_thunderstorm_warning", "INTEGER"),
             ("nws_tornado_watch", "INTEGER"),
             ("nws_active_alert_count", "INTEGER"),
+            # Road classification (from location name or OSM)
+            ("road_type", "TEXT"),
         ]
         for name, col_type in additions:
             if name in cols:
@@ -141,10 +144,12 @@ class StateStore:
                         _safe_int(row.get("is_rush_hour")),
                         _safe_int(row.get("month")),
                         _safe_int(row.get("is_school_day")),
+                        _safe_int(row.get("is_holiday")),
                         _safe_int(row.get("nws_flash_flood_warning")),
                         _safe_int(row.get("nws_severe_thunderstorm_warning")),
                         _safe_int(row.get("nws_tornado_watch")),
                         _safe_int(row.get("nws_active_alert_count")),
+                        _safe_text(row.get("road_type")),
                     )
                 )
                 if len(rows) >= 500:
@@ -167,10 +172,10 @@ class StateStore:
              weather_temp_f, weather_precip_prob, weather_precip_in, weather_wind_speed_mph,
              weather_wind_gust_mph, weather_visibility_mi, weather_sky_cover_pct,
              weather_observed_at, weather_source,
-             hour_of_day, day_of_week, is_weekend, is_rush_hour, month, is_school_day,
+             hour_of_day, day_of_week, is_weekend, is_rush_hour, month, is_school_day, is_holiday,
              nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch,
-             nws_active_alert_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             nws_active_alert_count, road_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -228,10 +233,12 @@ class StateStore:
                     _safe_int(inc.get("is_rush_hour")),
                     _safe_int(inc.get("month")),
                     _safe_int(inc.get("is_school_day")),
+                    _safe_int(inc.get("is_holiday")),
                     _safe_int(inc.get("nws_flash_flood_warning")),
                     _safe_int(inc.get("nws_severe_thunderstorm_warning")),
                     _safe_int(inc.get("nws_tornado_watch")),
                     _safe_int(inc.get("nws_active_alert_count")),
+                    _safe_text(inc.get("road_type")),
                 )
             )
 
@@ -276,10 +283,12 @@ class StateStore:
             "is_rush_hour",
             "month",
             "is_school_day",
+            "is_holiday",
             "nws_flash_flood_warning",
             "nws_severe_thunderstorm_warning",
             "nws_tornado_watch",
             "nws_active_alert_count",
+            "road_type",
         ]
 
         write_header = os.path.getsize(self.csv_path) == 0
@@ -298,9 +307,9 @@ class StateStore:
                    weather_temp_f, weather_precip_prob, weather_precip_in,
                    weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
                    weather_sky_cover_pct, weather_observed_at, weather_source,
-                   hour_of_day, day_of_week, is_weekend, is_rush_hour, month, is_school_day,
+                   hour_of_day, day_of_week, is_weekend, is_rush_hour, month, is_school_day, is_holiday,
                    nws_flash_flood_warning, nws_severe_thunderstorm_warning,
-                   nws_tornado_watch, nws_active_alert_count
+                   nws_tornado_watch, nws_active_alert_count, road_type, created_at
             FROM incidents
             """
         ).fetchall()
@@ -331,10 +340,13 @@ class StateStore:
                     "is_rush_hour": row[19],
                     "month": row[20],
                     "is_school_day": row[21],
-                    "nws_flash_flood_warning": row[22],
-                    "nws_severe_thunderstorm_warning": row[23],
-                    "nws_tornado_watch": row[24],
-                    "nws_active_alert_count": row[25],
+                    "is_holiday": row[22],
+                    "nws_flash_flood_warning": row[23],
+                    "nws_severe_thunderstorm_warning": row[24],
+                    "nws_tornado_watch": row[25],
+                    "nws_active_alert_count": row[26],
+                    "road_type": row[27] or "",
+                    "created_at": row[28] or "",
                 }
             )
         return out
@@ -363,10 +375,12 @@ _ALL_CSV_COLS = [
     "is_rush_hour",
     "month",
     "is_school_day",
+    "is_holiday",
     "nws_flash_flood_warning",
     "nws_severe_thunderstorm_warning",
     "nws_tornado_watch",
     "nws_active_alert_count",
+    "road_type",
 ]
 
 
