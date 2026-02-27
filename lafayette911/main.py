@@ -127,26 +127,212 @@ _REPORTED_RE = re.compile(
     r"(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?"
 )
 
+# Fallback: MM/DD [HH:MM [AM/PM]] without year (assumes current year)
+_REPORTED_NOYEAR_RE = re.compile(
+    r"(\d{1,2})/(\d{1,2})"
+    r"(?!\s*/\s*\d)"  # negative lookahead: not followed by /digits
+    r"(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?"
+    r"\s*$"
+)
+
 
 def _parse_reported_dt(reported: str) -> Optional[datetime]:
-    """Parse a reported timestamp string (MM/DD/YYYY HH:MM [AM/PM]) into a datetime."""
+    """Parse a reported timestamp string into a datetime.
+
+    Handles:
+      - MM/DD/YYYY [HH:MM [AM/PM]]  (primary, full date)
+      - MM/DD [HH:MM [AM/PM]]       (fallback, no year — assumes current year)
+    """
     if not reported:
         return None
-    m = _REPORTED_RE.search(reported.strip())
-    if not m:
+    s = reported.strip()
+    m = _REPORTED_RE.search(s)
+    if m:
+        try:
+            mm, dd, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            hh = int(m.group(4)) if m.group(4) is not None else 0
+            mi = int(m.group(5)) if m.group(5) is not None else 0
+            ap = (m.group(6) or "").lower()
+            if ap == "pm" and hh < 12:
+                hh += 12
+            elif ap == "am" and hh == 12:
+                hh = 0
+            return datetime(yy, mm, dd, hh, mi)
+        except (ValueError, TypeError):
+            pass
+
+    # Fallback: MM/DD without year — assume current calendar year
+    m2 = _REPORTED_NOYEAR_RE.search(s)
+    if m2:
+        try:
+            mm, dd = int(m2.group(1)), int(m2.group(2))
+            yy = datetime.now().year
+            hh = int(m2.group(3)) if m2.group(3) is not None else 0
+            mi = int(m2.group(4)) if m2.group(4) is not None else 0
+            ap = (m2.group(5) or "").lower()
+            if ap == "pm" and hh < 12:
+                hh += 12
+            elif ap == "am" and hh == 12:
+                hh = 0
+            return datetime(yy, mm, dd, hh, mi)
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
+def _is_holiday(dt: Optional[datetime]) -> bool:
+    """Return True if dt falls on a major US federal or Louisiana public holiday.
+
+    Covers: New Year's Day, MLK Day (3rd Mon Jan), Presidents Day (3rd Mon Feb),
+    Memorial Day (last Mon May), Juneteenth (Jun 19), Independence Day (Jul 4),
+    Labor Day (1st Mon Sep), Columbus/Indigenous Peoples Day (2nd Mon Oct),
+    Veterans Day (Nov 11), Thanksgiving (4th Thu Nov), Christmas (Dec 25).
+    Also marks the day after Christmas and New Year's Eve as observed when they
+    fall on a weekday (common Louisiana practice).
+    """
+    if dt is None:
+        return False
+    m, d, dow = dt.month, dt.day, dt.weekday()  # 0=Mon
+
+    # Fixed-date holidays (observed Mon if Sun, observed Fri if Sat)
+    def _observed(month: int, day: int) -> bool:
+        try:
+            h = datetime(dt.year, month, day)
+            h_dow = h.weekday()  # 0=Mon, 6=Sun
+            if h_dow == 6:  # Sunday → observed Monday
+                return m == month and d == day or (
+                    datetime(dt.year, month, day + 1 if day < 31 else 1).month == m and
+                    datetime(dt.year, month, day + 1 if day < 31 else 1).day == d
+                )
+            if h_dow == 5:  # Saturday → observed Friday
+                return m == month and d == day or (
+                    datetime(dt.year, month, day - 1).month == m and
+                    datetime(dt.year, month, day - 1).day == d
+                )
+            return m == month and d == day
+        except (ValueError, TypeError):
+            return False
+
+    # Simpler observed-day check: within ±1 day for the holiday date
+    def _near(month: int, day: int) -> bool:
+        try:
+            h = datetime(dt.year, month, day)
+            delta = abs((dt - h).days)
+            if delta == 0:
+                return True
+            h_dow = h.weekday()
+            # Sun holiday → Mon observed
+            if h_dow == 6 and (dt - h).days == 1:
+                return True
+            # Sat holiday → Fri observed
+            if h_dow == 5 and (h - dt).days == 1:
+                return True
+            return False
+        except (ValueError, TypeError):
+            return False
+
+    if _near(1, 1): return True    # New Year's Day
+    if _near(6, 19): return True   # Juneteenth
+    if _near(7, 4): return True    # Independence Day
+    if _near(11, 11): return True  # Veterans Day
+    if _near(12, 25): return True  # Christmas
+
+    # Floating Monday holidays
+    def _nth_weekday(year: int, month: int, n: int, weekday: int) -> Optional[int]:
+        """Return day-of-month for nth occurrence (1-based) of weekday in month."""
+        try:
+            count = 0
+            for day in range(1, 32):
+                try:
+                    if datetime(year, month, day).weekday() == weekday:
+                        count += 1
+                        if count == n:
+                            return day
+                except ValueError:
+                    break
+        except Exception:
+            pass
         return None
-    try:
-        mm, dd, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        hh = int(m.group(4)) if m.group(4) is not None else 0
-        mi = int(m.group(5)) if m.group(5) is not None else 0
-        ap = (m.group(6) or "").lower()
-        if ap == "pm" and hh < 12:
-            hh += 12
-        elif ap == "am" and hh == 12:
-            hh = 0
-        return datetime(yy, mm, dd, hh, mi)
-    except (ValueError, TypeError):
+
+    def _last_weekday(year: int, month: int, weekday: int) -> Optional[int]:
+        """Return day-of-month for the LAST occurrence of weekday in month."""
+        result = None
+        try:
+            for day in range(1, 32):
+                try:
+                    if datetime(year, month, day).weekday() == weekday:
+                        result = day
+                except ValueError:
+                    break
+        except Exception:
+            pass
+        return result
+
+    mlk = _nth_weekday(dt.year, 1, 3, 0)       # MLK Day: 3rd Mon Jan
+    if mlk and m == 1 and d == mlk: return True
+
+    pres = _nth_weekday(dt.year, 2, 3, 0)      # Presidents Day: 3rd Mon Feb
+    if pres and m == 2 and d == pres: return True
+
+    mem = _last_weekday(dt.year, 5, 0)         # Memorial Day: last Mon May
+    if mem and m == 5 and d == mem: return True
+
+    labor = _nth_weekday(dt.year, 9, 1, 0)     # Labor Day: 1st Mon Sep
+    if labor and m == 9 and d == labor: return True
+
+    columbus = _nth_weekday(dt.year, 10, 2, 0) # Columbus/Indigenous: 2nd Mon Oct
+    if columbus and m == 10 and d == columbus: return True
+
+    thanks = _nth_weekday(dt.year, 11, 4, 3)   # Thanksgiving: 4th Thu Nov
+    if thanks and m == 11 and d == thanks: return True
+
+    return False
+
+
+def _infer_road_type(location: str) -> Optional[str]:
+    """Infer OSM highway classification from a location/intersection name.
+
+    Returns one of: motorway, trunk, primary, secondary, tertiary, residential, service, or None.
+    This provides data for the Road Type filter when OSMnx is unavailable.
+    """
+    if not location:
         return None
+    loc = str(location).upper()
+
+    # Interstate highways (I-10, I-49, I-610 etc.)
+    if re.search(r'\bI[-\s]?\d{1,3}\b', loc) or re.search(r'\bINTERSTATE\s+\d', loc):
+        return "motorway"
+
+    # US highways (US 90, US-190)
+    if re.search(r'\bU\.?S\.?\s*[-]?\s*\d{1,3}\b', loc):
+        return "trunk"
+
+    # Louisiana state highways (LA 14, LA-182, HWY 90, HWY-14)
+    if re.search(r'\bLA\s*[-]?\s*\d{1,3}\b', loc) or re.search(r'\bHWY\s*[-]?\s*\d{1,3}\b', loc):
+        return "primary"
+
+    # Known major arterials in Lafayette Parish
+    _PRIMARY_KEYWORDS = (
+        "AMBASSADOR CAFFERY", "EVANGELINE THRUWAY", "NW EVANGELINE",
+        "JOHNSTON ST", "JOHNSTON STREET", "PINHOOK", "KALISTE SALOOM",
+        "HUGH WALLIS", "UNIVERSITY AVE", "UNIVERSITY BLVD",
+        "CONGRESS ST", "CAMERON ST", "BERTRAND DR", "VEROT SCHOOL",
+        "PONT DES MOUTON", "WILLOW ST", "ERASTE LANDRY", "MUDD AVE",
+        "CURRY ST", "OAK PARK BLVD", "RIDGE RD",
+        "W PINHOOK", "E PINHOOK", "NORTH UNIVERSITY",
+        "S COLLEGE RD", "N COLLEGE RD", "CAMELLIA BLVD",
+        "DUHON RD", "YOUNGSVILLE HWY", "SURREY ST",
+    )
+    for kw in _PRIMARY_KEYWORDS:
+        if kw in loc:
+            return "primary"
+
+    # Boulevards and parkways → secondary
+    if re.search(r'\b(BLVD|BOULEVARD|PKWY|PARKWAY|THRUWAY|EXPRESSWAY)\b', loc):
+        return "secondary"
+
+    return None
 
 
 def _is_school_day(dt: Optional[datetime]) -> bool:
@@ -191,7 +377,7 @@ def _is_school_day(dt: Optional[datetime]) -> bool:
 
 
 def _enrich_incident_time(inc: dict) -> None:
-    """Derive time-context fields from the reported timestamp and attach to the incident dict."""
+    """Derive time-context and road-type fields from the incident and attach to the dict."""
     reported = inc.get("reported", "")
     dt = _parse_reported_dt(str(reported))
     if dt is None:
@@ -201,18 +387,24 @@ def _enrich_incident_time(inc: dict) -> None:
         inc["is_rush_hour"] = None
         inc["month"] = None
         inc["is_school_day"] = None
-        return
-    hour = dt.hour
-    dow = dt.weekday()  # 0=Mon, 6=Sun
-    is_weekend = 1 if dow >= 5 else 0
-    # Rush hour: Mon-Fri 7-9 AM or 4-7 PM (Central)
-    is_rush = 1 if (dow < 5 and ((7 <= hour < 9) or (16 <= hour < 19))) else 0
-    inc["hour_of_day"] = hour
-    inc["day_of_week"] = dow
-    inc["is_weekend"] = is_weekend
-    inc["is_rush_hour"] = is_rush
-    inc["month"] = dt.month
-    inc["is_school_day"] = 1 if _is_school_day(dt) else 0
+        inc["is_holiday"] = None
+    else:
+        hour = dt.hour
+        dow = dt.weekday()  # 0=Mon, 6=Sun
+        is_weekend = 1 if dow >= 5 else 0
+        # Rush hour: Mon-Fri 7-9 AM or 4-7 PM (Central)
+        is_rush = 1 if (dow < 5 and ((7 <= hour < 9) or (16 <= hour < 19))) else 0
+        inc["hour_of_day"] = hour
+        inc["day_of_week"] = dow
+        inc["is_weekend"] = is_weekend
+        inc["is_rush_hour"] = is_rush
+        inc["month"] = dt.month
+        inc["is_school_day"] = 1 if _is_school_day(dt) else 0
+        inc["is_holiday"] = 1 if _is_holiday(dt) else 0
+
+    # Road type from location name (stored so filters work without osmnx)
+    if not inc.get("road_type"):
+        inc["road_type"] = _infer_road_type(inc.get("location", ""))
 
 
 def _in_lafayette_bounds(lat, lng) -> bool:

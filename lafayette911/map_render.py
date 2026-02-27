@@ -960,7 +960,8 @@ def _write_streaming_datajs(
                        weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
                        weather_sky_cover_pct, weather_observed_at, weather_source,
                        hour_of_day, day_of_week, is_school_day,
-                       nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch
+                       nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch,
+                       road_type, created_at
                 FROM incidents
                 """
             )
@@ -987,6 +988,8 @@ def _write_streaming_datajs(
                 nws_flood,
                 nws_storm,
                 nws_tornado,
+                db_road_type,
+                created_at,
             ) in cursor:
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
@@ -1031,7 +1034,11 @@ def _write_streaming_datajs(
                 reported_str = str(reported or "").strip()
                 lat_r = round(float(lat), 6)
                 lon_r = round(float(lon), 6)
-                highway_type = osm_road_types.get((lat_r, lon_r))
+                # Prefer OSM-computed road type; fall back to DB-stored inference
+                highway_type = (
+                    osm_road_types.get((lat_r, lon_r))
+                    or _safe_text(db_road_type) or None
+                )
                 incident = [
                     lat_r,
                     lon_r,
@@ -1050,15 +1057,17 @@ def _write_streaming_datajs(
                     _safe_float(weather_sky_cover_pct),
                     _safe_text(weather_observed_at),
                     _safe_text(weather_source),
-                    # New enrichment fields (indices 17-22)
+                    # Enrichment fields (indices 17-22)
                     hour_of_day,
                     day_of_week,
                     is_school_day,
                     nws_flood,
                     nws_storm,
                     nws_tornado,
-                    # OSM road classification (index 23)
+                    # OSM / inferred road classification (index 23)
                     highway_type,
+                    # created_at ISO timestamp (index 24)
+                    _safe_text(created_at),
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
@@ -1098,15 +1107,23 @@ def _write_streaming_datajs(
                     str(entry.get("assisting") or "").strip(),
                     1.0,
                     int(count),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    "",
-                    "",
+                    None,   # weather_temp_f
+                    None,   # weather_precip_prob
+                    None,   # weather_precip_in
+                    None,   # weather_wind_speed_mph
+                    None,   # weather_wind_gust_mph
+                    None,   # weather_visibility_mi
+                    None,   # weather_sky_cover_pct
+                    "",     # weather_observed_at
+                    "",     # weather_source
+                    None,   # hour_of_day
+                    None,   # day_of_week
+                    None,   # is_school_day
+                    None,   # nws_flood
+                    None,   # nws_storm
+                    None,   # nws_tornado
+                    None,   # highway_type
+                    "",     # created_at
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 tc_count += 1
@@ -1445,8 +1462,25 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   }}
 
   input[type="checkbox"] {{
-    width: 16px;
-    height: 16px;
+    width: 17px;
+    height: 17px;
+    min-width: 17px;
+  }}
+
+  .row-checks label {{
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    background: rgba(0,0,0,0.03);
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }}
+
+  .row-checks label:hover {{
+    background: rgba(43,108,176,0.08);
+    color: #2b6cb0;
   }}
 
   select:disabled {{
@@ -1567,24 +1601,31 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       flex: 1 1 auto;
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
-      padding-top: 8px;
-      padding-bottom: 28px;
+      padding: 10px 14px 32px 14px;
     }}
 
     #mobileHandle {{
       display: block;
-      width: 44px;
+      width: 48px;
       height: 5px;
       border-radius: 999px;
-      background: rgba(0,0,0,0.18);
-      margin: 8px auto 0 auto;
+      background: rgba(0,0,0,0.2);
+      margin: 10px auto 2px auto;
     }}
 
     #panelHeader {{
-      padding-top: 6px;
+      padding: 6px 14px 8px 14px;
       flex-direction: column;
       align-items: flex-start;
-      gap: 6px;
+      gap: 8px;
+    }}
+
+    #panelTitle {{
+      font-size: 16px;
+    }}
+
+    #panelSubtitle {{
+      font-size: 13px;
     }}
 
     #panelActions {{
@@ -1595,56 +1636,102 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
     #panelActions button {{
       flex: 1;
-      padding: 12px 10px;
-      font-size: 15px;
+      padding: 14px 12px;
+      font-size: 16px;
       border-radius: 14px;
+      font-weight: 600;
+      min-height: 48px;
     }}
 
     select {{
-      padding: 10px 12px;
-      font-size: 15px;
+      padding: 13px 14px;
+      padding-right: 32px;
+      font-size: 16px;
       border-radius: 12px;
+      min-height: 48px;
     }}
 
     input[type="checkbox"] {{
-      width: 20px;
-      height: 20px;
+      width: 22px;
+      height: 22px;
+      min-width: 22px;
+    }}
+
+    .row label {{
+      font-size: 15px;
+      gap: 10px;
+      padding: 4px 0;
+      min-height: 44px;
+      align-items: center;
+      flex: 1 1 140px;
+    }}
+
+    .row-checks label {{
+      font-size: 15px;
+      gap: 10px;
+      padding: 6px 8px;
+      min-height: 44px;
+      align-items: center;
+      background: rgba(0,0,0,0.03);
+      border-radius: 10px;
     }}
 
     .pill {{
-      font-size: 13px;
-      padding: 8px 12px;
+      font-size: 14px;
+      padding: 8px 14px;
     }}
 
     #panelCountBar {{
-      padding: 8px 12px 4px 12px;
+      padding: 8px 14px 6px 14px;
+      gap: 10px;
     }}
 
     #panelQuickFilters {{
-      padding-bottom: 6px;
+      padding: 0 14px 8px 14px;
+    }}
+
+    #panelQuickFilters label {{
+      font-size: 15px;
+      gap: 10px;
+      min-height: 44px;
+      align-items: center;
+    }}
+
+    #panelQuickFilters input[type="checkbox"] {{
+      width: 22px;
+      height: 22px;
     }}
 
     .section {{
-      padding: 4px 0;
+      padding: 8px 0;
+    }}
+
+    .section-title {{
+      font-size: 12px;
+      margin-bottom: 10px;
     }}
 
     .row {{
-      gap: 6px;
-      margin-bottom: 6px;
+      gap: 8px;
+      margin-bottom: 10px;
     }}
 
     .row-grid {{
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
+      gap: 10px;
     }}
 
     .row-checks {{
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 6px;
+      gap: 8px;
+    }}
+
+    .row-note {{
+      font-size: 13px;
     }}
 
     #controlPanel.collapsed {{
-      max-height: 120px;
+      max-height: 130px;
     }}
 
     #weatherWidget {{
@@ -1655,11 +1742,16 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       max-width: none;
       border-radius: 14px;
       pointer-events: none;
+      font-size: 13px;
     }}
   }}
 
   @media (max-width: 340px) {{
     .row-grid {{
+      grid-template-columns: 1fr;
+    }}
+
+    .row-checks {{
       grid-template-columns: 1fr;
     }}
 
@@ -1699,25 +1791,34 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   <div id="panelBody">
 
     <div class="section">
-      <div class="section-title">Filters</div>
+      <div class="section-title">Incident Type</div>
       <div class="row row-grid">
         <label>Group:
           <select id="causeGroupSelect">
-            <option value="__ALL__">All</option>
+            <option value="__ALL__">All groups</option>
           </select>
         </label>
 
         <label>Type:
           <select id="causeSelect">
-            <option value="__ALL__">All</option>
+            <option value="__ALL__">All types</option>
           </select>
         </label>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Date &amp; Time</div>
+      <div class="row row-checks">
+        <label><input type="checkbox" id="chkTodayOnly"> Today only</label>
+        <label><input type="checkbox" id="chkRushHour"> Rush hour only</label>
+        <label><input type="checkbox" id="chkSchoolDay"> School days only</label>
       </div>
 
       <div class="row row-grid">
         <label>Month:
           <select id="monthSelect">
-            <option value="">--</option>
+            <option value="">All months</option>
             <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
             <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
             <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
@@ -1727,7 +1828,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
         <label>Day:
           <select id="daySelect">
-            <option value="">--</option>
+            <option value="">All days</option>
             {''.join([f'<option value="{str(i).zfill(2)}">{i}</option>' for i in range(1, 32)])}
           </select>
         </label>
@@ -1740,36 +1841,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       </div>
 
       <div class="row row-grid">
-        <label>Day type:
-          <select id="dayTypeSelect">
-            <option value="all">All</option>
-            <option value="weekday">Weekdays</option>
-            <option value="weekend">Weekends</option>
-          </select>
-        </label>
-
-        <label>Time block:
-          <select id="timeBlockSelect">
-            <option value="all">All</option>
-            <option value="morning">Morning (06-10)</option>
-            <option value="midday">Midday (10-15)</option>
-            <option value="evening">Evening (15-19)</option>
-            <option value="night">Night (19-24)</option>
-            <option value="latenight">Late night (00-06)</option>
-          </select>
-        </label>
-      </div>
-
-      <div class="row row-checks">
-        <label><input type="checkbox" id="chkTodayOnly"> Today only</label>
-        <label><input type="checkbox" id="chkRushHour"> Rush hour only</label>
-        <label><input type="checkbox" id="chkSchoolDay"> School days only</label>
-      </div>
-
-      <div class="row row-grid">
         <label>Day of week:
           <select id="dowSelect">
-            <option value="all">All</option>
+            <option value="all">All days</option>
             <option value="1">Monday</option>
             <option value="2">Tuesday</option>
             <option value="3">Wednesday</option>
@@ -1780,11 +1854,32 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
           </select>
         </label>
 
+        <label>Day type:
+          <select id="dayTypeSelect">
+            <option value="all">All</option>
+            <option value="weekday">Weekdays</option>
+            <option value="weekend">Weekends</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row row-grid">
+        <label>Time of day:
+          <select id="timeBlockSelect">
+            <option value="all">All hours</option>
+            <option value="morning">Morning (6–10 am)</option>
+            <option value="midday">Midday (10 am–3 pm)</option>
+            <option value="evening">Evening (3–7 pm)</option>
+            <option value="night">Night (7 pm–12 am)</option>
+            <option value="latenight">Late night (12–6 am)</option>
+          </select>
+        </label>
+
         <label>Road type:
           <select id="roadTypeSelect">
-            <option value="any">Any</option>
-            <option value="motorway">Motorway / Hwy</option>
-            <option value="trunk">Trunk road</option>
+            <option value="any">Any road</option>
+            <option value="motorway">Interstate / motorway</option>
+            <option value="trunk">US highway (trunk)</option>
             <option value="primary">Primary arterial</option>
             <option value="secondary">Secondary road</option>
             <option value="tertiary">Tertiary road</option>
@@ -2013,6 +2108,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   const IDX_NWS_STORM = 21;
   const IDX_NWS_TORNADO = 22;
   const IDX_HIGHWAY = 23;
+  const IDX_CREATED_AT = 24;
 
   function esc(s) {{
     return String(s || "").replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
@@ -2229,6 +2325,27 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       return {{ mm, dd, yy, hh, mi, dt }};
     }}
 
+    // Fallback: MM/DD [HH:MM [AM/PM]] without year — assume current year
+    const m3 = s.match(/^(\\d{{1,2}})\\/(\\d{{1,2}})(?!\\/)(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?\\s*$/);
+    if (m3) {{
+      const now = new Date();
+      const mm = m3[1].padStart(2, "0");
+      const dd = m3[2].padStart(2, "0");
+      const yy = String(now.getFullYear());
+      let hh = null;
+      let mi = null;
+      if (m3[3] != null && m3[4] != null) {{
+        hh = parseInt(m3[3], 10);
+        mi = parseInt(m3[4], 10);
+        const ap = m3[5] ? String(m3[5]).toLowerCase() : null;
+        if (ap === "pm" && hh < 12) hh += 12;
+        if (ap === "am" && hh === 12) hh = 0;
+        if (hh < 0 || hh > 23) hh = null;
+      }}
+      const dt = new Date(now.getFullYear(), parseInt(mm, 10) - 1, parseInt(dd, 10), hh || 0, mi || 0, 0, 0);
+      return {{ mm, dd, yy, hh, mi, dt }};
+    }}
+
     return null;
   }}
 
@@ -2350,16 +2467,25 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   function matchesDateFilter(row, f) {{
     if (!f.todayOnly && !f.mm && !f.dd && !f.yy) return true;
     const pr = parseReported(row[IDX_REPORTED]);
-    if (!pr) return false;
     if (f.todayOnly) {{
       const now = new Date();
-      const today = {{
-        mm: String(now.getMonth() + 1).padStart(2, "0"),
-        dd: String(now.getDate()).padStart(2, "0"),
-        yy: String(now.getFullYear())
-      }};
-      return pr.yy === today.yy && pr.mm === today.mm && pr.dd === today.dd;
+      const ty = now.getFullYear(), tm = now.getMonth(), td = now.getDate();
+      const todayMM = String(tm + 1).padStart(2, "0");
+      const todayDD = String(td).padStart(2, "0");
+      const todayYY = String(ty);
+      // Check reported date first
+      if (pr && pr.yy === todayYY && pr.mm === todayMM && pr.dd === todayDD) return true;
+      // Fallback: check created_at (when incident entered our system)
+      const createdRaw = (row.length > IDX_CREATED_AT) ? row[IDX_CREATED_AT] : null;
+      if (createdRaw) {{
+        const cDt = new Date(createdRaw);
+        if (!isNaN(cDt.getTime())) {{
+          if (cDt.getFullYear() === ty && cDt.getMonth() === tm && cDt.getDate() === td) return true;
+        }}
+      }}
+      return false;
     }}
+    if (!pr) return false;
     if (f.yy && pr.yy !== f.yy) return false;
     if (f.mm && pr.mm !== f.mm) return false;
     if (f.dd && pr.dd !== f.dd) return false;
@@ -2499,11 +2625,38 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     return isRushHourFromParsed(pr);
   }}
 
+  function isSchoolDayJS(dt) {{
+    // Mirrors Python _is_school_day — LPSS heuristic
+    if (!dt) return false;
+    const dow = dt.getDay(); // 0=Sun, 6=Sat
+    if (dow === 0 || dow === 6) return false;
+    const month = dt.getMonth() + 1; // 1-12
+    const day = dt.getDate();
+    if (month === 6 || month === 7) return false;         // summer break
+    if (month === 8 && day < 15) return false;            // starts mid-Aug
+    if (month === 12 && day >= 20) return false;          // winter break
+    if (month === 1 && day <= 3) return false;
+    if (month === 11 && day >= 21 && day <= 27) {{
+      try {{
+        const nov1 = new Date(dt.getFullYear(), 10, 1); // Nov 1
+        const thu = (4 - nov1.getDay() + 7) % 7;        // days to 1st Thu
+        const thanksgiving = 1 + thu + 21;               // 4th Thursday
+        if (day >= thanksgiving - 1 && day <= thanksgiving + 1) return false;
+      }} catch (e) {{}}
+    }}
+    return true;
+  }}
+
   function matchesSchoolDay(row, checked) {{
     if (!checked) return true;
     const val = (row.length > IDX_SCHOOL_DAY) ? row[IDX_SCHOOL_DAY] : null;
-    if (val == null) return true;  // no data — don't exclude
-    return val === 1 || val === true;
+    // Use stored value when available
+    if (val === 1 || val === true) return true;
+    if (val === 0 || val === false) return false;
+    // val is null — fall back to computing from the reported timestamp
+    const pr = parseReported(row[IDX_REPORTED]);
+    if (!pr || !pr.dt) return false;
+    return isSchoolDayJS(pr.dt);
   }}
 
   function matchesDow(row, dowValue) {{
