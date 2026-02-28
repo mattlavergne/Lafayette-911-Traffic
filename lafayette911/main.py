@@ -124,14 +124,22 @@ def load_config(base_dir: Optional[str] = None) -> Config:
 
 _REPORTED_RE = re.compile(
     r"(\d{1,2})/(\d{1,2})/(\d{2,4})"
-    r"(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?"
+    r"(?:"
+    r"(?:\s+|\s*[T@-]\s*)"
+    r"(\d{1,2}):(\d{2})(?::(\d{2}))?"
+    r"(?:\s*([AaPp][Mm]))?"
+    r")?"
 )
 
-# Fallback: MM/DD [HH:MM [AM/PM]] without year (assumes current year)
+# Fallback: MM/DD [HH:MM[:SS] [AM/PM]] without year (assumes current year)
 _REPORTED_NOYEAR_RE = re.compile(
     r"(\d{1,2})/(\d{1,2})"
     r"(?!\s*/\s*\d)"  # negative lookahead: not followed by /digits
-    r"(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?"
+    r"(?:"
+    r"(?:\s+|\s*[T@-]\s*)"
+    r"(\d{1,2}):(\d{2})(?::(\d{2}))?"
+    r"(?:\s*([AaPp][Mm]))?"
+    r")?"
     r"\s*$"
 )
 
@@ -139,14 +147,22 @@ _REPORTED_NOYEAR_RE = re.compile(
 def _parse_reported_dt(reported: str) -> Optional[datetime]:
     """Parse a reported timestamp string into a datetime.
 
-    Handles:
-      - MM/DD/YYYY [HH:MM [AM/PM]]  (primary, full date)
-      - MM/DD/YY [HH:MM [AM/PM]]    (2-digit year accepted)
-      - MM/DD [HH:MM [AM/PM]]       (fallback, no year — assumes current year)
+    Handles common feed variants such as:
+      - MM/DD/YYYY [HH:MM[:SS] [AM/PM]]
+      - MM/DD/YY [HH:MM[:SS] [AM/PM]]
+      - MM/DD [HH:MM[:SS] [AM/PM]] (assumes current year)
+      - ISO-like YYYY-MM-DD[ T]HH:MM[:SS]
     """
     if not reported:
         return None
+
     s = reported.strip()
+    if not s:
+        return None
+
+    def _normalize_two_digit_year(yy: int) -> int:
+        return 2000 + yy if yy <= 69 else 1900 + yy
+
     m = _REPORTED_RE.search(s)
     if m:
         try:
@@ -154,11 +170,10 @@ def _parse_reported_dt(reported: str) -> Optional[datetime]:
             yy_raw = m.group(3)
             yy = int(yy_raw)
             if len(yy_raw) == 2:
-                # Sliding window for 2-digit years: 00-69 => 2000-2069, 70-99 => 1970-1999
-                yy = 2000 + yy if yy <= 69 else 1900 + yy
+                yy = _normalize_two_digit_year(yy)
             hh = int(m.group(4)) if m.group(4) is not None else 0
             mi = int(m.group(5)) if m.group(5) is not None else 0
-            ap = (m.group(6) or "").lower()
+            ap = (m.group(7) or "").lower()
             if ap == "pm" and hh < 12:
                 hh += 12
             elif ap == "am" and hh == 12:
@@ -167,7 +182,6 @@ def _parse_reported_dt(reported: str) -> Optional[datetime]:
         except (ValueError, TypeError):
             pass
 
-    # Fallback: MM/DD without year — assume current calendar year
     m2 = _REPORTED_NOYEAR_RE.search(s)
     if m2:
         try:
@@ -175,7 +189,7 @@ def _parse_reported_dt(reported: str) -> Optional[datetime]:
             yy = datetime.now().year
             hh = int(m2.group(3)) if m2.group(3) is not None else 0
             mi = int(m2.group(4)) if m2.group(4) is not None else 0
-            ap = (m2.group(5) or "").lower()
+            ap = (m2.group(6) or "").lower()
             if ap == "pm" and hh < 12:
                 hh += 12
             elif ap == "am" and hh == 12:
@@ -183,6 +197,28 @@ def _parse_reported_dt(reported: str) -> Optional[datetime]:
             return datetime(yy, mm, dd, hh, mi)
         except (ValueError, TypeError):
             pass
+
+    for fmt in (
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%y %I:%M %p",
+        "%m/%d/%y %H:%M",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ):
+        try:
+            dt = datetime.strptime(s, fmt)
+            if "%y" in fmt and "%Y" not in fmt:
+                yy = dt.year % 100
+                dt = dt.replace(year=_normalize_two_digit_year(yy))
+            return dt
+        except (ValueError, TypeError):
+            continue
 
     return None
 

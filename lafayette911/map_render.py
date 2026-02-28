@@ -2292,61 +2292,75 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   function parseReported(reported) {{
     if (!reported) return null;
     const s = String(reported).trim();
+    if (!s) return null;
 
-    // Primary format: MM/DD/YYYY or MM/DD/YY [HH:MM [AM/PM]]
-    const m1 = s.match(/(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{2,4}})(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?/);
+    function normalizeYY(yyRaw) {{
+      if (!yyRaw) return null;
+      if (yyRaw.length === 2) {{
+        const yyNum = parseInt(yyRaw, 10);
+        return String(yyNum <= 69 ? (2000 + yyNum) : (1900 + yyNum));
+      }}
+      return yyRaw;
+    }}
+
+    function buildValidatedDate(yy, mm, dd, hh, mi) {{
+      const y = parseInt(yy, 10);
+      const m = parseInt(mm, 10);
+      const d = parseInt(dd, 10);
+      const h = (hh == null ? 0 : parseInt(hh, 10));
+      const n = (mi == null ? 0 : parseInt(mi, 10));
+      if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d) || !Number.isFinite(h) || !Number.isFinite(n)) return null;
+      const dt = new Date(y, m - 1, d, h, n, 0, 0);
+      if (isNaN(dt.getTime())) return null;
+      if (dt.getFullYear() !== y || dt.getMonth() !== (m - 1) || dt.getDate() !== d) return null;
+      return dt;
+    }}
+
+    // MM/DD/YYYY or MM/DD/YY with optional time seconds and AM/PM.
+    const m1 = s.match(/(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{2,4}})(?:(?:\\s+|\\s*[T@-]\\s*)(\\d{{1,2}}):(\\d{{2}})(?::\\d{{2}})?(?:\\s*([AaPp][Mm]))?)?/);
     if (m1) {{
       const mm = m1[1].padStart(2, "0");
       const dd = m1[2].padStart(2, "0");
-      let yy = m1[3];
-      if (yy.length === 2) {{
-        const yyNum = parseInt(yy, 10);
-        yy = String(yyNum <= 69 ? (2000 + yyNum) : (1900 + yyNum));
-      }}
-      let hh = null;
-      let mi = null;
-      if (m1[4] != null && m1[5] != null) {{
-        hh = parseInt(m1[4], 10);
-        mi = parseInt(m1[5], 10);
-        const ap = m1[6] ? String(m1[6]).toLowerCase() : null;
-        if (ap === "pm" && hh < 12) hh += 12;
-        if (ap === "am" && hh === 12) hh = 0;
-        if (hh < 0 || hh > 23) hh = null;
-      }}
-      const dt = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh || 0, mi || 0, 0, 0);
+      const yy = normalizeYY(m1[3]);
+      let hh = m1[4] != null ? parseInt(m1[4], 10) : 0;
+      const mi = m1[5] != null ? parseInt(m1[5], 10) : 0;
+      const ap = m1[6] ? String(m1[6]).toLowerCase() : null;
+      if (ap === "pm" && hh < 12) hh += 12;
+      if (ap === "am" && hh === 12) hh = 0;
+      if (hh < 0 || hh > 23) return null;
+      const dt = buildValidatedDate(yy, mm, dd, hh, mi);
+      if (!dt) return null;
       return {{ mm, dd, yy, hh, mi, dt }};
     }}
 
-    // Fallback: YYYY-MM-DD[T ][HH:MM] (ISO-style)
-    const m2 = s.match(/(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[T ](\\d{{2}}):(\\d{{2}}))?/);
+    // ISO-like fallback: YYYY-MM-DD[T ]HH:MM[:SS]
+    const m2 = s.match(/(\d{{4}})-(\d{{2}})-(\d{{2}})(?:[T ](\d{{2}}):(\d{{2}})(?::\d{{2}})?)?/);
     if (m2) {{
       const yy = m2[1];
       const mm = m2[2];
       const dd = m2[3];
       const hh = m2[4] != null ? parseInt(m2[4], 10) : 0;
       const mi = m2[5] != null ? parseInt(m2[5], 10) : 0;
-      const dt = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10), hh, mi, 0, 0);
+      const dt = buildValidatedDate(yy, mm, dd, hh, mi);
+      if (!dt) return null;
       return {{ mm, dd, yy, hh, mi, dt }};
     }}
 
-    // Fallback: MM/DD [HH:MM [AM/PM]] without year — assume current year
-    const m3 = s.match(/^(\\d{{1,2}})\\/(\\d{{1,2}})(?!\\/)(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?\\s*$/);
+    // MM/DD without year (assume current year), optional time.
+    const m3 = s.match(/^(\\d{{1,2}})\\/(\\d{{1,2}})(?!\\/)(?:(?:\\s+|\\s*[T@-]\\s*)(\\d{{1,2}}):(\\d{{2}})(?::\\d{{2}})?(?:\\s*([AaPp][Mm]))?)?\\s*$/);
     if (m3) {{
       const now = new Date();
       const mm = m3[1].padStart(2, "0");
       const dd = m3[2].padStart(2, "0");
       const yy = String(now.getFullYear());
-      let hh = null;
-      let mi = null;
-      if (m3[3] != null && m3[4] != null) {{
-        hh = parseInt(m3[3], 10);
-        mi = parseInt(m3[4], 10);
-        const ap = m3[5] ? String(m3[5]).toLowerCase() : null;
-        if (ap === "pm" && hh < 12) hh += 12;
-        if (ap === "am" && hh === 12) hh = 0;
-        if (hh < 0 || hh > 23) hh = null;
-      }}
-      const dt = new Date(now.getFullYear(), parseInt(mm, 10) - 1, parseInt(dd, 10), hh || 0, mi || 0, 0, 0);
+      let hh = m3[3] != null ? parseInt(m3[3], 10) : 0;
+      const mi = m3[4] != null ? parseInt(m3[4], 10) : 0;
+      const ap = m3[5] ? String(m3[5]).toLowerCase() : null;
+      if (ap === "pm" && hh < 12) hh += 12;
+      if (ap === "am" && hh === 12) hh = 0;
+      if (hh < 0 || hh > 23) return null;
+      const dt = buildValidatedDate(yy, mm, dd, hh, mi);
+      if (!dt) return null;
       return {{ mm, dd, yy, hh, mi, dt }};
     }}
 

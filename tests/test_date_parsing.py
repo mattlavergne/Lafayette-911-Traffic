@@ -20,6 +20,22 @@ class DateParsingTests(unittest.TestCase):
         self.assertEqual(dt.month, 2)
         self.assertEqual(dt.day, 14)
 
+    def test_parse_two_digit_year_without_time(self):
+        dt = _parse_reported_dt("02/14/26")
+        self.assertIsNotNone(dt)
+        self.assertEqual(dt.year, 2026)
+        self.assertEqual(dt.month, 2)
+        self.assertEqual(dt.day, 14)
+        self.assertEqual(dt.hour, 0)
+        self.assertEqual(dt.minute, 0)
+
+    def test_parse_four_digit_year_with_seconds(self):
+        dt = _parse_reported_dt("02/14/2026 01:23:45 PM")
+        self.assertIsNotNone(dt)
+        self.assertEqual(dt.year, 2026)
+        self.assertEqual(dt.hour, 13)
+        self.assertEqual(dt.minute, 23)
+
     def test_parse_two_digit_year_in_1900s_window(self):
         dt = _parse_reported_dt("02/14/99 1:23 PM")
         self.assertIsNotNone(dt)
