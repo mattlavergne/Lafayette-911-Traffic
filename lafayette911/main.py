@@ -123,7 +123,7 @@ def load_config(base_dir: Optional[str] = None) -> Config:
 
 
 _REPORTED_RE = re.compile(
-    r"(\d{1,2})/(\d{1,2})/(\d{4})"
+    r"(\d{1,2})/(\d{1,2})/(\d{2,4})"
     r"(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?"
 )
 
@@ -141,6 +141,7 @@ def _parse_reported_dt(reported: str) -> Optional[datetime]:
 
     Handles:
       - MM/DD/YYYY [HH:MM [AM/PM]]  (primary, full date)
+      - MM/DD/YY [HH:MM [AM/PM]]    (2-digit year accepted)
       - MM/DD [HH:MM [AM/PM]]       (fallback, no year — assumes current year)
     """
     if not reported:
@@ -149,7 +150,12 @@ def _parse_reported_dt(reported: str) -> Optional[datetime]:
     m = _REPORTED_RE.search(s)
     if m:
         try:
-            mm, dd, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            mm, dd = int(m.group(1)), int(m.group(2))
+            yy_raw = m.group(3)
+            yy = int(yy_raw)
+            if len(yy_raw) == 2:
+                # Sliding window for 2-digit years: 00-69 => 2000-2069, 70-99 => 1970-1999
+                yy = 2000 + yy if yy <= 69 else 1900 + yy
             hh = int(m.group(4)) if m.group(4) is not None else 0
             mi = int(m.group(5)) if m.group(5) is not None else 0
             ap = (m.group(6) or "").lower()

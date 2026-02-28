@@ -2293,12 +2293,16 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (!reported) return null;
     const s = String(reported).trim();
 
-    // Primary format: MM/DD/YYYY [HH:MM [AM/PM]]
-    const m1 = s.match(/(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{4}})(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?/);
+    // Primary format: MM/DD/YYYY or MM/DD/YY [HH:MM [AM/PM]]
+    const m1 = s.match(/(\\d{{1,2}})\\/(\\d{{1,2}})\\/(\\d{{2,4}})(?:\\s+(\\d{{1,2}}):(\\d{{2}})(?:\\s*([AaPp][Mm]))?)?/);
     if (m1) {{
       const mm = m1[1].padStart(2, "0");
       const dd = m1[2].padStart(2, "0");
-      const yy = m1[3];
+      let yy = m1[3];
+      if (yy.length === 2) {{
+        const yyNum = parseInt(yy, 10);
+        yy = String(yyNum <= 69 ? (2000 + yyNum) : (1900 + yyNum));
+      }}
       let hh = null;
       let mi = null;
       if (m1[4] != null && m1[5] != null) {{
