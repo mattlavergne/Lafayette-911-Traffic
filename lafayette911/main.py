@@ -567,7 +567,7 @@ def _geocode_unlocated_incidents(config: Config, store: StateStore, session, log
     if not config.google_api_key:
         return False
 
-    unlocated = store.get_unlocated_incidents(limit=50)
+    unlocated = store.get_unlocated_incidents(limit=100)
     if not unlocated:
         return False
 
@@ -581,6 +581,8 @@ def _geocode_unlocated_incidents(config: Config, store: StateStore, session, log
     updated = store.update_incident_coords(unlocated)
     if updated:
         log_event(logger, "unlocated_geocoded", count=updated)
+        # Keep CSV in sync: overwrite lat/lon for the rows that got coords.
+        store.update_csv_coords(unlocated)
     return updated > 0
 
 

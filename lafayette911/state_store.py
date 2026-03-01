@@ -306,6 +306,52 @@ class StateStore:
             self.conn.commit()
         return updated
 
+    def update_csv_coords(self, incidents: Sequence[Dict]) -> None:
+        """Back-fill latitude/longitude in the CSV for rows that now have coords.
+
+        Reads the whole CSV, updates the matching rows in-memory, and writes
+        a new file atomically.  No-ops gracefully if the CSV doesn't exist.
+        """
+        if not incidents or not os.path.exists(self.csv_path):
+            return
+
+        # Build a lookup: incident_number -> (lat, lon)
+        coord_map: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+        for inc in incidents:
+            lat = _safe_float(inc.get("latitude"))
+            lon = _safe_float(inc.get("longitude"))
+            if lat is None or lon is None:
+                continue
+            num = str(inc.get("incident_number") or "").strip()
+            if num:
+                coord_map[num] = (lat, lon)
+
+        if not coord_map:
+            return
+
+        tmp_path = self.csv_path + ".tmp"
+        try:
+            with open(self.csv_path, "r", encoding="utf-8", newline="") as src, \
+                 open(tmp_path, "w", encoding="utf-8", newline="") as dst:
+                reader = csv.DictReader(src)
+                if not reader.fieldnames:
+                    return
+                writer = csv.DictWriter(dst, fieldnames=reader.fieldnames)
+                writer.writeheader()
+                for row in reader:
+                    num = (row.get("incident_number") or "").strip()
+                    if num in coord_map:
+                        lat, lon = coord_map[num]
+                        row["latitude"] = str(lat)
+                        row["longitude"] = str(lon)
+                    writer.writerow(row)
+            os.replace(tmp_path, self.csv_path)
+        except Exception:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
     def append_to_csv(self, incidents: Sequence[Dict]) -> None:
         if not incidents:
             return
