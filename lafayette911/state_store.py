@@ -96,12 +96,11 @@ class StateStore:
                 continue
 
     def _seed_from_csv_if_empty(self) -> None:
-        try:
-            count = self.conn.execute("SELECT COUNT(1) FROM incident_index").fetchone()[0]
-        except Exception:
-            count = 0
-        if count == 0:
-            self._seed_from_csv()
+        # Always sync from CSV so any rows present in the CSV but absent from the
+        # DB (e.g. after a DB reset or partial restore) become visible on the map.
+        # _insert_batch uses INSERT OR IGNORE, so re-processing existing rows is
+        # a safe no-op.
+        self._seed_from_csv()
 
     def _seed_from_csv(self) -> None:
         if not os.path.exists(self.csv_path):
