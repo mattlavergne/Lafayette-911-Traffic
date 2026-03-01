@@ -449,13 +449,11 @@ def _enrich_incident_time(inc: dict) -> None:
         inc["is_school_day"] = 1 if _is_school_day(dt) else 0
         inc["is_holiday"] = 1 if _is_holiday(dt) else 0
 
-    # Road type: for geocoded incidents let OSM assign the type at render time
-    # (via _persist_osm_road_types).  Fall back to name inference only for
-    # incidents that could not be geocoded and therefore have no coordinates.
+    # Road type: always seed via name inference so the filter works immediately,
+    # even when OSMnx is unavailable.  When OSMnx is available, _persist_osm_road_types
+    # at render time will overwrite with the authoritative OSM value.
     if not inc.get("road_type"):
-        has_coords = inc.get("latitude") is not None and inc.get("longitude") is not None
-        if not has_coords:
-            inc["road_type"] = _infer_road_type(inc.get("location", ""))
+        inc["road_type"] = _infer_road_type(inc.get("location", ""))
 
 
 def _in_lafayette_bounds(lat, lng) -> bool:
