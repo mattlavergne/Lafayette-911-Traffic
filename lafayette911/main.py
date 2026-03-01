@@ -695,11 +695,14 @@ def main(base_dir: Optional[str] = None) -> int:
     # Backfill OSM road types for historical incidents that were stored before
     # the OSM write-back was introduced.  Runs once at startup; safe no-op if
     # osmnx is unavailable or the DB has no geocoded incidents without road types.
+    # When the backfill changes anything, immediately regenerate the map so the
+    # road-type filter reflects the new values without waiting for new incidents.
     if config.mode in {"all", "renderer"}:
         try:
             updated = backfill_road_types(config.db_path, config.osm_cache_dir)
             if updated:
                 log_event(logger, "road_type_backfill", updated=updated)
+                _render_map_from_source(config)
         except Exception:
             pass
 

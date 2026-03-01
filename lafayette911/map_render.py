@@ -1931,8 +1931,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
             <option value="motorway">Interstate / motorway</option>
             <option value="trunk">US highway (trunk)</option>
             <option value="primary">Primary arterial</option>
-            <option value="secondary">Secondary road</option>
-            <option value="residential">Residential / local</option>
+            <option value="secondary">Secondary / tertiary</option>
+            <option value="residential">Residential / local / unclassified</option>
           </select>
         </label>
       </div>
@@ -2757,8 +2757,15 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (roadType === "motorway") return hwLower.includes("motorway");
     if (roadType === "trunk") return hwLower.includes("trunk");
     if (roadType === "primary") return hwLower.includes("primary");
-    if (roadType === "secondary") return hwLower.includes("secondary");
-    if (roadType === "residential") return hwLower.includes("residential");
+    // tertiary is the OSM tier between secondary and residential; group with secondary
+    if (roadType === "secondary") return hwLower.includes("secondary") || hwLower.includes("tertiary");
+    // unclassified, service, and living_street are all local/minor roads
+    if (roadType === "residential") return (
+      hwLower.includes("residential") ||
+      hwLower === "unclassified" ||
+      hwLower === "service" ||
+      hwLower === "living_street"
+    );
     return true;
   }}
 
