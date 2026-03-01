@@ -335,7 +335,7 @@ def _is_holiday(dt: Optional[datetime]) -> bool:
 def _infer_road_type(location: str) -> Optional[str]:
     """Infer OSM highway classification from a location/intersection name.
 
-    Returns one of: motorway, trunk, primary, secondary, tertiary, residential, service, or None.
+    Returns one of: motorway, trunk, primary, secondary, residential, or None.
     This provides data for the Road Type filter when OSMnx is unavailable.
     """
     if not location:
@@ -373,6 +373,11 @@ def _infer_road_type(location: str) -> Optional[str]:
     # Boulevards and parkways → secondary
     if re.search(r'\b(BLVD|BOULEVARD|PKWY|PARKWAY|THRUWAY|EXPRESSWAY)\b', loc):
         return "secondary"
+
+    # Local/residential streets (ST, DR, AVE, CT, CIR, LN, PL, WAY, TRL, LOOP)
+    # that didn't match any higher-priority pattern above.
+    if re.search(r'\b(ST|STREET|DR|DRIVE|AVE|AVENUE|CT|COURT|CIR|CIRCLE|LN|LANE|PL|PLACE|WAY|TRL|TRAIL|LOOP)\b', loc):
+        return "residential"
 
     return None
 

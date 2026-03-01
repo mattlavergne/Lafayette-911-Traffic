@@ -1882,9 +1882,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
             <option value="trunk">US highway (trunk)</option>
             <option value="primary">Primary arterial</option>
             <option value="secondary">Secondary road</option>
-            <option value="tertiary">Tertiary road</option>
-            <option value="residential">Residential</option>
-            <option value="service">Service road</option>
+            <option value="residential">Residential / local</option>
           </select>
         </label>
       </div>
@@ -2702,9 +2700,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (roadType === "trunk") return hwLower.includes("trunk");
     if (roadType === "primary") return hwLower.includes("primary");
     if (roadType === "secondary") return hwLower.includes("secondary");
-    if (roadType === "tertiary") return hwLower.includes("tertiary");
     if (roadType === "residential") return hwLower.includes("residential");
-    if (roadType === "service") return hwLower.includes("service");
     return true;
   }}
 
