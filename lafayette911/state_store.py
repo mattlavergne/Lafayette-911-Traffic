@@ -254,6 +254,58 @@ class StateStore:
         existing = self._existing_ids(ids)
         return [inc for inc in incidents if str(inc.get("incident_number") or "") not in existing]
 
+    def get_unlocated_incidents(self, limit: int = 100) -> List[Dict]:
+        """Return incidents stored with NULL lat/lon so they can be re-geocoded."""
+        rows = self.conn.execute(
+            """
+            SELECT incident_number, location, cause, reported, assisting
+            FROM incidents
+            WHERE (latitude IS NULL OR longitude IS NULL)
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "incident_number": r[0],
+                "location": r[1] or "",
+                "cause": r[2] or "",
+                "reported": r[3] or "",
+                "assisting": r[4] or "",
+            }
+            for r in rows
+        ]
+
+    def update_incident_coords(self, incidents: Sequence[Dict]) -> int:
+        """UPDATE lat/lon for incidents that previously lacked coordinates.
+
+        Only updates rows whose coordinates are still NULL so already-located
+        incidents are never overwritten.  Returns the number of rows updated.
+        """
+        updated = 0
+        for inc in incidents:
+            lat = _safe_float(inc.get("latitude"))
+            lon = _safe_float(inc.get("longitude"))
+            if lat is None or lon is None:
+                continue
+            incident_number = str(inc.get("incident_number") or "").strip()
+            if not incident_number:
+                continue
+            cursor = self.conn.execute(
+                """
+                UPDATE incidents
+                SET latitude = ?, longitude = ?
+                WHERE incident_number = ?
+                  AND (latitude IS NULL OR longitude IS NULL)
+                """,
+                (lat, lon, incident_number),
+            )
+            updated += cursor.rowcount
+        if updated:
+            self.conn.commit()
+        return updated
+
     def append_to_csv(self, incidents: Sequence[Dict]) -> None:
         if not incidents:
             return
