@@ -392,6 +392,43 @@ def _compute_osm_context_in_subprocess(bbox, incidents_latlng, osm_cache_dir: st
     return {}, [], []
 
 
+def _infer_road_type(location: str):
+    """Infer OSM highway classification from a location string.
+
+    Used as a fallback when OSMnx is unavailable so that every incident gets
+    a road type for the map filter.  Mirrors the logic in main._infer_road_type.
+    Returns one of: motorway, trunk, primary, secondary, residential, or None.
+    """
+    if not location:
+        return None
+    loc = str(location).upper()
+    if re.search(r'\bI[-\s]?\d{1,3}\b', loc) or re.search(r'\bINTERSTATE\s+\d', loc):
+        return "motorway"
+    if re.search(r'\bU\.?S\.?\s*[-]?\s*\d{1,3}\b', loc):
+        return "trunk"
+    if re.search(r'\bLA\s*[-]?\s*\d{1,3}\b', loc) or re.search(r'\bHWY\s*[-]?\s*\d{1,3}\b', loc):
+        return "primary"
+    _PRIMARY_KEYWORDS = (
+        "AMBASSADOR CAFFERY", "EVANGELINE THRUWAY", "NW EVANGELINE",
+        "JOHNSTON ST", "JOHNSTON STREET", "PINHOOK", "KALISTE SALOOM",
+        "HUGH WALLIS", "UNIVERSITY AVE", "UNIVERSITY BLVD",
+        "CONGRESS ST", "CAMERON ST", "BERTRAND DR", "VEROT SCHOOL",
+        "PONT DES MOUTON", "WILLOW ST", "ERASTE LANDRY", "MUDD AVE",
+        "CURRY ST", "OAK PARK BLVD", "RIDGE RD",
+        "W PINHOOK", "E PINHOOK", "NORTH UNIVERSITY",
+        "S COLLEGE RD", "N COLLEGE RD", "CAMELLIA BLVD",
+        "DUHON RD", "YOUNGSVILLE HWY", "SURREY ST",
+    )
+    for kw in _PRIMARY_KEYWORDS:
+        if kw in loc:
+            return "primary"
+    if re.search(r'\b(BLVD|BOULEVARD|PKWY|PARKWAY|THRUWAY|EXPRESSWAY)\b', loc):
+        return "secondary"
+    if re.search(r'\b(ST|STREET|DR|DRIVE|AVE|AVENUE|CT|COURT|CIR|CIRCLE|LN|LANE|PL|PLACE|WAY|TRL|TRAIL|LOOP)\b', loc):
+        return "residential"
+    return None
+
+
 def _precompute_osm_road_types(db_path: str, osm_cache_dir: str) -> dict:
     """
     Return {(round(lat,6), round(lon,6)): highway_type_str} for every geocoded
@@ -1084,10 +1121,14 @@ def _write_streaming_datajs(
                 reported_str = str(reported or "").strip()
                 lat_r = round(float(lat), 6)
                 lon_r = round(float(lon), 6)
-                # Prefer OSM-computed road type; fall back to DB-stored inference
+                # Prefer OSM-computed road type; fall back to DB-stored value;
+                # finally fall back to name inference so the filter always works
+                # even when OSMnx is unavailable.
                 highway_type = (
                     osm_road_types.get((lat_r, lon_r))
-                    or _safe_text(db_road_type) or None
+                    or _safe_text(db_road_type)
+                    or _infer_road_type(loc)
+                    or None
                 )
                 incident = [
                     lat_r,
