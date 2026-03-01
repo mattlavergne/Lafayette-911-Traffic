@@ -559,6 +559,31 @@ def _render_map_in_subprocess(config: Config, logger) -> None:
         raise RuntimeError(error)
 
 
+def _geocode_unlocated_incidents(config: Config, store: StateStore, session, logger) -> bool:
+    """Re-geocode incidents that were previously stored without coordinates.
+
+    Returns True if any incidents gained coordinates (caller should re-render).
+    """
+    if not config.google_api_key:
+        return False
+
+    unlocated = store.get_unlocated_incidents(limit=50)
+    if not unlocated:
+        return False
+
+    geocode_incidents(
+        session,
+        unlocated,
+        config.google_api_key,
+        sleep_seconds=config.geocode_sleep_seconds,
+    )
+    _filter_geocode_results(unlocated)
+    updated = store.update_incident_coords(unlocated)
+    if updated:
+        log_event(logger, "unlocated_geocoded", count=updated)
+    return updated > 0
+
+
 def run_once(config: Config, store: StateStore, session, logger) -> bool:
     incidents = []
     new_incidents = []
@@ -626,6 +651,11 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                 new_incidents = store.store_new_incidents(new_incidents)
                 store.append_to_csv(new_incidents)
                 has_new_incidents = bool(new_incidents)
+
+        # Retry geocoding for any incidents already in the DB that still
+        # lack coordinates (covers failures from previous cycles).
+        if _geocode_unlocated_incidents(config, store, session, logger):
+            has_new_incidents = True
 
     if config.mode in {"all", "renderer"}:
         should_render = True

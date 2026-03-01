@@ -93,12 +93,12 @@ def _stream_jsonjs_incident(handle, incident, first: bool) -> bool:
     return False
 
 
-def _stream_jsonjs_footer(handle, osm_intersections, hot_spots=None) -> None:
+def _stream_jsonjs_footer(handle, osm_intersections, hot_spots=None, unlocated_count: int = 0) -> None:
     handle.write("];\nwindow.OSM_INTERSECTIONS_DATA=")
     handle.write(json.dumps(osm_intersections, ensure_ascii=False, separators=(",", ":")))
     handle.write(";\nwindow.HOT_SPOTS_DATA=")
     handle.write(json.dumps(hot_spots or [], ensure_ascii=False, separators=(",", ":")))
-    handle.write(";")
+    handle.write(f";\nwindow.INCIDENTS_UNLOCATED_COUNT={int(unlocated_count)};")
 
 
 def _ensure_world_readable(path: str) -> None:
@@ -939,6 +939,7 @@ def _write_streaming_datajs(
     center_lon_sum = 0.0
     center_count = 0
     non_tc_count = 0
+    unlocated_count = 0
 
     map_dir = os.path.dirname(output_datajs) or "."
     os.makedirs(map_dir, exist_ok=True)
@@ -994,6 +995,7 @@ def _write_streaming_datajs(
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
                 if lat is None or lon is None:
+                    unlocated_count += 1
                     continue
 
                 cause_str = str(cause or "").strip()
@@ -1143,7 +1145,7 @@ def _write_streaming_datajs(
             osm_intersections = _stream_osm_intersections(
                 db_path, bbox, total_points, osm_cache_dir, tc_points
             )
-            _stream_jsonjs_footer(handle, osm_intersections, hot_spots)
+            _stream_jsonjs_footer(handle, osm_intersections, hot_spots, unlocated_count)
     finally:
         conn.close()
 
@@ -2018,6 +2020,14 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 <div id="weatherWidget" aria-live="polite">
   <div class="weather-title">Current weather</div>
   <div id="weatherWidgetBody">Loading latest snapshot...</div>
+</div>
+
+<div id="unlocatedBanner" style="display:none;position:fixed;bottom:12px;left:50%;transform:translateX(-50%);
+     background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:8px 16px;
+     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;
+     z-index:9999998;box-shadow:0 2px 8px rgba(0,0,0,0.15);max-width:90vw;text-align:center;">
+  ⚠ <span id="unlocatedCount"></span> incident(s) could not be placed on the map (geocoding pending).
+  They will appear automatically once coordinates are resolved.
 </div>
 
 <script>
@@ -3343,6 +3353,18 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
     if (els.countTotal) els.countTotal.textContent = String(INCIDENTS.length);
     scheduleRender(mapObj, 0);
+
+    // Show a banner if any incidents are missing geocoded coordinates.
+    const unlocatedCount = (typeof window.INCIDENTS_UNLOCATED_COUNT === "number")
+      ? window.INCIDENTS_UNLOCATED_COUNT : 0;
+    if (unlocatedCount > 0) {{
+      const banner = document.getElementById("unlocatedBanner");
+      const countEl = document.getElementById("unlocatedCount");
+      if (banner && countEl) {{
+        countEl.textContent = String(unlocatedCount);
+        banner.style.display = "block";
+      }}
+    }}
   }});
 }})();
 </script>
