@@ -470,6 +470,46 @@ def _precompute_osm_road_types(db_path: str, osm_cache_dir: str) -> dict:
     return result
 
 
+def _persist_osm_road_types(db_path: str, osm_road_types: dict) -> int:
+    """Write OSM-computed road types back to the incidents DB.
+
+    OSM is the authoritative source, so this overwrites any previously
+    name-inferred road_type values for geocoded incidents.  Rows are only
+    updated when the stored value actually differs from the OSM value, so
+    repeated calls are efficient.  Returns the number of rows changed.
+    """
+    if not osm_road_types:
+        return 0
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT incident_number, latitude, longitude, road_type FROM incidents "
+                "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+            ).fetchall()
+            updates = []
+            for incident_number, lat, lon, current_rt in rows:
+                lat_f = _safe_float(lat)
+                lon_f = _safe_float(lon)
+                if lat_f is None or lon_f is None:
+                    continue
+                key = (round(lat_f, 6), round(lon_f, 6))
+                rt = osm_road_types.get(key)
+                if rt and rt != (current_rt or ""):
+                    updates.append((rt, incident_number))
+            if updates:
+                conn.executemany(
+                    "UPDATE incidents SET road_type = ? WHERE incident_number = ?",
+                    updates,
+                )
+                conn.commit()
+            return len(updates)
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+
 def _compute_hot_spots_from_db(db_path: str, top_n: int = 100, min_count: int = 2) -> List[List]:
     """
     Compute recency-weighted hot spots from the incident DB.
@@ -920,6 +960,14 @@ def _write_streaming_datajs(
         osm_road_types = _precompute_osm_road_types(db_path, osm_cache_dir)
     except Exception:
         pass
+
+    # Persist OSM road types back to DB so the road-type filter works for all
+    # incidents going forward, including a backfill of historical rows.
+    if osm_road_types:
+        try:
+            _persist_osm_road_types(db_path, osm_road_types)
+        except Exception:
+            pass
 
     # Pre-compute recency-weighted hot spots
     hot_spots: List[List] = []
@@ -3481,6 +3529,25 @@ def create_map_from_db(db_path: str, output_map: str, output_datajs: str, osm_ca
     except Exception:
         _write_text_if_changed(output_datajs, "window.INCIDENTS_DATA=[];window.OSM_INTERSECTIONS_DATA=[];")
         _write_map_html(30.2241, -92.0198, output_map, output_datajs)
+
+
+def backfill_road_types(db_path: str, osm_cache_dir: str) -> int:
+    """Assign OSM road types to every geocoded incident that is missing one.
+
+    Intended to be called once at service startup so historical incidents
+    stored before the OSM write-back was introduced get road types immediately,
+    rather than waiting for the next render cycle.  Safe to call repeatedly;
+    only rows whose road_type actually changes are written.
+
+    Returns the number of rows updated (0 if osmnx is unavailable).
+    """
+    if not os.path.exists(db_path):
+        return 0
+    try:
+        osm_road_types = _precompute_osm_road_types(db_path, osm_cache_dir)
+        return _persist_osm_road_types(db_path, osm_road_types)
+    except Exception:
+        return 0
 
 
 def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs: str, osm_cache_dir: str) -> None:

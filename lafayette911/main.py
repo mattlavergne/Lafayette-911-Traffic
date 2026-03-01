@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional
 
 from lafayette911.fetch_incidents import build_session, fetch_traffic_data, geocode_incidents, parse_traffic_data
-from lafayette911.map_render import create_map_from_csv, create_map_from_db
+from lafayette911.map_render import backfill_road_types, create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
 from lafayette911.utils import get_rss_bytes, log_event, setup_logging, trim_memory
 from lafayette911.weather import fetch_nws_alerts, fetch_weather_snapshot
@@ -449,9 +449,13 @@ def _enrich_incident_time(inc: dict) -> None:
         inc["is_school_day"] = 1 if _is_school_day(dt) else 0
         inc["is_holiday"] = 1 if _is_holiday(dt) else 0
 
-    # Road type from location name (stored so filters work without osmnx)
+    # Road type: for geocoded incidents let OSM assign the type at render time
+    # (via _persist_osm_road_types).  Fall back to name inference only for
+    # incidents that could not be geocoded and therefore have no coordinates.
     if not inc.get("road_type"):
-        inc["road_type"] = _infer_road_type(inc.get("location", ""))
+        has_coords = inc.get("latitude") is not None and inc.get("longitude") is not None
+        if not has_coords:
+            inc["road_type"] = _infer_road_type(inc.get("location", ""))
 
 
 def _in_lafayette_bounds(lat, lng) -> bool:
@@ -687,6 +691,17 @@ def main(base_dir: Optional[str] = None) -> int:
 
     store = StateStore(config.db_path, config.csv_path)
     session = build_session()
+
+    # Backfill OSM road types for historical incidents that were stored before
+    # the OSM write-back was introduced.  Runs once at startup; safe no-op if
+    # osmnx is unavailable or the DB has no geocoded incidents without road types.
+    if config.mode in {"all", "renderer"}:
+        try:
+            updated = backfill_road_types(config.db_path, config.osm_cache_dir)
+            if updated:
+                log_event(logger, "road_type_backfill", updated=updated)
+        except Exception:
+            pass
 
     cycle = 0
     prev_snapshot = None
