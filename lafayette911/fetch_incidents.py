@@ -128,7 +128,15 @@ def geocode_incidents(
     incidents: List[Dict[str, str]],
     api_key: str,
     sleep_seconds: float = 0.0,
+    location_cache: Optional[Dict[str, tuple]] = None,
 ) -> List[Dict[str, str]]:
+    """Geocode a list of incidents, updating each dict with latitude/longitude.
+
+    *location_cache* (if provided) maps exact location strings to (lat, lon)
+    tuples already seen in the DB.  Cache hits are applied without an API call
+    and the cache is updated with any new results so subsequent incidents at
+    the same address within the same batch are also free.
+    """
     if not incidents:
         return []
 
@@ -136,7 +144,19 @@ def geocode_incidents(
         if incident.get("latitude") and incident.get("longitude"):
             continue
 
-        address = f"{incident.get('location', '')}, {DEFAULT_FULL_CITY}"
+        loc = incident.get("location", "")
+
+        # Serve from address cache when possible — no API call needed.
+        if location_cache is not None and loc in location_cache:
+            lat, lon = location_cache[loc]
+            incident["latitude"] = lat
+            incident["longitude"] = lon
+            continue
+
+        if not api_key:
+            continue
+
+        address = f"{loc}, {DEFAULT_FULL_CITY}"
         result = geocode_with_google(session, address, api_key)
         if not result:
             continue
@@ -144,6 +164,10 @@ def geocode_incidents(
         incident["latitude"] = result["lat"]
         incident["longitude"] = result["lng"]
         incident["address_components"] = result.get("address_components", [])
+
+        # Populate cache so later incidents at the same address are free.
+        if location_cache is not None:
+            location_cache[loc] = (result["lat"], result["lng"])
 
         if sleep_seconds:
             time.sleep(sleep_seconds)

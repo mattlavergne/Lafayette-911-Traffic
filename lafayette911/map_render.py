@@ -429,6 +429,34 @@ def _infer_road_type(location: str):
     return None
 
 
+# OSM highway values that map cleanly to the JS filter categories.
+# Values NOT in this set (e.g. "road", "path", "track", "pedestrian") are
+# unusual and should fall back to name-based inference so they appear under
+# the correct filter option rather than being invisible.
+_FILTERABLE_HIGHWAY_TYPES: frozenset = frozenset({
+    "motorway", "motorway_link",
+    "trunk", "trunk_link",
+    "primary", "primary_link",
+    "secondary", "secondary_link",
+    "tertiary", "tertiary_link",
+    "residential", "living_street",
+    "service", "unclassified",
+})
+
+
+def _resolve_highway_type(raw_hw: str, loc: str) -> str:
+    """Return a filter-compatible highway type string.
+
+    Prefers *raw_hw* (OSMnx / DB value) when it is a recognised OSM category.
+    For unusual values ("road", "path", "track", …) falls back to name
+    inference so the incident still appears in the appropriate filter bucket.
+    """
+    if raw_hw and raw_hw.lower() in _FILTERABLE_HIGHWAY_TYPES:
+        return raw_hw
+    # Unusual or missing value — derive from location name.
+    return _infer_road_type(loc) or raw_hw or None
+
+
 def _precompute_osm_road_types(db_path: str, osm_cache_dir: str) -> dict:
     """
     Return {(round(lat,6), round(lon,6)): highway_type_str} for every geocoded
@@ -1121,15 +1149,16 @@ def _write_streaming_datajs(
                 reported_str = str(reported or "").strip()
                 lat_r = round(float(lat), 6)
                 lon_r = round(float(lon), 6)
-                # Prefer OSM-computed road type; fall back to DB-stored value;
-                # finally fall back to name inference so the filter always works
-                # even when OSMnx is unavailable.
-                highway_type = (
+                # Prefer OSM-computed road type, then DB-stored value.
+                # _resolve_highway_type normalises unusual OSMnx values
+                # ("road", "path", "track", …) to filter-compatible categories
+                # via name inference so they always appear in the correct bucket.
+                raw_hw = (
                     osm_road_types.get((lat_r, lon_r))
                     or _safe_text(db_road_type)
-                    or _infer_road_type(loc)
                     or None
                 )
+                highway_type = _resolve_highway_type(raw_hw or "", loc)
                 incident = [
                     lat_r,
                     lon_r,
@@ -3515,6 +3544,7 @@ def _load_dataframe_from_csv(input_csv: str) -> pd.DataFrame:
         "weather_sky_cover_pct",
         "weather_observed_at",
         "weather_source",
+        "road_type",
     }
     if header_cols:
         normalized = {c.strip().lower(): c for c in header_cols}
@@ -3683,7 +3713,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
                 None,  # nws_flash_flood_warning
                 None,  # nws_severe_thunderstorm_warning
                 None,  # nws_tornado_watch
-                None,  # osm_highway_type
+                # Road type: use CSV value if present, otherwise infer from location name
+                _safe_text(r.get("road_type")) or _infer_road_type(loc) or None,
             ]
         )
         incidents_latlng.append((lat, lng))
