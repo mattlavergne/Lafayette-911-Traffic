@@ -86,6 +86,11 @@ class StateStore:
             ("nws_active_alert_count", "INTEGER"),
             # Road classification (from location name or OSM)
             ("road_type", "TEXT"),
+            # Number of times geocoding has been attempted for this incident.
+            # Incidents with geocode_attempts >= 3 are skipped by the retry
+            # loop to prevent burning API quota on permanently-unresolvable
+            # addresses.
+            ("geocode_attempts", "INTEGER"),
         ]
         for name, col_type in additions:
             if name in cols:
@@ -254,13 +259,39 @@ class StateStore:
         existing = self._existing_ids(ids)
         return [inc for inc in incidents if str(inc.get("incident_number") or "") not in existing]
 
+    def get_location_coords_map(self) -> Dict[str, tuple]:
+        """Return {location: (lat, lon)} for all incidents with valid coordinates.
+
+        Used as an in-process cache so repeated incidents at the same address
+        (e.g. a busy intersection) are resolved from the DB rather than
+        consuming Google Geocoding API quota.
+        """
+        rows = self.conn.execute(
+            "SELECT location, latitude, longitude FROM incidents "
+            "WHERE location IS NOT NULL AND location != '' "
+            "  AND latitude IS NOT NULL AND longitude IS NOT NULL"
+        ).fetchall()
+        cache: Dict[str, tuple] = {}
+        for loc, lat, lon in rows:
+            if loc and loc not in cache:
+                lat_f = _safe_float(lat)
+                lon_f = _safe_float(lon)
+                if lat_f is not None and lon_f is not None:
+                    cache[loc] = (lat_f, lon_f)
+        return cache
+
     def get_unlocated_incidents(self, limit: int = 100) -> List[Dict]:
-        """Return incidents stored with NULL lat/lon so they can be re-geocoded."""
+        """Return incidents stored with NULL lat/lon that still have retry budget.
+
+        Incidents with geocode_attempts >= 3 are excluded — they have been
+        tried and failed repeatedly and should not burn more API quota.
+        """
         rows = self.conn.execute(
             """
             SELECT incident_number, location, cause, reported, assisting
             FROM incidents
             WHERE (latitude IS NULL OR longitude IS NULL)
+              AND (geocode_attempts IS NULL OR geocode_attempts < 3)
             ORDER BY created_at DESC
             LIMIT ?
             """,
@@ -276,6 +307,26 @@ class StateStore:
             }
             for r in rows
         ]
+
+    def increment_geocode_attempts(self, incident_numbers: Sequence[str]) -> None:
+        """Increment geocode_attempts for incidents that still lack coordinates.
+
+        Called after a geocoding pass so permanently-unresolvable addresses
+        are eventually retired from the retry queue.
+        """
+        if not incident_numbers:
+            return
+        placeholders = ",".join("?" for _ in incident_numbers)
+        self.conn.execute(
+            f"""
+            UPDATE incidents
+            SET geocode_attempts = COALESCE(geocode_attempts, 0) + 1
+            WHERE incident_number IN ({placeholders})
+              AND (latitude IS NULL OR longitude IS NULL)
+            """,
+            list(incident_numbers),
+        )
+        self.conn.commit()
 
     def update_incident_coords(self, incidents: Sequence[Dict]) -> int:
         """UPDATE lat/lon for incidents that previously lacked coordinates.

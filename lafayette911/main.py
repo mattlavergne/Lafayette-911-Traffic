@@ -561,8 +561,19 @@ def _render_map_in_subprocess(config: Config, logger) -> None:
         raise RuntimeError(error)
 
 
-def _geocode_unlocated_incidents(config: Config, store: StateStore, session, logger) -> bool:
+def _geocode_unlocated_incidents(
+    config: Config,
+    store: StateStore,
+    session,
+    logger,
+    location_cache: dict,
+) -> bool:
     """Re-geocode incidents that were previously stored without coordinates.
+
+    Only retries incidents with fewer than 3 prior failed attempts so
+    permanently-unresolvable addresses don't burn API quota indefinitely.
+    Uses *location_cache* (address → coords) to resolve already-seen
+    locations without an API call.
 
     Returns True if any incidents gained coordinates (caller should re-render).
     """
@@ -578,13 +589,23 @@ def _geocode_unlocated_incidents(config: Config, store: StateStore, session, log
         unlocated,
         config.google_api_key,
         sleep_seconds=config.geocode_sleep_seconds,
+        location_cache=location_cache,
     )
     _filter_geocode_results(unlocated)
     updated = store.update_incident_coords(unlocated)
     if updated:
         log_event(logger, "unlocated_geocoded", count=updated)
-        # Keep CSV in sync: overwrite lat/lon for the rows that got coords.
         store.update_csv_coords(unlocated)
+
+    # Increment attempt counter for incidents that still have no coordinates
+    # so they are eventually retired from the retry queue.
+    still_missing = [
+        inc["incident_number"]
+        for inc in unlocated
+        if inc.get("latitude") is None or inc.get("longitude") is None
+    ]
+    store.increment_geocode_attempts(still_missing)
+
     return updated > 0
 
 
@@ -594,6 +615,12 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
     has_new_incidents = False
 
     if config.mode in {"all", "fetcher"}:
+        # Build address→coords cache once per cycle from all geocoded DB rows.
+        # Every geocoding call in this cycle shares the same cache object so
+        # each unique location string hits the Google API at most once,
+        # regardless of how many incidents share that address.
+        location_cache: dict = store.get_location_coords_map()
+
         raw = fetch_traffic_data(session, timeout=config.fetch_timeout_seconds, logger=logger)
         incidents = parse_traffic_data(raw)
         if incidents:
@@ -604,6 +631,7 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                     new_incidents,
                     config.google_api_key,
                     sleep_seconds=config.geocode_sleep_seconds,
+                    location_cache=location_cache,
                 )
                 _filter_geocode_results(new_incidents)
                 if config.weather_enabled:
@@ -656,9 +684,9 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                 store.append_to_csv(new_incidents)
                 has_new_incidents = bool(new_incidents)
 
-        # Retry geocoding for any incidents already in the DB that still
-        # lack coordinates (covers failures from previous cycles).
-        if _geocode_unlocated_incidents(config, store, session, logger):
+        # Retry geocoding for incidents already in the DB that still lack
+        # coordinates, up to the per-incident attempt limit.
+        if _geocode_unlocated_incidents(config, store, session, logger, location_cache):
             has_new_incidents = True
 
     if config.mode in {"all", "renderer"}:
