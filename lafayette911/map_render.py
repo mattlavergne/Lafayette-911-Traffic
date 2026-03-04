@@ -404,7 +404,7 @@ def _infer_road_type(location: str):
     loc = str(location).upper()
     if re.search(r'\bI[-\s]?\d{1,3}\b', loc) or re.search(r'\bINTERSTATE\s+\d', loc):
         return "motorway"
-    if re.search(r'\bU\.?S\.?\s*[-]?\s*\d{1,3}\b', loc):
+    if re.search(r'\bU\.?S\.?\s*(?:HWY\s*)?[-]?\s*\d{1,3}\b', loc):
         return "trunk"
     if re.search(r'\bLA\s*[-]?\s*\d{1,3}\b', loc) or re.search(r'\bHWY\s*[-]?\s*\d{1,3}\b', loc):
         return "primary"
@@ -1584,8 +1584,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     display: none;
   }}
 
-  #roadSearch:focus ~ .road-search-hint,
-  #roadSearch.has-value ~ .road-search-hint {{
+  .road-search-wrap:focus-within ~ .road-search-hint,
+  .road-search-wrap.has-value ~ .road-search-hint {{
     display: block;
   }}
 
@@ -3546,6 +3546,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (els.roadSearch) {{
       els.roadSearch.value = "";
       els.roadSearch.classList.remove("has-value");
+      var _rw = els.roadSearch.closest(".road-search-wrap");
+      if (_rw) _rw.classList.remove("has-value");
       if (els.roadSearchClear) els.roadSearchClear.classList.remove("visible");
     }}
 
@@ -3624,19 +3626,24 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
     // Road search: filters on every keystroke, no debounce delay needed
     if (els.roadSearch) {{
+      var roadWrap = els.roadSearch.closest(".road-search-wrap");
       els.roadSearch.addEventListener("input", function() {{
         const hasVal = els.roadSearch.value.length > 0;
         els.roadSearch.classList.toggle("has-value", hasVal);
+        if (roadWrap) roadWrap.classList.toggle("has-value", hasVal);
         if (els.roadSearchClear) els.roadSearchClear.classList.toggle("visible", hasVal);
         scheduleRender(mapObj, 60);
       }});
       if (els.roadSearchClear) {{
-        els.roadSearchClear.addEventListener("click", function() {{
+        // Use mousedown + preventDefault so focus stays in the input and the
+        // clear always fires even if the pointer drifts slightly after press.
+        els.roadSearchClear.addEventListener("mousedown", function(e) {{
+          e.preventDefault();
           els.roadSearch.value = "";
           els.roadSearch.classList.remove("has-value");
+          if (roadWrap) roadWrap.classList.remove("has-value");
           els.roadSearchClear.classList.remove("visible");
           scheduleRender(mapObj, 0);
-          els.roadSearch.focus();
         }});
       }}
     }}

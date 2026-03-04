@@ -346,8 +346,8 @@ def _infer_road_type(location: str) -> Optional[str]:
     if re.search(r'\bI[-\s]?\d{1,3}\b', loc) or re.search(r'\bINTERSTATE\s+\d', loc):
         return "motorway"
 
-    # US highways (US 90, US-190)
-    if re.search(r'\bU\.?S\.?\s*[-]?\s*\d{1,3}\b', loc):
+    # US highways (US 90, US-190, US HWY 90)
+    if re.search(r'\bU\.?S\.?\s*(?:HWY\s*)?[-]?\s*\d{1,3}\b', loc):
         return "trunk"
 
     # Louisiana state highways (LA 14, LA-182, HWY 90, HWY-14)
