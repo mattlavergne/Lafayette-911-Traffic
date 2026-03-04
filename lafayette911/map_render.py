@@ -1490,6 +1490,105 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     margin-top: -2px;
   }}
 
+  /* ── Road name search ──────────────────────────────────── */
+  .road-search-wrap {{
+    position: relative;
+    display: flex;
+    align-items: center;
+  }}
+
+  .road-search-icon {{
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+    color: rgba(0,0,0,0.38);
+    display: flex;
+    align-items: center;
+    line-height: 0;
+  }}
+
+  #roadSearch {{
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 30px 8px 34px;
+    border-radius: 10px;
+    border: 1px solid rgba(0,0,0,0.14);
+    background: rgba(255,255,255,0.95);
+    font-family: var(--font);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    color: inherit;
+  }}
+
+  #roadSearch::placeholder {{
+    color: rgba(0,0,0,0.35);
+  }}
+
+  #roadSearch:hover:not(:focus) {{
+    border-color: rgba(0,0,0,0.28);
+    background: #fff;
+  }}
+
+  #roadSearch:focus {{
+    border-color: #2b6cb0;
+    box-shadow: 0 0 0 3px rgba(43,108,176,0.15);
+    background: #fff;
+  }}
+
+  #roadSearch.has-value {{
+    border-color: #2b6cb0;
+    background: #fff;
+  }}
+
+  .road-search-clear {{
+    position: absolute;
+    right: 7px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(0,0,0,0.10);
+    border: none;
+    border-radius: 50%;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 11px;
+    color: rgba(0,0,0,0.45);
+    line-height: 1;
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+    font-family: var(--font);
+  }}
+
+  .road-search-clear.visible {{
+    opacity: 1;
+    pointer-events: auto;
+  }}
+
+  .road-search-clear:hover {{
+    background: rgba(0,0,0,0.18);
+    color: rgba(0,0,0,0.65);
+  }}
+
+  .road-search-hint {{
+    font-size: 11px;
+    color: rgba(0,0,0,0.40);
+    margin-top: 4px;
+    display: none;
+  }}
+
+  #roadSearch:focus ~ .road-search-hint,
+  #roadSearch.has-value ~ .road-search-hint {{
+    display: block;
+  }}
+
   .muted {{
     color: rgba(0,0,0,0.55);
     font-size: 12px;
@@ -1822,6 +1921,23 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       height: 22px;
     }}
 
+    #roadSearch {{
+      font-size: 16px;  /* prevents iOS zoom on focus */
+      padding: 11px 34px 11px 38px;
+      min-height: 48px;
+    }}
+
+    .road-search-icon {{
+      left: 12px;
+    }}
+
+    .road-search-clear {{
+      right: 10px;
+      width: 22px;
+      height: 22px;
+      font-size: 12px;
+    }}
+
     .section {{
       padding: 8px 0;
     }}
@@ -1909,6 +2025,21 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   </div>
 
   <div id="panelBody">
+
+    <div class="section">
+      <div class="section-title">Road Search</div>
+      <div class="road-search-wrap">
+        <span class="road-search-icon" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="5.5" cy="5.5" r="4" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="8.6" y1="8.6" x2="12.5" y2="12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <input type="text" id="roadSearch" placeholder="Search by road name…" autocomplete="off" spellcheck="false" aria-label="Filter by road name">
+        <button class="road-search-clear" id="roadSearchClear" aria-label="Clear road search">&#x2715;</button>
+      </div>
+      <div class="road-search-hint">Typos OK &mdash; starts filtering after the first letter</div>
+    </div>
 
     <div class="section">
       <div class="section-title">Incident Type</div>
@@ -2186,6 +2317,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     cloudBand: document.getElementById("cloudBand"),
     currentWeather: document.getElementById("currentWeather"),
     weatherWidgetBody: document.getElementById("weatherWidgetBody"),
+
+    roadSearch: document.getElementById("roadSearch"),
+    roadSearchClear: document.getElementById("roadSearchClear"),
 
     chkRushHour: document.getElementById("chkRushHour"),
     chkSchoolDay: document.getElementById("chkSchoolDay"),
@@ -2819,6 +2953,48 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     return pr.dt.getDay() === target;
   }}
 
+  // ── Fuzzy road name search ─────────────────────────────────────────────────
+  // Space-optimized Levenshtein distance (two-row DP).
+  function levenshtein(a, b) {{
+    if (a === b) return 0;
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    let r0 = Array.from({{length: n + 1}}, (_, i) => i);
+    let r1 = new Array(n + 1);
+    for (let i = 1; i <= m; i++) {{
+      r1[0] = i;
+      for (let j = 1; j <= n; j++) {{
+        r1[j] = a[i-1] === b[j-1] ? r0[j-1] : 1 + Math.min(r0[j], r1[j-1], r0[j-1]);
+      }}
+      [r0, r1] = [r1, r0];
+    }}
+    return r0[n];
+  }}
+
+  // Check if a single query word fuzzy-matches anywhere in the location string.
+  // Strategy: substring first (zero cost), then word-level edit distance.
+  function fuzzyWordMatch(word, loc) {{
+    if (loc.includes(word)) return true;
+    if (word.length <= 2) return false;  // short words must be exact
+    const maxDist = word.length <= 4 ? 1 : 2;
+    const tokens = loc.split(/[\s\-\/,&.]+/);
+    for (const tok of tokens) {{
+      if (tok.length === 0) continue;
+      if (Math.abs(tok.length - word.length) > maxDist + 1) continue;
+      if (levenshtein(word, tok) <= maxDist) return true;
+    }}
+    return false;
+  }}
+
+  function matchesRoadSearch(row, term) {{
+    if (!term) return true;
+    const loc = (row[IDX_LOCATION] || "").toLowerCase();
+    const words = term.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+    return words.every(w => fuzzyWordMatch(w, loc));
+  }}
+  // ───────────────────────────────────────────────────────────────────────────
+
   function matchesRoadType(row, roadType) {{
     if (!roadType || roadType === "any") return true;
     const hw = (row.length > IDX_HIGHWAY) ? row[IDX_HIGHWAY] : null;
@@ -2889,6 +3065,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const schoolDay = !!(els.chkSchoolDay && els.chkSchoolDay.checked);
     const dowValue = els.dowSelect ? (els.dowSelect.value || "all").trim() : "all";
     const roadType = els.roadTypeSelect ? (els.roadTypeSelect.value || "any").trim() : "any";
+    const roadSearch = (els.roadSearch ? els.roadSearch.value : "").trim();
     const chkFlood = !!(els.chkFloodWarning && els.chkFloodWarning.checked);
     const chkStorm = !!(els.chkThunderstormWarning && els.chkThunderstormWarning.checked);
     const chkTornado = !!(els.chkTornadoWatch && els.chkTornadoWatch.checked);
@@ -2913,6 +3090,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       schoolDay,
       dowValue,
       roadType,
+      roadSearch,
       chkFlood,
       chkStorm,
       chkTornado,
@@ -2934,6 +3112,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       if (!matchesSchoolDay(row, filterObj.schoolDay)) continue;
       if (!matchesDow(row, filterObj.dowValue)) continue;
       if (!matchesRoadType(row, filterObj.roadType)) continue;
+      if (!matchesRoadSearch(row, filterObj.roadSearch)) continue;
       if (!matchesNwsAlerts(row, filterObj)) continue;
 
       if (bounds) {{
@@ -3364,6 +3543,12 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (els.dowSelect) els.dowSelect.value = "all";
     if (els.roadTypeSelect) els.roadTypeSelect.value = "any";
 
+    if (els.roadSearch) {{
+      els.roadSearch.value = "";
+      els.roadSearch.classList.remove("has-value");
+      if (els.roadSearchClear) els.roadSearchClear.classList.remove("visible");
+    }}
+
     if (els.chkFloodWarning) els.chkFloodWarning.checked = false;
     if (els.chkThunderstormWarning) els.chkThunderstormWarning.checked = false;
     if (els.chkTornadoWatch) els.chkTornadoWatch.checked = false;
@@ -3435,6 +3620,25 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         }}
         scheduleRender(mapObj, 0);
       }});
+    }}
+
+    // Road search: filters on every keystroke, no debounce delay needed
+    if (els.roadSearch) {{
+      els.roadSearch.addEventListener("input", function() {{
+        const hasVal = els.roadSearch.value.length > 0;
+        els.roadSearch.classList.toggle("has-value", hasVal);
+        if (els.roadSearchClear) els.roadSearchClear.classList.toggle("visible", hasVal);
+        scheduleRender(mapObj, 60);
+      }});
+      if (els.roadSearchClear) {{
+        els.roadSearchClear.addEventListener("click", function() {{
+          els.roadSearch.value = "";
+          els.roadSearch.classList.remove("has-value");
+          els.roadSearchClear.classList.remove("visible");
+          scheduleRender(mapObj, 0);
+          els.roadSearch.focus();
+        }});
+      }}
     }}
 
     mapObj.on("moveend", function() {{
