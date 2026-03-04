@@ -106,6 +106,31 @@ class StateStore:
         # _insert_batch uses INSERT OR IGNORE, so re-processing existing rows is
         # a safe no-op.
         self._seed_from_csv()
+        # Reset the geocode_attempts counter for any unlocated incidents so that
+        # incidents incorrectly retired by a previous bug (location-cache
+        # coordinates being nullified by _filter_geocode_results) get a fresh
+        # retry budget.  Cache hits cost zero API calls, so this is safe to run
+        # on every startup.
+        self._reset_geocode_attempts_for_unlocated()
+
+    def _reset_geocode_attempts_for_unlocated(self) -> None:
+        """Reset geocode_attempts to NULL for all incidents that still lack coords.
+
+        Ensures that incidents which exhausted their retry budget due to a now-
+        fixed geocoding bug are eligible for re-geocoding on the next cycle.
+        """
+        try:
+            self.conn.execute(
+                """
+                UPDATE incidents
+                SET geocode_attempts = NULL
+                WHERE (latitude IS NULL OR longitude IS NULL)
+                  AND geocode_attempts IS NOT NULL
+                """
+            )
+            self.conn.commit()
+        except Exception:
+            pass
 
     def _seed_from_csv(self) -> None:
         if not os.path.exists(self.csv_path):

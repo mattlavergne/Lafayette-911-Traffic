@@ -483,6 +483,15 @@ def _filter_geocode_results(incidents):
         if lat is None or lng is None:
             inc.pop("address_components", None)
             continue
+        # Coordinates that came from the location cache have no
+        # 'address_components' key — only Google-geocoded results include that
+        # field.  Cache entries have already been validated when originally
+        # geocoded, so only re-apply the bounding-box sanity check.
+        if "address_components" not in inc:
+            if not _in_lafayette_bounds(lat, lng):
+                inc["latitude"] = None
+                inc["longitude"] = None
+            continue
         comps = inc.get("address_components") or []
         if not _has_allowed_lafayette_place(comps):
             inc["latitude"] = None
