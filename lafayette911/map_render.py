@@ -1999,6 +1999,84 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   #mobileHandle {{
     display: none;
   }}
+
+  /* ── Normalized Rates panel ─────────────────────────────────────── */
+  .rates-group {{
+    margin-bottom: 10px;
+  }}
+  .rates-group-title {{
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 5px;
+  }}
+  .rates-span-note {{
+    font-weight: 400;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: none;
+    letter-spacing: 0;
+  }}
+  .rates-row {{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+  }}
+  .rates-label {{
+    flex: 0 0 90px;
+    font-size: 11px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  .rates-bar-wrap {{
+    flex: 1;
+    background: rgba(0,0,0,0.10);
+    border-radius: 3px;
+    height: 7px;
+    overflow: hidden;
+    min-width: 0;
+  }}
+  .rates-bar-fill {{
+    height: 7px;
+    border-radius: 3px;
+    transition: width 0.35s ease;
+    min-width: 2px;
+  }}
+  .rates-val {{
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    min-width: 60px;
+    text-align: right;
+  }}
+  .rates-n {{
+    color: var(--text-muted);
+    font-size: 10px;
+  }}
+  .rates-ratio {{
+    font-size: 11px;
+    font-style: italic;
+    color: var(--text-muted);
+    margin-top: 2px;
+    margin-bottom: 4px;
+    line-height: 1.4;
+  }}
+  .rates-subtitle {{
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }}
+  .rates-no-data {{
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+  }}
 </style>
 
 <div id="controlPanel">
@@ -2215,6 +2293,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         </label>
       </div>
       <div class="row row-note">Weather filters ignore incidents without weather unless you choose weather-only or a specific condition.</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Normalized Rates</div>
+      <div id="ratesContent"><span class="rates-no-data">Waiting for data&hellip;</span></div>
     </div>
 
     <div class="section">
@@ -3044,6 +3127,226 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     return true;
   }}
 
+  // ── Normalized Rates panel ──────────────────────────────────────────────────
+  // Walk the full dataset once to find its date span, then count how many rush-
+  // hour hours, school-day hours, etc. actually exist in that span.  These
+  // totals become the denominators for per-hour rates.  The result is cached
+  // because the full incident list doesn't change during a page session.
+  let _dataSpanCache = null;
+
+  function computeDataSpan() {{
+    if (!INCIDENTS || !INCIDENTS.length) return null;
+    let minMs = Infinity, maxMs = -Infinity;
+    for (const row of INCIDENTS) {{
+      const pr = parseReported(row[IDX_REPORTED]);
+      if (!pr || !pr.dt) continue;
+      const ms = pr.dt.getTime();
+      if (ms < minMs) minMs = ms;
+      if (ms > maxMs) maxMs = ms;
+    }}
+    if (!isFinite(minMs)) return null;
+
+    // Walk day-by-day from earliest to latest incident and tally hours
+    // Rush hour definition (mirrors Python): Mon-Fri 7-9 AM + 4-7 PM = 5 hrs/day
+    let rushHours = 0, nonRushWeekdayHours = 0;
+    let schoolDayHours = 0, nonSchoolWeekdayHours = 0;
+    const d = new Date(minMs);
+    d.setHours(0, 0, 0, 0);
+    const end = new Date(maxMs);
+    end.setHours(23, 59, 59, 999);
+
+    while (d <= end) {{
+      const dow = d.getDay(); // 0=Sun, 6=Sat
+      if (dow !== 0 && dow !== 6) {{
+        rushHours += 5;          // 7-9 am (2 hrs) + 4-7 pm (3 hrs)
+        nonRushWeekdayHours += 19;
+        if (isSchoolDayJS(d)) {{
+          schoolDayHours += 24;
+        }} else {{
+          nonSchoolWeekdayHours += 24;
+        }}
+      }}
+      d.setDate(d.getDate() + 1);
+    }}
+    return {{ rushHours, nonRushWeekdayHours, schoolDayHours, nonSchoolWeekdayHours }};
+  }}
+
+  function _getDataSpan() {{
+    if (!_dataSpanCache) _dataSpanCache = computeDataSpan();
+    return _dataSpanCache;
+  }}
+
+  // Row-level helpers that reuse stored DB values when present (fast path)
+  function _isRushHourRow(row) {{
+    const h   = (row.length > IDX_HOUR && row[IDX_HOUR] != null) ? row[IDX_HOUR] : null;
+    const dow = (row.length > IDX_DOW  && row[IDX_DOW]  != null) ? row[IDX_DOW]  : null;
+    if (h !== null && dow !== null) {{
+      if (dow >= 5) return false; // Python weekday: 5=Sat, 6=Sun
+      return (h >= 7 && h < 9) || (h >= 16 && h < 19);
+    }}
+    const pr = parseReported(row[IDX_REPORTED]);
+    return isRushHourFromParsed(pr);
+  }}
+
+  function _isSchoolDayRow(row) {{
+    const val = (row.length > IDX_SCHOOL_DAY) ? row[IDX_SCHOOL_DAY] : null;
+    if (val === 1) return true;
+    if (val === 0) return false;
+    const pr = parseReported(row[IDX_REPORTED]);
+    if (!pr || !pr.dt) return false;
+    return isSchoolDayJS(pr.dt);
+  }}
+
+  function _isWeekendRow(row) {{
+    const dow = (row.length > IDX_DOW && row[IDX_DOW] != null) ? row[IDX_DOW] : null;
+    if (dow !== null) return dow >= 5; // Python: 5=Sat, 6=Sun
+    const pr = parseReported(row[IDX_REPORTED]);
+    if (!pr || !pr.dt) return false;
+    const d = pr.dt.getDay();
+    return d === 0 || d === 6;
+  }}
+
+  function renderRatesPanel(rows) {{
+    const el = document.getElementById("ratesContent");
+    if (!el) return;
+
+    const span = _getDataSpan();
+    if (!span || span.rushHours === 0) {{
+      el.innerHTML = '<span class="rates-no-data">Not enough data to compute rates.</span>';
+      return;
+    }}
+
+    // Tally incidents per category from the filtered row set
+    let rushCount = 0, nonRushCount = 0;
+    let schoolCount = 0, nonSchoolCount = 0;
+    let rainCount = 0, noRainCount = 0;
+    let windyCount = 0, calmCount = 0;
+    let lowVisCount = 0, goodVisCount = 0;
+
+    for (const row of rows) {{
+      const weekend = _isWeekendRow(row);
+      if (!weekend) {{
+        if (_isRushHourRow(row)) rushCount++; else nonRushCount++;
+        if (_isSchoolDayRow(row)) schoolCount++; else nonSchoolCount++;
+      }}
+      const precipIn   = (row.length > IDX_PRECIP_IN   && row[IDX_PRECIP_IN]   != null) ? parseFloat(row[IDX_PRECIP_IN])   : null;
+      const precipProb = (row.length > IDX_PRECIP_PROB  && row[IDX_PRECIP_PROB]  != null) ? parseFloat(row[IDX_PRECIP_PROB])  : null;
+      const wind       = (row.length > IDX_WIND_SPEED   && row[IDX_WIND_SPEED]   != null) ? parseFloat(row[IDX_WIND_SPEED])   : null;
+      const vis        = (row.length > IDX_VISIBILITY   && row[IDX_VISIBILITY]   != null) ? parseFloat(row[IDX_VISIBILITY])   : null;
+      const hasWeather = precipIn != null || precipProb != null || wind != null || vis != null;
+      if (hasWeather) {{
+        const hasRain = (precipIn != null && precipIn > 0.005) || (precipProb != null && precipProb >= 20);
+        if (hasRain) rainCount++; else noRainCount++;
+        if (wind != null) {{ if (wind >= 20) windyCount++; else calmCount++; }}
+        if (vis  != null) {{ if (vis  <  5)  lowVisCount++; else goodVisCount++; }}
+      }}
+    }}
+
+    // Render a single labelled bar row
+    function barRow(label, count, denominator, maxRate, color, isRate) {{
+      const rate = denominator > 0 ? count / denominator : 0;
+      const pct  = maxRate > 0 ? Math.min(100, (rate / maxRate) * 100) : 0;
+      let valText;
+      if (isRate) {{
+        if (denominator <= 0 || count === 0) {{
+          valText = '<span class="rates-n">0</span>';
+        }} else {{
+          const rStr = rate >= 0.1 ? rate.toFixed(2) + "/hr" : (rate * 1000).toFixed(1) + "/1000\u202fhr";
+          valText = rStr + '<span class="rates-n"> (' + count + ')</span>';
+        }}
+      }} else {{
+        // proportion mode: denominator is the group total
+        const p = denominator > 0 ? ((count / denominator) * 100).toFixed(1) + "%" : "\u2014";
+        valText = p + '<span class="rates-n"> (' + count + ')</span>';
+      }}
+      return '<div class="rates-row">'
+        + '<span class="rates-label">' + esc(label) + '</span>'
+        + '<div class="rates-bar-wrap"><div class="rates-bar-fill" style="width:' + pct.toFixed(1) + '%;background:' + esc(color) + '"></div></div>'
+        + '<span class="rates-val">' + valText + '</span>'
+        + '</div>';
+    }}
+
+    // Relative risk sentence for two rate-based buckets
+    function relRisk(countA, hoursA, countB, hoursB, labelA, labelB) {{
+      if (hoursA <= 0 || hoursB <= 0) return "";
+      const rA = countA / hoursA, rB = countB / hoursB;
+      if (rA === 0 && rB === 0) return "";
+      if (rB === 0) return labelA + " has incidents but " + labelB + " does not.";
+      const ratio = rA / rB;
+      if (Math.abs(ratio - 1) < 0.05) return labelA + " and " + labelB + " are about equal per hour.";
+      if (ratio > 1) return labelA + " is <strong>" + ratio.toFixed(1) + "&times;</strong> more frequent per hour than " + labelB + ".";
+      return labelB + " is <strong>" + (1 / ratio).toFixed(1) + "&times;</strong> more frequent per hour than " + labelA + ".";
+    }}
+
+    // ── Rush hour ────────────────────────────────────────────────────────────
+    const maxRR = Math.max(rushCount / span.rushHours, nonRushCount / span.nonRushWeekdayHours) || 1e-9;
+    const rushHTML =
+      barRow("Rush hour",  rushCount,    span.rushHours,             maxRR, "#c53030", true) +
+      barRow("Off-peak",   nonRushCount, span.nonRushWeekdayHours,   maxRR, "#2b6cb0", true);
+    const rushRatio = relRisk(rushCount, span.rushHours, nonRushCount, span.nonRushWeekdayHours, "Rush hour", "Off-peak");
+
+    // ── School day ───────────────────────────────────────────────────────────
+    const maxSR = Math.max(schoolCount / span.schoolDayHours, nonSchoolCount / span.nonSchoolWeekdayHours) || 1e-9;
+    const schoolHTML =
+      barRow("School day", schoolCount,    span.schoolDayHours,         maxSR, "#c53030", true) +
+      barRow("No school",  nonSchoolCount, span.nonSchoolWeekdayHours,  maxSR, "#2b6cb0", true);
+    const schoolRatio = relRisk(schoolCount, span.schoolDayHours, nonSchoolCount, span.nonSchoolWeekdayHours, "School days", "No-school days");
+
+    // ── Weather ──────────────────────────────────────────────────────────────
+    const wTotal = rainCount + noRainCount;
+    let weatherHTML = "";
+    if (wTotal === 0) {{
+      weatherHTML = '<div class="rates-row"><span class="rates-no-data">No weather data in this selection.</span></div>';
+    }} else {{
+      const maxW = Math.max(rainCount, noRainCount) || 1;
+      weatherHTML +=
+        barRow("Rain / precip", rainCount,   wTotal, maxW,   "#2b6cb0", false) +
+        barRow("No rain",       noRainCount, wTotal, maxW,   "#276749", false);
+      if (windyCount + calmCount > 0) {{
+        const wndT = windyCount + calmCount;
+        const maxWnd = Math.max(windyCount, calmCount) || 1;
+        weatherHTML +=
+          barRow("Windy (\u226520 mph)", windyCount, wndT, maxWnd, "#744210", false) +
+          barRow("Calm wind",            calmCount,  wndT, maxWnd, "#276749", false);
+      }}
+      if (lowVisCount + goodVisCount > 0) {{
+        const visT = lowVisCount + goodVisCount;
+        const maxVis = Math.max(lowVisCount, goodVisCount) || 1;
+        weatherHTML +=
+          barRow("Low vis (<5\u202fmi)", lowVisCount,  visT, maxVis, "#744210", false) +
+          barRow("Good vis",             goodVisCount, visT, maxVis, "#276749", false);
+      }}
+    }}
+
+    // ── Assemble ─────────────────────────────────────────────────────────────
+    el.innerHTML =
+      '<div class="rates-subtitle">From ' + rows.length.toLocaleString() + ' filtered incident' + (rows.length !== 1 ? 's' : '') + ' \u2014 denominators are hours in dataset\u2019s date range</div>' +
+
+      '<div class="rates-group">' +
+        '<div class="rates-group-title">Rush Hour vs. Off-Peak' +
+          ' <span class="rates-span-note">(' + span.rushHours.toLocaleString() + ' rush hrs \u00b7 ' + span.nonRushWeekdayHours.toLocaleString() + ' off-peak hrs in range)</span>' +
+        '</div>' +
+        rushHTML +
+        (rushRatio ? '<div class="rates-ratio">' + rushRatio + '</div>' : '') +
+      '</div>' +
+
+      '<div class="rates-group">' +
+        '<div class="rates-group-title">School Day vs. No School' +
+          ' <span class="rates-span-note">(' + span.schoolDayHours.toLocaleString() + ' school hrs \u00b7 ' + span.nonSchoolWeekdayHours.toLocaleString() + ' no-school hrs)</span>' +
+        '</div>' +
+        schoolHTML +
+        (schoolRatio ? '<div class="rates-ratio">' + schoolRatio + '</div>' : '') +
+      '</div>' +
+
+      '<div class="rates-group">' +
+        '<div class="rates-group-title">Weather Breakdown' +
+          ' <span class="rates-span-note">% of incidents with weather data</span>' +
+        '</div>' +
+        weatherHTML +
+        (wTotal > 0 ? '<div class="rates-ratio">Compare % to local rainfall/wind frequency for relative risk.</div>' : '') +
+      '</div>';
+  }}
+
   function currentFilterObj() {{
     const mm = (els.monthSelect.value || "").trim();
     const dd = (els.daySelect.value || "").trim();
@@ -3323,6 +3626,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
     const filtered = filteredIncidents(f, mapObj);
     lastFiltered = filtered;
+    renderRatesPanel(filtered);
 
     function setPillCount(el, value) {{
       if (!el) return;
