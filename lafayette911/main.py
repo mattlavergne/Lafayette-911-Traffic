@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from lafayette911.fetch_incidents import build_session, fetch_traffic_data, geocode_incidents, parse_traffic_data
+from lafayette911.fetch_incidents import (
+    build_session,
+    estimate_needed_geocode_requests,
+    fetch_traffic_data,
+    geocode_incidents,
+    parse_traffic_data,
+)
 from lafayette911.map_render import backfill_road_types, create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
 from lafayette911.utils import get_rss_bytes, log_event, setup_logging, trim_memory
@@ -47,6 +53,7 @@ class Config:
     mode: str
     render_source: str
     geocode_sleep_seconds: float
+    geocode_max_requests_per_24h: int
     tracemalloc_interval: int
     tracemalloc_top: int
     debug_memory: bool
@@ -105,6 +112,7 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         mode=os.getenv("LAF911_MODE", "all"),
         render_source=os.getenv("LAF911_RENDER_SOURCE", "db"),
         geocode_sleep_seconds=_env_float("LAF911_GEOCODE_SLEEP", 0.0),
+        geocode_max_requests_per_24h=_env_int("LAF911_GEOCODE_MAX_REQUESTS_PER_24H", 75),
         tracemalloc_interval=_env_int("LAF911_TRACEMALLOC_INTERVAL", 0),
         tracemalloc_top=_env_int("LAF911_TRACEMALLOC_TOP", 10),
         debug_memory=_env_bool("LAF911_DEBUG_MEMORY", False),
@@ -593,12 +601,27 @@ def _geocode_unlocated_incidents(
     if not unlocated:
         return False
 
+    needed = estimate_needed_geocode_requests(unlocated, location_cache)
+    allowed = store.reserve_geocode_requests(
+        requested=needed,
+        max_requests_per_24h=config.geocode_max_requests_per_24h,
+    )
+    if allowed <= 0:
+        log_event(
+            logger,
+            "geocode_budget_exhausted",
+            target="unlocated",
+            max_requests_per_24h=config.geocode_max_requests_per_24h,
+        )
+        return False
+
     geocode_incidents(
         session,
         unlocated,
         config.google_api_key,
         sleep_seconds=config.geocode_sleep_seconds,
         location_cache=location_cache,
+        api_call_limit=allowed,
     )
     _filter_geocode_results(unlocated)
     updated = store.update_incident_coords(unlocated)
@@ -635,12 +658,27 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
         if incidents:
             new_incidents = store.filter_new_incidents(incidents)
             if new_incidents:
+                allowed_new = None
+                if config.google_api_key:
+                    needed_new = estimate_needed_geocode_requests(new_incidents, location_cache)
+                    allowed_new = store.reserve_geocode_requests(
+                        requested=needed_new,
+                        max_requests_per_24h=config.geocode_max_requests_per_24h,
+                    )
+                    if needed_new > 0 and allowed_new <= 0:
+                        log_event(
+                            logger,
+                            "geocode_budget_exhausted",
+                            target="new_incidents",
+                            max_requests_per_24h=config.geocode_max_requests_per_24h,
+                        )
                 geocode_incidents(
                     session,
                     new_incidents,
                     config.google_api_key,
                     sleep_seconds=config.geocode_sleep_seconds,
                     location_cache=location_cache,
+                    api_call_limit=allowed_new,
                 )
                 _filter_geocode_results(new_incidents)
                 if config.weather_enabled:

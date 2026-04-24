@@ -129,6 +129,7 @@ def geocode_incidents(
     api_key: str,
     sleep_seconds: float = 0.0,
     location_cache: Optional[Dict[str, tuple]] = None,
+    api_call_limit: Optional[int] = None,
 ) -> List[Dict[str, str]]:
     """Geocode a list of incidents, updating each dict with latitude/longitude.
 
@@ -140,6 +141,7 @@ def geocode_incidents(
     if not incidents:
         return []
 
+    calls_made = 0
     for incident in incidents:
         if incident.get("latitude") and incident.get("longitude"):
             continue
@@ -156,8 +158,12 @@ def geocode_incidents(
         if not api_key:
             continue
 
+        if api_call_limit is not None and calls_made >= api_call_limit:
+            continue
+
         address = f"{loc}, {DEFAULT_FULL_CITY}"
         result = geocode_with_google(session, address, api_key)
+        calls_made += 1
         if not result:
             continue
 
@@ -173,3 +179,27 @@ def geocode_incidents(
             time.sleep(sleep_seconds)
 
     return incidents
+
+
+def estimate_needed_geocode_requests(
+    incidents: List[Dict[str, str]],
+    location_cache: Optional[Dict[str, tuple]] = None,
+) -> int:
+    """Estimate how many Google API calls would be needed for this batch."""
+    if not incidents:
+        return 0
+    seen = set()
+    needed = 0
+    for incident in incidents:
+        if incident.get("latitude") and incident.get("longitude"):
+            continue
+        loc = incident.get("location", "")
+        if not loc:
+            continue
+        if location_cache is not None and loc in location_cache:
+            continue
+        if loc in seen:
+            continue
+        seen.add(loc)
+        needed += 1
+    return needed

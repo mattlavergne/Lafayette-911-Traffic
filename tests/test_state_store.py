@@ -105,6 +105,45 @@ class StateStoreTests(unittest.TestCase):
             )
             store2.close()
 
+    def test_geocode_quota_enforced_over_rolling_24h_window(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            db_path = os.path.join(tmpdir, "incident_index.sqlite")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write("location,cause,reported,assisting,incident_number,latitude,longitude\n")
+
+            store = StateStore(db_path, csv_path)
+            approved = store.reserve_geocode_requests(60, max_requests_per_24h=75)
+            self.assertEqual(approved, 60)
+            approved = store.reserve_geocode_requests(30, max_requests_per_24h=75)
+            self.assertEqual(approved, 15)
+            approved = store.reserve_geocode_requests(1, max_requests_per_24h=75)
+            self.assertEqual(approved, 0)
+            remaining = store.get_remaining_geocode_requests(max_requests_per_24h=75)
+            self.assertEqual(remaining, 0)
+            store.close()
+
+    def test_legacy_geocode_attempt_reset_runs_once(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            db_path = os.path.join(tmpdir, "incident_index.sqlite")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write("location,cause,reported,assisting,incident_number,latitude,longitude\n")
+                handle.write("LocA,CauseA,2026-01-01 10:00,AssistA,INC1,,\n")
+
+            store = StateStore(db_path, csv_path)
+            store.conn.execute("UPDATE incidents SET geocode_attempts = 3 WHERE incident_number = 'INC1'")
+            store.conn.commit()
+            store.close()
+
+            # Re-open and verify the one-time migration does not keep resetting.
+            store2 = StateStore(db_path, csv_path)
+            row = store2.conn.execute(
+                "SELECT geocode_attempts FROM incidents WHERE incident_number = 'INC1'"
+            ).fetchone()
+            self.assertEqual(row[0], 3)
+            store2.close()
+
 
 if __name__ == "__main__":
     unittest.main()

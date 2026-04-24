@@ -2,6 +2,7 @@ import csv
 import math
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -45,6 +46,22 @@ class StateStore:
                 weather_sky_cover_pct REAL,
                 weather_observed_at TEXT,
                 weather_source TEXT
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS geocode_api_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                requested_at_epoch INTEGER NOT NULL
             )
             """
         )
@@ -106,19 +123,26 @@ class StateStore:
         # _insert_batch uses INSERT OR IGNORE, so re-processing existing rows is
         # a safe no-op.
         self._seed_from_csv()
-        # Reset the geocode_attempts counter for any unlocated incidents so that
-        # incidents incorrectly retired by a previous bug (location-cache
-        # coordinates being nullified by _filter_geocode_results) get a fresh
-        # retry budget.  Cache hits cost zero API calls, so this is safe to run
-        # on every startup.
-        self._reset_geocode_attempts_for_unlocated()
+        # One-time migration: reset geocode_attempts for legacy rows impacted by
+        # a historical cache bug. This should never run every startup because
+        # that would allow infinite geocoding retries and burn API quota.
+        self._reset_geocode_attempts_for_unlocated_once()
 
-    def _reset_geocode_attempts_for_unlocated(self) -> None:
-        """Reset geocode_attempts to NULL for all incidents that still lack coords.
+    def _meta_get(self, key: str) -> Optional[str]:
+        row = self.conn.execute("SELECT value FROM app_meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
 
-        Ensures that incidents which exhausted their retry budget due to a now-
-        fixed geocoding bug are eligible for re-geocoding on the next cycle.
-        """
+    def _meta_set(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self.conn.commit()
+
+    def _reset_geocode_attempts_for_unlocated_once(self) -> None:
+        """Run one legacy geocode-attempt reset migration once per DB."""
+        if self._meta_get("legacy_geocode_attempt_reset_v1") == "1":
+            return
         try:
             self.conn.execute(
                 """
@@ -129,8 +153,51 @@ class StateStore:
                 """
             )
             self.conn.commit()
+            self._meta_set("legacy_geocode_attempt_reset_v1", "1")
         except Exception:
             pass
+
+    def reserve_geocode_requests(self, requested: int, max_requests_per_24h: int = 75) -> int:
+        """Reserve and record geocoding API request slots for the last 24 hours.
+
+        Returns the number of requests allowed right now (0..requested).
+        """
+        if requested <= 0 or max_requests_per_24h <= 0:
+            return 0
+        now = int(time.time())
+        cutoff = now - 24 * 60 * 60
+        self.conn.execute(
+            "DELETE FROM geocode_api_requests WHERE requested_at_epoch < ?",
+            (cutoff,),
+        )
+        current = self.conn.execute(
+            "SELECT COUNT(1) FROM geocode_api_requests WHERE requested_at_epoch >= ?",
+            (cutoff,),
+        ).fetchone()[0]
+        remaining = max(0, int(max_requests_per_24h) - int(current))
+        approved = min(int(requested), remaining)
+        if approved > 0:
+            self.conn.executemany(
+                "INSERT INTO geocode_api_requests (requested_at_epoch) VALUES (?)",
+                [(now,)] * approved,
+            )
+        self.conn.commit()
+        return approved
+
+    def get_remaining_geocode_requests(self, max_requests_per_24h: int = 75) -> int:
+        """Return remaining Google geocode requests allowed in the rolling 24h window."""
+        now = int(time.time())
+        cutoff = now - 24 * 60 * 60
+        self.conn.execute(
+            "DELETE FROM geocode_api_requests WHERE requested_at_epoch < ?",
+            (cutoff,),
+        )
+        current = self.conn.execute(
+            "SELECT COUNT(1) FROM geocode_api_requests WHERE requested_at_epoch >= ?",
+            (cutoff,),
+        ).fetchone()[0]
+        self.conn.commit()
+        return max(0, int(max_requests_per_24h) - int(current))
 
     def _seed_from_csv(self) -> None:
         if not os.path.exists(self.csv_path):
