@@ -2077,6 +2077,20 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     color: var(--text-muted);
     font-style: italic;
   }}
+
+  .insight-list {{
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 6px;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.35;
+  }}
+
+  .insight-list li strong {{
+    font-weight: 700;
+  }}
 </style>
 
 <div id="controlPanel">
@@ -2298,6 +2312,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     <div class="section">
       <div class="section-title">Normalized Rates</div>
       <div id="ratesContent"><span class="rates-no-data">Waiting for data&hellip;</span></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Smart Insights</div>
+      <div id="insightsContent"><span class="rates-no-data">Waiting for data&hellip;</span></div>
     </div>
 
     <div class="section">
@@ -3347,6 +3366,87 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       '</div>';
   }}
 
+  function inferCorridor(location) {{
+    const raw = String(location || "").trim().toUpperCase();
+    if (!raw) return "Unknown location";
+    const primary = raw.split(/\s+(?:AT|&|\/|NEAR|@)\s+/)[0].trim();
+    if (!primary) return "Unknown location";
+    return primary.replace(/\s+/g, " ");
+  }}
+
+  function renderInsightsPanel(rows) {{
+    const el = document.getElementById("insightsContent");
+    if (!el) return;
+    if (!rows || rows.length === 0) {{
+      el.innerHTML = '<span class="rates-no-data">No incidents match the current filters.</span>';
+      return;
+    }}
+
+    const byHour = Array(24).fill(0);
+    const byDow = Array(7).fill(0);
+    const byRoadType = new Map();
+    const byCorridor = new Map();
+    const dated = [];
+
+    for (const row of rows) {{
+      const parsed = parseReported(row[IDX_REPORTED]);
+      if (parsed && parsed.dt) {{
+        byHour[parsed.hour] += 1;
+        byDow[parsed.dow] += 1;
+        dated.push(parsed.dt);
+      }}
+
+      const roadType = String(row[IDX_HIGHWAY] || "unknown").trim().toLowerCase() || "unknown";
+      byRoadType.set(roadType, (byRoadType.get(roadType) || 0) + 1);
+
+      const corridor = inferCorridor(row[IDX_LOCATION]);
+      byCorridor.set(corridor, (byCorridor.get(corridor) || 0) + 1);
+    }}
+
+    const bestHour = byHour.reduce((best, count, hour) => (count > best.count ? {{ hour, count }} : best), {{ hour: -1, count: 0 }});
+    const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const bestDow = byDow.reduce((best, count, jsDow) => (count > best.count ? {{ jsDow, count }} : best), {{ jsDow: -1, count: 0 }});
+
+    const topRoadType = Array.from(byRoadType.entries()).sort((a, b) => b[1] - a[1])[0] || ["unknown", 0];
+    const topCorridor = Array.from(byCorridor.entries()).sort((a, b) => b[1] - a[1])[0] || ["Unknown location", 0];
+
+    let trendText = "Not enough date coverage for a 7-day trend.";
+    if (dated.length >= 4) {{
+      dated.sort((a, b) => a - b);
+      const end = dated[dated.length - 1];
+      const recentStart = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const priorStart = new Date(end.getTime() - 14 * 24 * 60 * 60 * 1000);
+      let recent = 0;
+      let prior = 0;
+      for (const dt of dated) {{
+        if (dt > recentStart) recent += 1;
+        else if (dt > priorStart) prior += 1;
+      }}
+      if (prior === 0 && recent > 0) {{
+        trendText = "Recent 7 days show activity, but the prior 7-day window had none.";
+      }} else if (prior > 0) {{
+        const pct = ((recent - prior) / prior) * 100;
+        const dir = pct >= 0 ? "up" : "down";
+        trendText = "Recent 7 days are <strong>" + dir + " " + Math.abs(pct).toFixed(0) + "%</strong> vs the prior 7-day window.";
+      }}
+    }}
+
+    const hourText = bestHour.hour >= 0
+      ? (bestHour.hour.toString().padStart(2, "0") + ":00–" + ((bestHour.hour + 1) % 24).toString().padStart(2, "0") + ":00")
+      : "Unknown";
+    const roadTypeLabel = topRoadType[0] === "unknown" ? "Unknown / uncategorized" : topRoadType[0];
+    const dayLabel = bestDow.jsDow >= 0 ? dayNames[bestDow.jsDow] : "Unknown day";
+
+    el.innerHTML =
+      '<ul class="insight-list">' +
+        '<li>Peak hour: <strong>' + esc(hourText) + '</strong> (' + bestHour.count + ' incidents).</li>' +
+        '<li>Busiest day: <strong>' + esc(dayLabel) + '</strong> (' + bestDow.count + ' incidents).</li>' +
+        '<li>Most common road type: <strong>' + esc(roadTypeLabel) + '</strong> (' + topRoadType[1] + ').</li>' +
+        '<li>Top corridor: <strong>' + esc(topCorridor[0]) + '</strong> (' + topCorridor[1] + ' incidents).</li>' +
+        '<li>' + trendText + '</li>' +
+      '</ul>';
+  }}
+
   function currentFilterObj() {{
     const mm = (els.monthSelect.value || "").trim();
     const dd = (els.daySelect.value || "").trim();
@@ -3627,6 +3727,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const filtered = filteredIncidents(f, mapObj);
     lastFiltered = filtered;
     renderRatesPanel(filtered);
+    renderInsightsPanel(filtered);
 
     function setPillCount(el, value) {{
       if (!el) return;
