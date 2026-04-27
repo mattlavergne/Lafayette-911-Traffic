@@ -1808,8 +1808,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     #weatherWidget {{
       top: 12px;
       right: 12px;
-      left: 12px;
-      max-width: none;
+      left: auto;
+      width: min(70vw, 260px);
+      max-width: 260px;
       border-radius: 14px;
       pointer-events: none;
       font-size: 13px;
@@ -3411,8 +3412,13 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     for (const row of rows) {{
       const parsed = parseReported(row[IDX_REPORTED]);
       if (parsed && parsed.dt) {{
-        byHour[parsed.hour] += 1;
-        byDow[parsed.dow] += 1;
+        if (Number.isInteger(parsed.hh) && parsed.hh >= 0 && parsed.hh < 24) {{
+          byHour[parsed.hh] += 1;
+        }}
+        const jsDow = parsed.dt.getDay();
+        if (Number.isInteger(jsDow) && jsDow >= 0 && jsDow < 7) {{
+          byDow[jsDow] += 1;
+        }}
         dated.push(parsed.dt);
       }}
 
@@ -3672,8 +3678,10 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
   }}
 
-  function getPointSizing(mapObj) {{
-    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+  function getPointSizing(mapObj, zoomOverride) {{
+    const zoom = Number.isFinite(zoomOverride)
+      ? zoomOverride
+      : (mapObj && mapObj.getZoom ? mapObj.getZoom() : 12);
     const inverse = 12 - zoom;
     let radius = 5.6 + inverse * 0.7;
     radius = Math.max(3.6, Math.min(10.8, radius));
@@ -3685,9 +3693,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     return {{ radius, countSize, countFont }};
   }}
 
-  function updatePointSizing(mapObj) {{
+  function updatePointSizing(mapObj, zoomOverride) {{
     if (!mapObj) return;
-    const sizing = getPointSizing(mapObj);
+    const sizing = getPointSizing(mapObj, zoomOverride);
     for (const mk of pointMarkers.singles) {{
       if (mk && mk.setRadius) {{
         mk.setRadius(sizing.radius);
@@ -4010,6 +4018,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   }}
 
   function wireUI(mapObj) {{
+    let zoomAnimRaf = null;
+    let pendingAnimZoom = null;
+
     function setBtnText() {{
       if (els.panel.classList.contains("collapsed")) els.toggleBtn.textContent = "Filters";
       else els.toggleBtn.textContent = "Hide";
@@ -4082,12 +4093,23 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }});
 
     mapObj.on("zoomend", function() {{
-      updatePointSizing(mapObj);
       if (els.chkInViewOnly.checked) {{
         scheduleRender(mapObj, 80);
       }} else {{
+        updatePointSizing(mapObj);
         updateInViewOnly(mapObj);
       }}
+    }});
+
+    mapObj.on("zoomanim", function(e) {{
+      if (!(els.chkPoints && els.chkPoints.checked)) return;
+      if (!e || !Number.isFinite(e.zoom)) return;
+      pendingAnimZoom = e.zoom;
+      if (zoomAnimRaf != null) return;
+      zoomAnimRaf = requestAnimationFrame(function() {{
+        zoomAnimRaf = null;
+        updatePointSizing(mapObj, pendingAnimZoom);
+      }});
     }});
   }}
 
