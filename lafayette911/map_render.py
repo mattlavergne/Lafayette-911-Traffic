@@ -1308,7 +1308,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
     html = html.replace(
         "</head>",
-        f'<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />\n'
+        f'<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />\n'
         f'<script src="{rel_datajs}"></script>\n'
         f'<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>\n'
         f"</head>",
@@ -1341,7 +1341,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     box-shadow: var(--shadow);
     font-family: var(--font);
     font-size: 13px;
-    width: 380px;
+    width: min(380px, calc(100vw - 24px));
     max-height: 82vh;
     overflow: hidden;
     box-sizing: border-box;
@@ -1734,6 +1734,10 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     -webkit-tap-highlight-color: transparent;
   }}
 
+  button, select, input[type="checkbox"], #roadSearch, .road-search-clear {{
+    touch-action: manipulation;
+  }}
+
   button:hover {{
     background: #fff;
     border-color: rgba(0,0,0,0.25);
@@ -1800,6 +1804,18 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     pointer-events: none;
   }}
 
+  @media (max-width: 768px) {{
+    #weatherWidget {{
+      top: 12px;
+      right: 12px;
+      left: 12px;
+      max-width: none;
+      border-radius: 14px;
+      pointer-events: none;
+      font-size: 13px;
+    }}
+  }}
+
   @media (max-width: 520px) {{
     #controlPanel {{
       left: 0;
@@ -1812,6 +1828,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       box-shadow: 0 -10px 30px rgba(0,0,0,0.22);
       display: flex;
       flex-direction: column;
+      padding-bottom: max(0px, env(safe-area-inset-bottom));
     }}
 
     #panelBody {{
@@ -1820,7 +1837,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       flex: 1 1 auto;
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
-      padding: 10px 14px 32px 14px;
+      padding: 10px 14px calc(32px + env(safe-area-inset-bottom)) 14px;
     }}
 
     #mobileHandle {{
@@ -1970,15 +1987,18 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
       max-height: 130px;
     }}
 
-    #weatherWidget {{
-      top: 12px;
-      bottom: auto;
-      right: 12px;
-      left: 12px;
-      max-width: none;
-      border-radius: 14px;
-      pointer-events: none;
-      font-size: 13px;
+    .leaflet-control-zoom a,
+    .leaflet-touch .leaflet-bar a {{
+      width: 44px;
+      height: 44px;
+      line-height: 44px;
+      font-size: 20px;
+    }}
+
+    .leaflet-control-layers-toggle {{
+      width: 44px;
+      height: 44px;
+      background-size: 24px 24px;
     }}
   }}
 
