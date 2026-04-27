@@ -3576,6 +3576,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   let lastFiltered = [];
   let renderTimer = null;
+  let pointRenderMode = "exact";
+  let pointSymbolCount = 0;
   let pointMarkers = {{
     singles: [],
     counts: []
@@ -3695,6 +3697,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function updatePointSizing(mapObj, zoomOverride) {{
     if (!mapObj) return;
+    // For very large sets, avoid per-marker/icon mutations during zoom; these
+    // updates are expensive and can stall interaction.
+    if (pointRenderMode !== "exact" || pointSymbolCount > 1800) return;
     const sizing = getPointSizing(mapObj, zoomOverride);
     for (const mk of pointMarkers.singles) {{
       if (mk && mk.setRadius) {{
@@ -3778,38 +3783,28 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     setPillCount(els.countInView, inView);
 
     if (showPoints) {{
+      // Performance mode for very large result sets: limit the point layer to
+      // the current view (+padding) and aggregate by rounded coordinates.
+      const usePerfMode = filtered.length > 3000;
+      pointRenderMode = usePerfMode ? "aggregated" : "exact";
       const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
-      // Adaptive aggregation: when zoomed out, bucket nearby incidents so we
-      // render far fewer symbols. This keeps interactions responsive with large datasets.
-      const pointsPrecision = zoom <= 10 ? 3 : (zoom <= 12 ? 4 : 6);
-      const grouped = (pointsPrecision >= 6)
-        ? groupByExactLocation(filtered)
-        : (function(rows, decimals) {{
-            const byKey = new Map();
-            for (const row of rows) {{
-              const lat = row[0];
-              const lng = row[1];
-              const key = lat.toFixed(decimals) + "," + lng.toFixed(decimals);
-              let g = byKey.get(key);
-              if (!g) {{
-                g = {{
-                  key: key,
-                  lat: parseFloat(lat.toFixed(decimals)),
-                  lng: parseFloat(lng.toFixed(decimals)),
-                  rows: []
-                }};
-                byKey.set(key, g);
-              }}
-              g.rows.push(row);
-            }}
-            return Array.from(byKey.values());
-          }})(filtered, pointsPrecision);
+      let pointRows = filtered;
+      if (usePerfMode && mapObj && mapObj.getBounds) {{
+        const bounds = mapObj.getBounds().pad(0.35);
+        pointRows = filtered.filter(function(row) {{
+          return bounds.contains(L.latLng(row[0], row[1]));
+        }});
+      }}
+      const grouped = usePerfMode
+        ? groupByRounded(pointRows, zoom >= 14 ? 4 : 3)
+        : groupByExactLocation(pointRows);
       const sizing = getPointSizing(mapObj);
       const mkList = [];
       for (const group of grouped) {{
         let mk = null;
-        if (group.rows.length > 1) {{
-          const count = group.rows.length;
+        const groupCount = usePerfMode ? group.count : group.rows.length;
+        if (groupCount > 1) {{
+          const count = groupCount;
           const size = sizing.countSize;
           const fontSize = sizing.countFont;
           const icon = L.divIcon({{
@@ -3821,10 +3816,17 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
           mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
           mk.__count = count;
           pointMarkers.counts.push(mk);
-          // Lazy popup: DOM is only built when the popup first opens
-          (function(rows) {{
-            mk.bindPopup(function() {{ return createIncidentPopup(rows); }}, {{ maxWidth: 320, autoPan: false }});
-          }})(group.rows);
+          if (usePerfMode) {{
+            mk.bindPopup(
+              "Grouped nearby incidents<br>Count: " + count + "<br><br>" + popupHtml(group.sample),
+              {{ maxWidth: 340, autoPan: false }}
+            );
+          }} else {{
+            // Lazy popup: DOM is only built when the popup first opens
+            (function(rows) {{
+              mk.bindPopup(function() {{ return createIncidentPopup(rows); }}, {{ maxWidth: 320, autoPan: false }});
+            }})(group.rows);
+          }}
           (function(m) {{ mk.on("click", function() {{ focusMarker(mapObj, m); }}); }})(mk);
         }} else {{
           const radius = sizing.radius;
@@ -3838,16 +3840,21 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
           }});
           pointMarkers.singles.push(mk);
           // Lazy popup: HTML string is only built when the popup first opens
+          const singleRow = usePerfMode ? group.sample : group.rows[0];
           (function(row) {{
             mk.bindPopup(function() {{ return popupHtml(row); }}, {{ maxWidth: 320, autoPan: false }});
-          }})(group.rows[0]);
+          }})(singleRow);
           (function(m) {{ mk.on("click", function() {{ focusMarker(mapObj, m); }}); }})(mk);
         }}
         mkList.push(mk);
       }}
+      pointSymbolCount = mkList.length;
       // Add all markers to the layer in one shot to minimise map repaints
       const layer = L.layerGroup(mkList).addTo(mapObj);
       layers.points = layer;
+    }} else {{
+      pointRenderMode = "exact";
+      pointSymbolCount = 0;
     }}
 
     if (showHeat && typeof L.heatLayer === "function") {{
@@ -4110,7 +4117,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
 
     mapObj.on("moveend", function() {{
-      if (els.chkInViewOnly.checked) {{
+      // In perf mode we rebuild on move/zoom so visible groups follow viewport.
+      if (els.chkInViewOnly.checked || pointRenderMode === "aggregated") {{
         scheduleRender(mapObj, 80);
       }} else {{
         updateInViewOnly(mapObj);
@@ -4118,7 +4126,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }});
 
     mapObj.on("zoomend", function() {{
-      if (els.chkInViewOnly.checked) {{
+      if (els.chkInViewOnly.checked || pointRenderMode === "aggregated") {{
         scheduleRender(mapObj, 80);
       }} else {{
         updatePointSizing(mapObj);
@@ -4128,6 +4136,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
     mapObj.on("zoomanim", function(e) {{
       if (!(els.chkPoints && els.chkPoints.checked)) return;
+      if (pointRenderMode === "aggregated" || pointSymbolCount > 1800) return;
       if (!e || !Number.isFinite(e.zoom)) return;
       pendingAnimZoom = e.zoom;
       if (zoomAnimRaf != null) return;
