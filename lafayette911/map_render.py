@@ -1293,7 +1293,12 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         except Exception:
             pass
 
-    base_map = folium.Map(location=[center_lat, center_lng], zoom_start=12, control_scale=True)
+    base_map = folium.Map(
+        location=[center_lat, center_lng],
+        zoom_start=12,
+        control_scale=True,
+        prefer_canvas=True,
+    )
 
     html = base_map.get_root().render()
 
@@ -3785,7 +3790,7 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     if (showPoints) {{
       // Performance mode for very large result sets: limit the point layer to
       // the current view (+padding) and aggregate by rounded coordinates.
-      const usePerfMode = filtered.length > 3000;
+      const usePerfMode = filtered.length > 2000;
       pointRenderMode = usePerfMode ? "aggregated" : "exact";
       const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
       let pointRows = filtered;
@@ -3805,23 +3810,34 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         const groupCount = usePerfMode ? group.count : group.rows.length;
         if (groupCount > 1) {{
           const count = groupCount;
-          const size = sizing.countSize;
-          const fontSize = sizing.countFont;
-          const icon = L.divIcon({{
-            className: "",
-            html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
-            iconSize: [size, size],
-            iconAnchor: [size / 2, size / 2]
-          }});
-          mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
-          mk.__count = count;
-          pointMarkers.counts.push(mk);
           if (usePerfMode) {{
+            // Avoid DOM-heavy divIcon markers in performance mode.
+            // Canvas circles scale far better for thousands of grouped symbols.
+            const radius = Math.max(4, Math.min(12, 3 + Math.sqrt(count)));
+            mk = L.circleMarker([group.lat, group.lng], {{
+              radius: radius,
+              renderer: renderer,
+              color: "#1e4f8f",
+              weight: isTouch ? 2.4 : 1.8,
+              fillColor: "#8cb8ff",
+              fillOpacity: 0.72
+            }});
             mk.bindPopup(
               "Grouped nearby incidents<br>Count: " + count + "<br><br>" + popupHtml(group.sample),
               {{ maxWidth: 340, autoPan: false }}
             );
           }} else {{
+            const size = sizing.countSize;
+            const fontSize = sizing.countFont;
+            const icon = L.divIcon({{
+              className: "",
+              html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
+              iconSize: [size, size],
+              iconAnchor: [size / 2, size / 2]
+            }});
+            mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
+            mk.__count = count;
+            pointMarkers.counts.push(mk);
             // Lazy popup: DOM is only built when the popup first opens
             (function(rows) {{
               mk.bindPopup(function() {{ return createIncidentPopup(rows); }}, {{ maxWidth: 320, autoPan: false }});
