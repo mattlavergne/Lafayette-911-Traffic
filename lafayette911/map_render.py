@@ -3778,7 +3778,32 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     setPillCount(els.countInView, inView);
 
     if (showPoints) {{
-      const grouped = groupByExactLocation(filtered);
+      const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+      // Adaptive aggregation: when zoomed out, bucket nearby incidents so we
+      // render far fewer symbols. This keeps interactions responsive with large datasets.
+      const pointsPrecision = zoom <= 10 ? 3 : (zoom <= 12 ? 4 : 6);
+      const grouped = (pointsPrecision >= 6)
+        ? groupByExactLocation(filtered)
+        : (function(rows, decimals) {{
+            const byKey = new Map();
+            for (const row of rows) {{
+              const lat = row[0];
+              const lng = row[1];
+              const key = lat.toFixed(decimals) + "," + lng.toFixed(decimals);
+              let g = byKey.get(key);
+              if (!g) {{
+                g = {{
+                  key: key,
+                  lat: parseFloat(lat.toFixed(decimals)),
+                  lng: parseFloat(lng.toFixed(decimals)),
+                  rows: []
+                }};
+                byKey.set(key, g);
+              }}
+              g.rows.push(row);
+            }}
+            return Array.from(byKey.values());
+          }})(filtered, pointsPrecision);
       const sizing = getPointSizing(mapObj);
       const mkList = [];
       for (const group of grouped) {{
