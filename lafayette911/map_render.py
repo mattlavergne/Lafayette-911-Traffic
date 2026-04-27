@@ -1808,8 +1808,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     #weatherWidget {{
       top: 12px;
       right: 12px;
-      left: 12px;
-      max-width: none;
+      left: auto;
+      width: min(70vw, 260px);
+      max-width: 260px;
       border-radius: 14px;
       pointer-events: none;
       font-size: 13px;
@@ -3411,8 +3412,13 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     for (const row of rows) {{
       const parsed = parseReported(row[IDX_REPORTED]);
       if (parsed && parsed.dt) {{
-        byHour[parsed.hour] += 1;
-        byDow[parsed.dow] += 1;
+        if (Number.isInteger(parsed.hh) && parsed.hh >= 0 && parsed.hh < 24) {{
+          byHour[parsed.hh] += 1;
+        }}
+        const jsDow = parsed.dt.getDay();
+        if (Number.isInteger(jsDow) && jsDow >= 0 && jsDow < 7) {{
+          byDow[jsDow] += 1;
+        }}
         dated.push(parsed.dt);
       }}
 
@@ -3570,6 +3576,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   let lastFiltered = [];
   let renderTimer = null;
+  let pointRenderMode = "exact";
+  let pointSymbolCount = 0;
   let pointMarkers = {{
     singles: [],
     counts: []
@@ -3672,8 +3680,10 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
   }}
 
-  function getPointSizing(mapObj) {{
-    const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+  function getPointSizing(mapObj, zoomOverride) {{
+    const zoom = Number.isFinite(zoomOverride)
+      ? zoomOverride
+      : (mapObj && mapObj.getZoom ? mapObj.getZoom() : 12);
     const inverse = 12 - zoom;
     let radius = 5.6 + inverse * 0.7;
     radius = Math.max(3.6, Math.min(10.8, radius));
@@ -3685,9 +3695,12 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     return {{ radius, countSize, countFont }};
   }}
 
-  function updatePointSizing(mapObj) {{
+  function updatePointSizing(mapObj, zoomOverride) {{
     if (!mapObj) return;
-    const sizing = getPointSizing(mapObj);
+    // For very large sets, avoid per-marker/icon mutations during zoom; these
+    // updates are expensive and can stall interaction.
+    if (pointRenderMode !== "exact" || pointSymbolCount > 1800) return;
+    const sizing = getPointSizing(mapObj, zoomOverride);
     for (const mk of pointMarkers.singles) {{
       if (mk && mk.setRadius) {{
         mk.setRadius(sizing.radius);
@@ -3770,13 +3783,28 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     setPillCount(els.countInView, inView);
 
     if (showPoints) {{
-      const grouped = groupByExactLocation(filtered);
+      // Performance mode for very large result sets: limit the point layer to
+      // the current view (+padding) and aggregate by rounded coordinates.
+      const usePerfMode = filtered.length > 3000;
+      pointRenderMode = usePerfMode ? "aggregated" : "exact";
+      const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+      let pointRows = filtered;
+      if (usePerfMode && mapObj && mapObj.getBounds) {{
+        const bounds = mapObj.getBounds().pad(0.35);
+        pointRows = filtered.filter(function(row) {{
+          return bounds.contains(L.latLng(row[0], row[1]));
+        }});
+      }}
+      const grouped = usePerfMode
+        ? groupByRounded(pointRows, zoom >= 14 ? 4 : 3)
+        : groupByExactLocation(pointRows);
       const sizing = getPointSizing(mapObj);
       const mkList = [];
       for (const group of grouped) {{
         let mk = null;
-        if (group.rows.length > 1) {{
-          const count = group.rows.length;
+        const groupCount = usePerfMode ? group.count : group.rows.length;
+        if (groupCount > 1) {{
+          const count = groupCount;
           const size = sizing.countSize;
           const fontSize = sizing.countFont;
           const icon = L.divIcon({{
@@ -3788,10 +3816,17 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
           mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
           mk.__count = count;
           pointMarkers.counts.push(mk);
-          // Lazy popup: DOM is only built when the popup first opens
-          (function(rows) {{
-            mk.bindPopup(function() {{ return createIncidentPopup(rows); }}, {{ maxWidth: 320, autoPan: false }});
-          }})(group.rows);
+          if (usePerfMode) {{
+            mk.bindPopup(
+              "Grouped nearby incidents<br>Count: " + count + "<br><br>" + popupHtml(group.sample),
+              {{ maxWidth: 340, autoPan: false }}
+            );
+          }} else {{
+            // Lazy popup: DOM is only built when the popup first opens
+            (function(rows) {{
+              mk.bindPopup(function() {{ return createIncidentPopup(rows); }}, {{ maxWidth: 320, autoPan: false }});
+            }})(group.rows);
+          }}
           (function(m) {{ mk.on("click", function() {{ focusMarker(mapObj, m); }}); }})(mk);
         }} else {{
           const radius = sizing.radius;
@@ -3805,16 +3840,21 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
           }});
           pointMarkers.singles.push(mk);
           // Lazy popup: HTML string is only built when the popup first opens
+          const singleRow = usePerfMode ? group.sample : group.rows[0];
           (function(row) {{
             mk.bindPopup(function() {{ return popupHtml(row); }}, {{ maxWidth: 320, autoPan: false }});
-          }})(group.rows[0]);
+          }})(singleRow);
           (function(m) {{ mk.on("click", function() {{ focusMarker(mapObj, m); }}); }})(mk);
         }}
         mkList.push(mk);
       }}
+      pointSymbolCount = mkList.length;
       // Add all markers to the layer in one shot to minimise map repaints
       const layer = L.layerGroup(mkList).addTo(mapObj);
       layers.points = layer;
+    }} else {{
+      pointRenderMode = "exact";
+      pointSymbolCount = 0;
     }}
 
     if (showHeat && typeof L.heatLayer === "function") {{
@@ -4010,6 +4050,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
   }}
 
   function wireUI(mapObj) {{
+    let zoomAnimRaf = null;
+    let pendingAnimZoom = null;
+
     function setBtnText() {{
       if (els.panel.classList.contains("collapsed")) els.toggleBtn.textContent = "Filters";
       else els.toggleBtn.textContent = "Hide";
@@ -4074,7 +4117,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
 
     mapObj.on("moveend", function() {{
-      if (els.chkInViewOnly.checked) {{
+      // In perf mode we rebuild on move/zoom so visible groups follow viewport.
+      if (els.chkInViewOnly.checked || pointRenderMode === "aggregated") {{
         scheduleRender(mapObj, 80);
       }} else {{
         updateInViewOnly(mapObj);
@@ -4082,12 +4126,24 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }});
 
     mapObj.on("zoomend", function() {{
-      updatePointSizing(mapObj);
-      if (els.chkInViewOnly.checked) {{
+      if (els.chkInViewOnly.checked || pointRenderMode === "aggregated") {{
         scheduleRender(mapObj, 80);
       }} else {{
+        updatePointSizing(mapObj);
         updateInViewOnly(mapObj);
       }}
+    }});
+
+    mapObj.on("zoomanim", function(e) {{
+      if (!(els.chkPoints && els.chkPoints.checked)) return;
+      if (pointRenderMode === "aggregated" || pointSymbolCount > 1800) return;
+      if (!e || !Number.isFinite(e.zoom)) return;
+      pendingAnimZoom = e.zoom;
+      if (zoomAnimRaf != null) return;
+      zoomAnimRaf = requestAnimationFrame(function() {{
+        zoomAnimRaf = null;
+        updatePointSizing(mapObj, pendingAnimZoom);
+      }});
     }});
   }}
 
