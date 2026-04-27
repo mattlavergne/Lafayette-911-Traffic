@@ -1808,8 +1808,9 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     #weatherWidget {{
       top: 12px;
       right: 12px;
-      left: 12px;
-      max-width: none;
+      left: auto;
+      width: min(70vw, 260px);
+      max-width: 260px;
       border-radius: 14px;
       pointer-events: none;
       font-size: 13px;
@@ -3411,8 +3412,13 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     for (const row of rows) {{
       const parsed = parseReported(row[IDX_REPORTED]);
       if (parsed && parsed.dt) {{
-        byHour[parsed.hour] += 1;
-        byDow[parsed.dow] += 1;
+        if (Number.isInteger(parsed.hh) && parsed.hh >= 0 && parsed.hh < 24) {{
+          byHour[parsed.hh] += 1;
+        }}
+        const jsDow = parsed.dt.getDay();
+        if (Number.isInteger(jsDow) && jsDow >= 0 && jsDow < 7) {{
+          byDow[jsDow] += 1;
+        }}
         dated.push(parsed.dt);
       }}
 
@@ -3687,6 +3693,10 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
 
   function updatePointSizing(mapObj) {{
     if (!mapObj) return;
+    const pointCount = pointMarkers.singles.length + pointMarkers.counts.length;
+    // Updating thousands of marker radii/icons on every zoom tick is expensive.
+    // Keep existing symbol sizes when the layer is very large to keep zoom/pan responsive.
+    if (pointCount > 2000) return;
     const sizing = getPointSizing(mapObj);
     for (const mk of pointMarkers.singles) {{
       if (mk && mk.setRadius) {{
@@ -3770,7 +3780,32 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     setPillCount(els.countInView, inView);
 
     if (showPoints) {{
-      const grouped = groupByExactLocation(filtered);
+      const zoom = mapObj && mapObj.getZoom ? mapObj.getZoom() : 12;
+      // Adaptive aggregation: when zoomed out, bucket nearby incidents so we
+      // render far fewer symbols. This keeps interactions responsive with large datasets.
+      const pointsPrecision = zoom <= 10 ? 3 : (zoom <= 12 ? 4 : 6);
+      const grouped = (pointsPrecision >= 6)
+        ? groupByExactLocation(filtered)
+        : (function(rows, decimals) {{
+            const byKey = new Map();
+            for (const row of rows) {{
+              const lat = row[0];
+              const lng = row[1];
+              const key = lat.toFixed(decimals) + "," + lng.toFixed(decimals);
+              let g = byKey.get(key);
+              if (!g) {{
+                g = {{
+                  key: key,
+                  lat: parseFloat(lat.toFixed(decimals)),
+                  lng: parseFloat(lng.toFixed(decimals)),
+                  rows: []
+                }};
+                byKey.set(key, g);
+              }}
+              g.rows.push(row);
+            }}
+            return Array.from(byKey.values());
+          }})(filtered, pointsPrecision);
       const sizing = getPointSizing(mapObj);
       const mkList = [];
       for (const group of grouped) {{
@@ -4082,10 +4117,16 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }});
 
     mapObj.on("zoomend", function() {{
-      updatePointSizing(mapObj);
       if (els.chkInViewOnly.checked) {{
         scheduleRender(mapObj, 80);
       }} else {{
+        if (els.chkPoints && els.chkPoints.checked) {{
+          // Rebuild point layer on zoom so adaptive aggregation can reduce
+          // on-screen symbols at low zoom levels for large datasets.
+          scheduleRender(mapObj, 40);
+        }} else {{
+          updatePointSizing(mapObj);
+        }}
         updateInViewOnly(mapObj);
       }}
     }});
