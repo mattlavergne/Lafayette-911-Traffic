@@ -2779,9 +2779,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         lat: parseFloat(row[0].toFixed(decimals)),
         lng: parseFloat(row[1].toFixed(decimals)),
         count: 0,
-        sample: row
+        sample: row,
+        rows: []
       }};
       v.count += 1;
+      v.rows.push(row);
       m.set(key, v);
     }}
     return Array.from(m.values()).sort((a, b) => b.count - a.count);
@@ -3587,6 +3589,8 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     singles: [],
     counts: []
   }};
+  // Tracks programmatic pans from focusMarker so moveend doesn't wipe the popup
+  let focusMovePending = 0;
 
   function updateCurrentWeather(mapObj) {{
     // Show the best available stored weather immediately as a placeholder
@@ -3732,12 +3736,15 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     const currentZoom = mapObj.getZoom ? mapObj.getZoom() : 12;
     const targetZoom = Math.max(currentZoom, 15);
     if (currentZoom >= targetZoom) {{
-      // Already at the right zoom — just pan smoothly then show popup
+      // Already at the right zoom — just pan smoothly then show popup.
+      // Guard the moveend that the pan fires so it doesn't wipe the popup.
+      focusMovePending += 1;
       if (marker.openPopup) marker.openPopup();
       mapObj.panTo(latlng, {{ animate: true, duration: 0.25 }});
     }} else {{
       // Need to zoom in — open the popup once the animation finishes so it
       // lands at the correct screen position.
+      focusMovePending += 1;
       mapObj.once("moveend", function() {{
         if (marker.openPopup) marker.openPopup();
       }});
@@ -3810,39 +3817,21 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
         const groupCount = usePerfMode ? group.count : group.rows.length;
         if (groupCount > 1) {{
           const count = groupCount;
-          if (usePerfMode) {{
-            // Avoid DOM-heavy divIcon markers in performance mode.
-            // Canvas circles scale far better for thousands of grouped symbols.
-            const radius = Math.max(4, Math.min(12, 3 + Math.sqrt(count)));
-            mk = L.circleMarker([group.lat, group.lng], {{
-              radius: radius,
-              renderer: renderer,
-              color: "#1e4f8f",
-              weight: isTouch ? 2.4 : 1.8,
-              fillColor: "#8cb8ff",
-              fillOpacity: 0.72
-            }});
-            mk.bindPopup(
-              "Grouped nearby incidents<br>Count: " + count + "<br><br>" + popupHtml(group.sample),
-              {{ maxWidth: 340, autoPan: false }}
-            );
-          }} else {{
-            const size = sizing.countSize;
-            const fontSize = sizing.countFont;
-            const icon = L.divIcon({{
-              className: "",
-              html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
-              iconSize: [size, size],
-              iconAnchor: [size / 2, size / 2]
-            }});
-            mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
-            mk.__count = count;
-            pointMarkers.counts.push(mk);
-            // Lazy popup: DOM is only built when the popup first opens
-            (function(rows) {{
-              mk.bindPopup(function() {{ return createIncidentPopup(rows); }}, {{ maxWidth: 320, autoPan: false }});
-            }})(group.rows);
-          }}
+          const size = sizing.countSize;
+          const fontSize = sizing.countFont;
+          const icon = L.divIcon({{
+            className: "",
+            html: "<div class='incident-count-marker' style='width:" + size + "px;height:" + size + "px;line-height:" + size + "px;font-size:" + fontSize + "px;'>" + count + "</div>",
+            iconSize: [size, size],
+            iconAnchor: [size / 2, size / 2]
+          }});
+          mk = L.marker([group.lat, group.lng], {{ icon: icon, riseOnHover: true }});
+          mk.__count = count;
+          pointMarkers.counts.push(mk);
+          // Lazy popup: DOM is only built when the popup first opens
+          (function(rows) {{
+            mk.bindPopup(function() {{ return createIncidentPopup(rows); }}, {{ maxWidth: 320, autoPan: false }});
+          }})(group.rows);
           (function(m) {{ mk.on("click", function() {{ focusMarker(mapObj, m); }}); }})(mk);
         }} else {{
           const radius = sizing.radius;
@@ -4133,6 +4122,13 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }}
 
     mapObj.on("moveend", function() {{
+      // Skip the re-render triggered by focusMarker's programmatic pan/zoom
+      // so it doesn't destroy the just-opened popup.
+      if (focusMovePending > 0) {{
+        focusMovePending -= 1;
+        updateInViewOnly(mapObj);
+        return;
+      }}
       // In perf mode we rebuild on move/zoom so visible groups follow viewport.
       if (els.chkInViewOnly.checked || pointRenderMode === "aggregated") {{
         scheduleRender(mapObj, 80);
@@ -4142,6 +4138,11 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
     }});
 
     mapObj.on("zoomend", function() {{
+      if (focusMovePending > 0) {{
+        updatePointSizing(mapObj);
+        updateInViewOnly(mapObj);
+        return;
+      }}
       if (els.chkInViewOnly.checked || pointRenderMode === "aggregated") {{
         scheduleRender(mapObj, 80);
       }} else {{
