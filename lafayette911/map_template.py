@@ -110,6 +110,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     -webkit-font-smoothing: antialiased;
   }
   #map { position: absolute; inset: 0; z-index: 1; background: var(--bg); }
+  /* CARTO Dark Matter is too low-contrast on its own — lift the street
+     network so roads stay clearly legible in dark mode. */
+  html[data-theme="dark"] #map:not(.osm-fallback) .leaflet-tile {
+    filter: brightness(4) contrast(1.2) saturate(0.8);
+  }
   html[data-theme="dark"] #map.osm-fallback .leaflet-tile {
     filter: brightness(0.62) invert(1) contrast(0.88) hue-rotate(185deg) saturate(0.45) brightness(0.82);
   }
@@ -584,12 +589,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <circle cx="12" cy="12" r="4"/>
           <path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
-        </svg>
-      </button>
-      <button class="icon-btn" id="shareBtn" type="button" title="Copy a link to this view" aria-label="Share this view">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-          <path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>
         </svg>
       </button>
     </div>
@@ -1130,7 +1129,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function $(id) { return document.getElementById(id); }
   const els = {
     sidebar: $("sidebar"), sbHandle: $("sbHandle"),
-    themeBtn: $("themeBtn"), shareBtn: $("shareBtn"),
+    themeBtn: $("themeBtn"),
     statusText: $("statusText"), unlocChip: $("unlocChip"), alertBanner: $("alertBanner"),
     tileToday: $("tileToday"),
     tileWeekVal: $("tileWeekVal"), tileMonthVal: $("tileMonthVal"), tileTotalVal: $("tileTotalVal"),
@@ -2915,31 +2914,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     document.body.appendChild(s);
   }
 
-  /* ═══════════════════════ share ═══════════════════════ */
-  function shareView() {
-    updateHash();
-    const url = location.href;
-    function fallbackCopy() {
-      const ta = document.createElement("textarea");
-      ta.value = url;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      let ok = false;
-      try { ok = document.execCommand("copy"); } catch (e) {}
-      ta.remove();
-      toast(ok ? "Link copied to clipboard" : "Copy failed — use the address bar");
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(url)
-        .then(function () { toast("Link copied to clipboard"); })
-        .catch(fallbackCopy);
-    } else {
-      fallbackCopy();
-    }
-  }
-
   /* ═══════════════════════ tabs + mobile sheet ═══════════════════════ */
   function setTab(name) {
     const tabs = { filters: [els.tabFilters, els.panelFilters], analytics: [els.tabAnalytics, els.panelAnalytics], feed: [els.tabFeed, els.panelFeed] };
@@ -2959,7 +2933,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* ═══════════════════════ wiring ═══════════════════════ */
   function wireUI() {
     els.themeBtn.addEventListener("click", cycleTheme);
-    els.shareBtn.addEventListener("click", shareView);
     if (mediaDark && mediaDark.addEventListener) {
       mediaDark.addEventListener("change", function () { if (themePref() === "auto") applyTheme(); });
     }
