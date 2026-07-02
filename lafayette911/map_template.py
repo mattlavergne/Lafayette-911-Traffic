@@ -156,16 +156,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ── Popup card ───────────────────────────────────────────────────── */
   .pc { min-width: 220px; max-width: 300px; }
-  .pc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .pc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
   .pc-badge {
     display: inline-flex; align-items: center; gap: 5px;
-    font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
-    padding: 3px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.01em; line-height: 1.3;
+    padding: 3px 9px; border-radius: 999px;
     background: color-mix(in srgb, var(--cat, #64748b) 14%, transparent);
     color: var(--cat, #64748b);
   }
-  .pc-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--cat, #64748b); }
-  .pc-time { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+  .pc-badge::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--cat, #64748b); }
+  .pc-time { font-size: 11px; color: var(--text-3); white-space: nowrap; padding-top: 2px; }
   .pc-title { font-size: 13.5px; font-weight: 700; line-height: 1.3; margin-bottom: 8px; }
   .pc-rows { display: grid; gap: 3px; font-size: 12px; color: var(--text-2); }
   .pc-rows b { color: var(--text); font-weight: 600; }
@@ -531,11 +531,19 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       padding-bottom: env(safe-area-inset-bottom);
     }
     #sidebar.expanded { height: 88dvh; }
+    #sidebar.dragging { transition: none; }
+    /* Wide, finger-friendly grab target with a small visible bar. */
     #sbHandle {
-      display: block; width: 42px; height: 5px; border-radius: 999px;
-      background: var(--text-3); opacity: 0.5; margin: 8px auto 0 auto; flex: none; cursor: grab;
+      display: block; width: 100%; padding: 11px 0 5px; margin: 0;
+      flex: none; cursor: grab; background: none; opacity: 1;
+      touch-action: none; -webkit-tap-highlight-color: transparent;
     }
-    .sb-header { padding-top: 8px; }
+    #sbHandle:active { cursor: grabbing; }
+    #sbHandle::before {
+      content: ""; display: block; width: 42px; height: 5px; border-radius: 999px;
+      background: var(--text-3); opacity: 0.5; margin: 0 auto;
+    }
+    .sb-header { padding-top: 4px; touch-action: none; }
     #sidebar:not(.expanded) .sb-body,
     #sidebar:not(.expanded) .tabs,
     #sidebar:not(.expanded) .legend-chips,
@@ -1252,7 +1260,12 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       zoom: 12,
       zoomControl: false,
       attributionControl: false,
-      preferCanvas: true
+      preferCanvas: true,
+      // Keep popups open when the map itself is clicked. On touch devices the
+      // synthesized "ghost" click that follows a tap would otherwise land on
+      // empty map and dismiss the popup the same tap just opened. Popups are
+      // closed via their × button, the Esc key, or opening another one.
+      closePopupOnClick: false
     });
     renderer = L.canvas({ padding: 0.5 });
     L.control.zoom({ position: "bottomright" }).addTo(map);
@@ -1297,6 +1310,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const cat = categoryOf(row[IDX_CAUSE]);
     const dt = bestRowDate(row);
     const occurrences = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? parseInt(row[IDX_COUNT], 10) : 1;
+    // Show the exact incident type from the source feed; the badge colour still
+    // encodes the broad category. Fall back to the category label if the feed
+    // gave us no cause string.
+    const causeText = normalizeText(row[IDX_CAUSE]) || cat.label;
 
     const rows = [];
     const reported = normalizeText(row[IDX_REPORTED]);
@@ -1349,7 +1366,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const sview = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=" + lat + "," + lng;
 
     return "<div class='pc' style='--cat:" + cat.color + "'>" +
-      "<div class='pc-head'><span class='pc-badge'>" + esc(cat.label) + "</span>" +
+      "<div class='pc-head'><span class='pc-badge'>" + esc(titleCase(causeText)) + "</span>" +
       "<span class='pc-time'>" + esc(relTime(dt)) + "</span></div>" +
       "<div class='pc-title'>" + esc(titleCase(row[IDX_LOCATION])) + "</div>" +
       "<div class='pc-rows'>" + rows.join("") + "</div>" +
@@ -2398,18 +2415,40 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
   }
 
-  function focusMarker(marker) {
-    if (!map || !marker || !marker.getLatLng) return;
-    const latlng = marker.getLatLng();
-    const currentZoom = map.getZoom ? map.getZoom() : 12;
-    const targetZoom = Math.max(currentZoom, 15);
-    if (currentZoom >= targetZoom) {
-      if (marker.openPopup) marker.openPopup();
-      map.panTo(latlng, { animate: !REDUCED_MOTION, duration: 0.25 });
-    } else {
-      map.once("moveend", function () { if (marker.openPopup) marker.openPopup(); });
-      map.setView(latlng, targetZoom, { animate: !REDUCED_MOTION, duration: 0.35 });
+  // Pan (never zoom) just enough to fit an open popup fully within the visible
+  // map area — clear of the screen edges and, on mobile, above the bottom
+  // sheet. Measures the popup's real size so even tall cards aren't clipped.
+  // Called on every popup open so tapping a marker never hides its details.
+  function keepPopupInView(popup) {
+    if (!map || !popup || !popup.getLatLng) return;
+    const latlng = popup.getLatLng();
+    const size = map.getSize();
+    let sheetH = 0;
+    if (window.innerWidth <= 700) {
+      sheetH = els.sidebar.classList.contains("expanded")
+        ? Math.round(window.innerHeight * 0.88)
+        : 236;
     }
+    const el = popup.getElement();
+    const popH = el ? el.offsetHeight : 200;
+    const popW = el ? el.offsetWidth : 300;
+    const tip = 18;                       // popup tip height below the card
+    const marginTop = 58;                 // clear the floating weather chip up top
+    const marginBottom = sheetH + 16;     // keep the whole card above the sheet
+    const marginSide = 10;
+
+    const p = map.latLngToContainerPoint(latlng);
+    // The card sits above the anchor: it spans [p.y - popH - tip, p.y].
+    const popTop = p.y - popH - tip;
+    const halfW = popW / 2;
+    let dx = 0, dy = 0;
+
+    if (popTop < marginTop) dy = popTop - marginTop;                       // too high → nudge down
+    else if (p.y > size.y - marginBottom) dy = p.y - (size.y - marginBottom); // behind sheet → nudge up
+    if (p.x - halfW < marginSide) dx = (p.x - halfW) - marginSide;
+    else if (p.x + halfW > size.x - marginSide) dx = (p.x + halfW) - (size.x - marginSide);
+
+    if (dx || dy) map.panBy([dx, dy], { animate: !REDUCED_MOTION, duration: 0.25 });
   }
 
   function clearLayers() {
@@ -2502,7 +2541,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
               mk.bindPopup(function () { return createIncidentPopup(rows); }, { maxWidth: 320, autoPan: false });
             })(group.rows);
           }
-          (function (m) { mk.on("click", function () { focusMarker(m); }); })(mk);
         } else {
           const singleRow = usePerfMode ? group.sample : group.rows[0];
           const cat = categoryOf(singleRow[IDX_CAUSE]);
@@ -2515,7 +2553,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
           (function (row) {
             mk.bindPopup(function () { return popupHtml(row); }, { maxWidth: 320, autoPan: false });
           })(singleRow);
-          (function (m) { mk.on("click", function () { focusMarker(m); }); })(mk);
         }
         mkList.push(mk);
       }
@@ -2985,21 +3022,65 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleWeatherPanel(); }
     });
 
-    // Mobile bottom sheet: tap the handle (or drag) to expand/collapse.
-    let touchStartY = null;
-    els.sbHandle.addEventListener("click", function () {
-      setSheetExpanded(!els.sidebar.classList.contains("expanded"));
-    });
-    els.sidebar.addEventListener("touchstart", function (e) {
-      if (e.target === els.sbHandle) touchStartY = e.touches[0].clientY;
-    }, { passive: true });
-    els.sidebar.addEventListener("touchmove", function (e) {
-      if (touchStartY == null) return;
-      const dy = e.touches[0].clientY - touchStartY;
-      if (dy < -34) { setSheetExpanded(true); touchStartY = null; }
-      else if (dy > 34) { setSheetExpanded(false); touchStartY = null; }
-    }, { passive: true });
-    els.sidebar.addEventListener("touchend", function () { touchStartY = null; }, { passive: true });
+    // Mobile bottom sheet: drag the grab handle (or header) up/down to size it,
+    // following the finger and snapping open/closed on release. A plain tap on
+    // the handle still toggles.
+    (function () {
+      const COLLAPSED_H = 236;
+      function expandedH() { return Math.round(window.innerHeight * 0.88); }
+      const header = els.sidebar.querySelector(".sb-header");
+      let drag = null;
+
+      function startDrag(clientY, target) {
+        if (window.innerWidth > 700) return;
+        if (target && target.closest && target.closest("button")) return;  // don't hijack controls
+        drag = { startY: clientY, startH: els.sidebar.getBoundingClientRect().height, moved: false };
+        els.sidebar.classList.add("dragging");
+      }
+      function moveDrag(clientY, ev) {
+        if (!drag) return;
+        const dy = clientY - drag.startY;
+        if (Math.abs(dy) > 5) drag.moved = true;
+        let h = drag.startH - dy;                     // drag up → taller
+        h = Math.max(COLLAPSED_H, Math.min(expandedH(), h));
+        els.sidebar.style.height = h + "px";
+        // Suppress the page/map from scrolling while an actual drag is underway.
+        if (drag.moved && ev && ev.cancelable) ev.preventDefault();
+      }
+      function endDrag() {
+        if (!drag) return;
+        const h = els.sidebar.getBoundingClientRect().height;
+        const moved = drag.moved;
+        drag = null;
+        els.sidebar.classList.remove("dragging");     // restore the snap transition
+        if (!moved) {
+          els.sidebar.style.height = "";              // a tap: let the click handler toggle
+          return;
+        }
+        setSheetExpanded(h > (COLLAPSED_H + expandedH()) / 2);
+        els.sidebar.style.height = "";                // hand height back to the CSS class (animated)
+      }
+
+      [els.sbHandle, header].forEach(function (zone) {
+        if (!zone) return;
+        zone.addEventListener("touchstart", function (e) {
+          startDrag(e.touches[0].clientY, e.target);
+        }, { passive: true });
+      });
+      // Track move/end on the document so the gesture survives the finger
+      // sliding off the small handle.
+      document.addEventListener("touchmove", function (e) {
+        if (drag) moveDrag(e.touches[0].clientY, e);
+      }, { passive: false });
+      document.addEventListener("touchend", endDrag, { passive: true });
+      document.addEventListener("touchcancel", endDrag, { passive: true });
+
+      // Plain tap / click on the handle toggles (fires only when no drag moved,
+      // since a real drag calls preventDefault and suppresses the click).
+      els.sbHandle.addEventListener("click", function () {
+        if (window.innerWidth <= 700) setSheetExpanded(!els.sidebar.classList.contains("expanded"));
+      });
+    })();
 
     // Keyboard shortcuts.
     document.addEventListener("keydown", function (e) {
@@ -3023,6 +3104,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     });
 
     if (map) {
+      // Whenever a popup opens (marker tap or feed fly-to), nudge it fully into
+      // the visible map area so its details are always readable. Deferred a
+      // frame so the popup has been laid out and its height can be measured.
+      map.on("popupopen", function (e) {
+        if (!e || !e.popup) return;
+        requestAnimationFrame(function () { keepPopupInView(e.popup); });
+      });
+
       map.on("moveend", function () {
         if (els.chkInViewOnly.checked || pointRenderMode === "aggregated") {
           scheduleRender(80);
