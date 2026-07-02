@@ -486,7 +486,14 @@ def _has_allowed_lafayette_place(address_components) -> bool:
     return False
 
 
-def _filter_geocode_results(incidents):
+def _filter_geocode_results(incidents, location_cache: Optional[dict] = None):
+    def _reject_fresh_result(inc):
+        # geocode_incidents caches fresh Google results before this validation
+        # runs; drop rejected coords from the cycle cache so later incidents at
+        # the same address don't silently reuse them.
+        if location_cache is not None:
+            location_cache.pop(inc.get("location", ""), None)
+
     for inc in incidents:
         lat = inc.get("latitude")
         lng = inc.get("longitude")
@@ -507,10 +514,12 @@ def _filter_geocode_results(incidents):
             inc["latitude"] = None
             inc["longitude"] = None
             inc.pop("address_components", None)
+            _reject_fresh_result(inc)
             continue
         if not _in_lafayette_bounds(lat, lng):
             inc["latitude"] = None
             inc["longitude"] = None
+            _reject_fresh_result(inc)
         inc.pop("address_components", None)
     return incidents
 
@@ -625,7 +634,7 @@ def _geocode_unlocated_incidents(
         location_cache=location_cache,
         api_call_limit=allowed,
     )
-    _filter_geocode_results(unlocated)
+    _filter_geocode_results(unlocated, location_cache)
     updated = store.update_incident_coords(unlocated)
     if updated:
         log_event(logger, "unlocated_geocoded", count=updated)
@@ -682,7 +691,7 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                     location_cache=location_cache,
                     api_call_limit=allowed_new,
                 )
-                _filter_geocode_results(new_incidents)
+                _filter_geocode_results(new_incidents, location_cache)
                 if config.weather_enabled:
                     snapshot = fetch_weather_snapshot(
                         session,

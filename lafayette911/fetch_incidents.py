@@ -1,5 +1,6 @@
+import re
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -123,6 +124,39 @@ def geocode_with_google(
             response.close()
 
 
+def normalize_geocode_key(location: str) -> str:
+    """Normalize an address for cache lookup: case-insensitive, collapsed whitespace.
+
+    Feed formatting jitter ("W Congress St" vs "W  CONGRESS ST") would otherwise
+    force a fresh Google API call for an address we have already geocoded.
+    Exact-string matches remain the primary cache key; this is a fallback only.
+    """
+    return re.sub(r"\s+", " ", str(location or "").strip()).upper()
+
+
+def _build_normalized_cache_index(
+    location_cache: Optional[Dict[str, tuple]],
+) -> Dict[str, Tuple[float, float]]:
+    index: Dict[str, Tuple[float, float]] = {}
+    if not location_cache:
+        return index
+    for loc, coords in location_cache.items():
+        key = normalize_geocode_key(loc)
+        if key and key not in index:
+            index[key] = coords
+    return index
+
+
+def _cache_lookup(
+    loc: str,
+    location_cache: Optional[Dict[str, tuple]],
+    normalized_index: Dict[str, Tuple[float, float]],
+) -> Optional[Tuple[float, float]]:
+    if location_cache is not None and loc in location_cache:
+        return location_cache[loc]
+    return normalized_index.get(normalize_geocode_key(loc))
+
+
 def geocode_incidents(
     session: requests.Session,
     incidents: List[Dict[str, str]],
@@ -136,11 +170,16 @@ def geocode_incidents(
     *location_cache* (if provided) maps exact location strings to (lat, lon)
     tuples already seen in the DB.  Cache hits are applied without an API call
     and the cache is updated with any new results so subsequent incidents at
-    the same address within the same batch are also free.
+    the same address within the same batch are also free.  A normalized
+    (case/whitespace-insensitive) index over the same cache catches feed
+    formatting jitter, and addresses that fail to geocode are remembered for
+    the rest of the batch so duplicates never burn a second API call.
     """
     if not incidents:
         return []
 
+    normalized_index = _build_normalized_cache_index(location_cache)
+    failed_keys: set = set()
     calls_made = 0
     for incident in incidents:
         if incident.get("latitude") and incident.get("longitude"):
@@ -149,13 +188,18 @@ def geocode_incidents(
         loc = incident.get("location", "")
 
         # Serve from address cache when possible — no API call needed.
-        if location_cache is not None and loc in location_cache:
-            lat, lon = location_cache[loc]
-            incident["latitude"] = lat
-            incident["longitude"] = lon
+        cached = _cache_lookup(loc, location_cache, normalized_index)
+        if cached is not None:
+            incident["latitude"] = cached[0]
+            incident["longitude"] = cached[1]
             continue
 
         if not api_key:
+            continue
+
+        # Skip addresses that already failed earlier in this batch.
+        norm_key = normalize_geocode_key(loc)
+        if norm_key in failed_keys:
             continue
 
         if api_call_limit is not None and calls_made >= api_call_limit:
@@ -165,15 +209,19 @@ def geocode_incidents(
         result = geocode_with_google(session, address, api_key)
         calls_made += 1
         if not result:
+            failed_keys.add(norm_key)
             continue
 
         incident["latitude"] = result["lat"]
         incident["longitude"] = result["lng"]
         incident["address_components"] = result.get("address_components", [])
 
-        # Populate cache so later incidents at the same address are free.
+        # Populate both cache views so later incidents at the same (or a
+        # differently formatted) address are free.
+        coords = (result["lat"], result["lng"])
         if location_cache is not None:
-            location_cache[loc] = (result["lat"], result["lng"])
+            location_cache[loc] = coords
+        normalized_index[norm_key] = coords
 
         if sleep_seconds:
             time.sleep(sleep_seconds)
@@ -188,6 +236,7 @@ def estimate_needed_geocode_requests(
     """Estimate how many Google API calls would be needed for this batch."""
     if not incidents:
         return 0
+    normalized_index = _build_normalized_cache_index(location_cache)
     seen = set()
     needed = 0
     for incident in incidents:
@@ -196,10 +245,11 @@ def estimate_needed_geocode_requests(
         loc = incident.get("location", "")
         if not loc:
             continue
-        if location_cache is not None and loc in location_cache:
+        if _cache_lookup(loc, location_cache, normalized_index) is not None:
             continue
-        if loc in seen:
+        key = normalize_geocode_key(loc)
+        if key in seen:
             continue
-        seen.add(loc)
+        seen.add(key)
         needed += 1
     return needed
