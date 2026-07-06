@@ -196,9 +196,32 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .pc-nav button {
     border: 1px solid var(--panel-border); background: var(--chip); color: var(--text);
     border-radius: 8px; padding: 3px 10px; cursor: pointer; font-size: 13px; line-height: 1.3;
+    font-family: var(--font);
   }
   .pc-nav button:disabled { opacity: 0.35; cursor: default; }
-  .pc-nav .pc-nav-count { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+  .pc-nav .pc-nav-count { font-size: 11.5px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+  .pc-nav .pc-back { font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+  .pc-nav-arrows { display: flex; gap: 4px; }
+
+  /* multi-incident list browser inside popups */
+  .pc-list-head { font-size: 13px; font-weight: 700; line-height: 1.3; }
+  .pc-list-sub { font-size: 11px; color: var(--text-3); margin: 1px 0 7px 0; }
+  .pc-list {
+    max-height: 226px; overflow-y: auto; overscroll-behavior: contain;
+    display: grid; gap: 2px; margin: 0 -5px; padding: 0 5px;
+  }
+  .pc-item {
+    display: flex; gap: 8px; align-items: flex-start; width: 100%;
+    padding: 6px 7px; border: none; border-radius: 9px; background: transparent;
+    font-family: var(--font); text-align: left; cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .pc-item:hover { background: var(--chip); }
+  .pc-item .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cat, #64748b); margin-top: 4px; flex: none; }
+  .pc-item-body { flex: 1; min-width: 0; }
+  .pc-item-cause { font-size: 12px; font-weight: 600; color: var(--text); line-height: 1.3; }
+  .pc-item-sub { font-size: 10.5px; color: var(--text-3); display: flex; gap: 6px; flex-wrap: wrap; }
+  .pc-item .chev { color: var(--text-3); font-size: 12px; margin-top: 2px; flex: none; }
 
   .incident-count-marker {
     border-radius: 999px;
@@ -1373,7 +1396,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       // closed via their × button, the Esc key, or opening another one.
       closePopupOnClick: false
     });
-    renderer = L.canvas({ padding: 0.5 });
+    // tolerance widens the hit-test radius around canvas markers so taps
+    // don't have to land dead-center — especially forgiving on touch.
+    renderer = L.canvas({ padding: 0.5, tolerance: isTouch ? 16 : 6 });
     L.control.zoom({ position: "bottomright" }).addTo(map);
     L.control.attribution({ position: "bottomright", prefix: false }).addTo(map);
     L.control.scale({ position: "bottomleft", imperial: true, metric: false }).addTo(map);
@@ -1493,32 +1518,84 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       "</div></div>";
   }
 
-  function createIncidentPopup(rows) {
-    let idx = 0;
+  // Popup content for one or many incidents at (or near) a location.
+  // Multiple incidents open as a scrollable list — newest first, workable
+  // even with 50+ entries — and tapping one shows its full card with
+  // back / prev / next controls.
+  function createIncidentPopup(rows, placeLabel) {
     const container = document.createElement("div");
-    if (HAS_LEAFLET && L.DomEvent) L.DomEvent.disableClickPropagation(container);
-
-    function render() {
-      const hasNav = rows.length > 1;
-      container.innerHTML =
-        (hasNav
-          ? "<div class='pc-nav'>" +
-            "<button class='pc-prev' type='button' aria-label='Previous incident'>&larr;</button>" +
-            "<span class='pc-nav-count'>" + (idx + 1) + " of " + rows.length + "</span>" +
-            "<button class='pc-next' type='button' aria-label='Next incident'>&rarr;</button>" +
-            "</div>"
-          : "") +
-        popupHtml(rows[idx]);
-      if (hasNav) {
-        const prev = container.querySelector(".pc-prev");
-        const next = container.querySelector(".pc-next");
-        prev.disabled = idx <= 0;
-        next.disabled = idx >= rows.length - 1;
-        prev.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); if (idx > 0) { idx--; render(); } });
-        next.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); if (idx < rows.length - 1) { idx++; render(); } });
-      }
+    if (HAS_LEAFLET && L.DomEvent) {
+      L.DomEvent.disableClickPropagation(container);
+      L.DomEvent.disableScrollPropagation(container);
     }
-    render();
+
+    if (rows.length === 1) {
+      container.innerHTML = popupHtml(rows[0]);
+      return container;
+    }
+
+    const sorted = rows.slice().sort(function (a, b) {
+      const da = bestRowDate(a), db = bestRowDate(b);
+      return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+    });
+    // Show each item's street when the group spans multiple locations
+    // (rounded cells can merge nearby addresses).
+    const locs = new Set(sorted.map(function (r) { return String(r[IDX_LOCATION] || "").trim().toUpperCase(); }));
+    const showLoc = locs.size > 1;
+    const nowMs = Date.now();
+    let idx = 0;
+
+    function renderList() {
+      let html = "<div class='pc-list-head'>" + sorted.length + " incidents " + esc(placeLabel || "at this location") + "</div>" +
+        "<div class='pc-list-sub'>Newest first — tap one for full details</div>" +
+        "<div class='pc-list' role='list'>";
+      for (let i = 0; i < sorted.length; i++) {
+        const row = sorted[i];
+        const cat = categoryOf(row[IDX_CAUSE]);
+        const dt = bestRowDate(row);
+        const cause = normalizeText(row[IDX_CAUSE]) || cat.label;
+        html += "<button class='pc-item' type='button' role='listitem' data-i='" + i + "' style='--cat:" + cat.color + "'>" +
+          "<span class='dot'></span><span class='pc-item-body'>" +
+          "<span class='pc-item-cause'>" + esc(titleCase(cause)) + "</span>" +
+          "<span class='pc-item-sub'>" +
+          (showLoc ? "<span>" + esc(titleCase(row[IDX_LOCATION])) + "</span>" : "") +
+          (dt ? "<span>" + esc(relTime(dt, nowMs)) + "</span>" : "") +
+          "</span></span><span class='chev'>&rsaquo;</span></button>";
+      }
+      html += "</div>";
+      container.innerHTML = html;
+      container.querySelectorAll(".pc-item").forEach(function (btn) {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          idx = parseInt(btn.getAttribute("data-i"), 10) || 0;
+          renderDetail();
+        });
+      });
+    }
+
+    function renderDetail() {
+      container.innerHTML =
+        "<div class='pc-nav'>" +
+        "<button class='pc-back' type='button'>&lsaquo; All " + sorted.length + "</button>" +
+        "<span class='pc-nav-count'>" + (idx + 1) + " of " + sorted.length + "</span>" +
+        "<span class='pc-nav-arrows'>" +
+        "<button class='pc-prev' type='button' aria-label='Previous incident'>&larr;</button>" +
+        "<button class='pc-next' type='button' aria-label='Next incident'>&rarr;</button>" +
+        "</span></div>" +
+        popupHtml(sorted[idx]);
+      container.querySelector(".pc-back").addEventListener("click", function (e) {
+        e.preventDefault(); e.stopPropagation(); renderList();
+      });
+      const prev = container.querySelector(".pc-prev");
+      const next = container.querySelector(".pc-next");
+      prev.disabled = idx <= 0;
+      next.disabled = idx >= sorted.length - 1;
+      prev.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); if (idx > 0) { idx--; renderDetail(); } });
+      next.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); if (idx < sorted.length - 1) { idx++; renderDetail(); } });
+    }
+
+    renderList();
     return container;
   }
 
@@ -1971,14 +2048,25 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return best;
   }
 
+  // Second-granular "ago" for the data-refresh note.
+  function refreshedAgoText() {
+    const s = Math.max(0, Math.floor((Date.now() - lastRefreshMs) / 1000));
+    if (s < 10) return "refreshed just now";
+    if (s < 60) return "refreshed " + s + " s ago";
+    const m = Math.floor(s / 60);
+    if (m < 60) return "refreshed " + m + " min ago";
+    return "refreshed " + Math.floor(m / 60) + " h ago";
+  }
+
   function renderStatus() {
     const newest = newestDataDate();
+    const refreshed = " · " + refreshedAgoText();
     if (!INCIDENTS.length) {
-      els.statusText.textContent = "No incident data loaded yet.";
+      els.statusText.textContent = "No incident data loaded yet." + refreshed;
     } else if (newest) {
-      els.statusText.textContent = "Latest incident " + relTime(newest);
+      els.statusText.textContent = "Latest incident " + relTime(newest) + refreshed;
     } else {
-      els.statusText.textContent = INCIDENTS.length.toLocaleString() + " incidents loaded";
+      els.statusText.textContent = INCIDENTS.length.toLocaleString() + " incidents loaded" + refreshed;
     }
     if (UNLOCATED_COUNT > 0) {
       els.unlocChip.style.display = "";
@@ -2611,6 +2699,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   let pointRenderMode = "exact";
   let pointSymbolCount = 0;
   let pointMarkers = { singles: [], counts: [] };
+  // Tap targets for the map-level click resolver: one entry per drawn incident
+  // group. Clicks are resolved to the nearest target within a radius instead
+  // of relying on Leaflet's canvas hit-test (which picks the last-drawn layer
+  // and lets an overlapping single marker steal taps from a big group).
+  let hitTargets = [];
 
   function groupByRounded(points, decimals) {
     const m = new Map();
@@ -2618,12 +2711,20 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       const key = row[IDX_LAT].toFixed(decimals) + "," + row[IDX_LNG].toFixed(decimals);
       let v = m.get(key);
       if (!v) {
-        v = { key: key, lat: parseFloat(row[IDX_LAT].toFixed(decimals)), lng: parseFloat(row[IDX_LNG].toFixed(decimals)), count: 0, sample: row };
+        v = { key: key, lat: parseFloat(row[IDX_LAT].toFixed(decimals)), lng: parseFloat(row[IDX_LNG].toFixed(decimals)), count: 0, sample: row, rows: [] };
         m.set(key, v);
       }
       v.count += 1;
+      v.rows.push(row);
     }
     return Array.from(m.values()).sort(function (a, b) { return b.count - a.count; });
+  }
+
+  // Human label for the grid size that grouped a set of incidents.
+  function cellLabel(decimals) {
+    if (decimals >= 5) return "within ~1 m";
+    if (decimals >= 4) return "within ~10 m";
+    return "within ~100 m";
   }
 
   function groupByExactLocation(points) {
@@ -2726,12 +2827,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
   }
 
-  // content: an incident-row array (gets the card + prev/next UI) or a
-  // prebuilt HTML string / DOM node for analyst layers.
+  // content: an incident-row array (single card, or a browsable list when
+  // there are several) or a prebuilt HTML string / DOM node for analyst
+  // layers. opts.label describes the grouping ("at this location", …).
   function openIncidentPopup(latlng, content, opts) {
     if (!map) return;
     opts = opts || {};
-    const node = Array.isArray(content) ? createIncidentPopup(content) : content;
+    const node = Array.isArray(content) ? createIncidentPopup(content, opts.label) : content;
     const popup = L.popup({ maxWidth: 320, autoPan: false, closeOnClick: false })
       .setLatLng(latlng)
       .setContent(node);
@@ -2785,6 +2887,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (!map) return;
     clearLayers();
     pointMarkers = { singles: [], counts: [] };
+    hitTargets = [];
 
     const showPoints = !!els.chkPoints.checked;
     const showHeat = !!els.chkHeat.checked;
@@ -2830,11 +2933,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
               color: cat.color, weight: isTouch ? 2.4 : 1.8,
               fillColor: cat.fill, fillOpacity: 0.72
             });
-            (function (sample, count) {
-              mk.on("click", function () {
-                openIncidentPopup(anchor, "<b>" + count + " nearby incidents</b> <span style='color:var(--text-3);font-size:11px'>(zoom in to separate)</span><br><br>" + popupHtml(sample));
-              });
-            })(group.sample, groupCount);
+            hitTargets.push({ lat: group.lat, lng: group.lng, rows: group.rows, label: cellLabel(zoom >= 14 ? 4 : 3) });
           } else {
             const cat = dominantCategory(group.rows);
             const icon = L.divIcon({
@@ -2847,9 +2946,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
             mk.__count = groupCount;
             mk.__catColor = cat.color;
             pointMarkers.counts.push(mk);
+            // DOM markers swallow their own clicks (no map propagation), so
+            // they keep a direct handler; they're also registered as hit
+            // targets so near-miss taps resolve to them.
             (function (rows) {
               mk.on("click", function () { openIncidentPopup(anchor, rows); });
             })(group.rows);
+            hitTargets.push({ lat: group.lat, lng: group.lng, rows: group.rows, label: null });
           }
         } else {
           const singleRow = usePerfMode ? group.sample : group.rows[0];
@@ -2860,9 +2963,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
             fillColor: cat.fill, fillOpacity: 0.6
           });
           pointMarkers.singles.push(mk);
-          (function (row) {
-            mk.on("click", function () { openIncidentPopup(anchor, [row]); });
-          })(singleRow);
+          hitTargets.push({ lat: group.lat, lng: group.lng, rows: [singleRow], label: null });
         }
         mkList.push(mk);
       }
@@ -2910,10 +3011,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       const layer = L.layerGroup().addTo(map);
       for (const g of groups) {
         const radius = Math.max(7, Math.min(30, 4 + Math.sqrt(g.count) * 3));
-        const c = L.circleMarker([g.lat, g.lng], { radius: radius, renderer: renderer, color: "#2563eb", fillColor: "#93c5fd", fillOpacity: 0.4, weight: 1.5 });
+        const c = L.circleMarker([g.lat, g.lng], { radius: radius, renderer: renderer, color: "#2563eb", fillColor: "#93c5fd", fillOpacity: 0.4, weight: 1.5, bubblingMouseEvents: false });
         (function (g) {
           c.on("click", function () {
-            openIncidentPopup([g.lat, g.lng], "<b>Rounded cluster</b><br>Count: " + g.count + "<br><br>" + popupHtml(g.sample));
+            openIncidentPopup([g.lat, g.lng], g.rows, { label: cellLabel(dInter) });
           });
         })(g);
         c.addTo(layer);
@@ -2925,7 +3026,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       const layer = L.layerGroup().addTo(map);
       if (!OSM_INTERSECTIONS || OSM_INTERSECTIONS.length === 0) {
         const center = getCenterFromData();
-        const mk = L.circleMarker(center, { radius: 8, renderer: renderer });
+        const mk = L.circleMarker(center, { radius: 8, renderer: renderer, bubblingMouseEvents: false });
         mk.on("click", function () {
           openIncidentPopup(center, "OSM intersection data unavailable.<br>Install osmnx server-side and rebuild once.");
         });
@@ -2934,7 +3035,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         const top = OSM_INTERSECTIONS.slice(0, topN);
         for (const it of top) {
           const radius = Math.max(8, Math.min(34, 4 + Math.sqrt(it[2]) * 3));
-          const c = L.circleMarker([it[0], it[1]], { radius: radius, renderer: renderer, color: "#0d9488", fillColor: "#5eead4", fillOpacity: 0.4, weight: 1.5 });
+          const c = L.circleMarker([it[0], it[1]], { radius: radius, renderer: renderer, color: "#0d9488", fillColor: "#5eead4", fillOpacity: 0.4, weight: 1.5, bubblingMouseEvents: false });
           (function (it) {
             c.on("click", function () {
               openIncidentPopup([it[0], it[1]], "<b>OSM intersection hotspot</b><br>Count: " + it[2] + "<br>Node: " + esc(it[3]));
@@ -2951,10 +3052,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       const layer = L.layerGroup().addTo(map);
       for (const g of groups) {
         const radius = Math.max(6, Math.min(26, 3 + Math.sqrt(g.count) * 2.5));
-        const c = L.circleMarker([g.lat, g.lng], { radius: radius, renderer: renderer, color: "#9333ea", fillColor: "#d8b4fe", fillOpacity: 0.4, weight: 1.5 });
+        const c = L.circleMarker([g.lat, g.lng], { radius: radius, renderer: renderer, color: "#9333ea", fillColor: "#d8b4fe", fillOpacity: 0.4, weight: 1.5, bubblingMouseEvents: false });
         (function (g) {
           c.on("click", function () {
-            openIncidentPopup([g.lat, g.lng], "<b>Micro-hotspot</b><br>Count: " + g.count + "<br><br>" + popupHtml(g.sample));
+            openIncidentPopup([g.lat, g.lng], g.rows, { label: cellLabel(dMicro) });
           });
         })(g);
         c.addTo(layer);
@@ -2968,7 +3069,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       for (const rk of [1, 2, 3, 5, 8]) {
         L.circle(center, { radius: rk * 1000, weight: 1, fill: false, color: "#64748b", dashArray: "4 5" }).addTo(ringLayer);
       }
-      const centerMarker = L.circleMarker(center, { radius: 7, renderer: renderer, color: "#64748b" });
+      const centerMarker = L.circleMarker(center, { radius: 7, renderer: renderer, color: "#64748b", bubblingMouseEvents: false });
       centerMarker.on("click", function () {
         openIncidentPopup(center, "Dataset center<br>" + center[0].toFixed(5) + ", " + center[1].toFixed(5));
       });
@@ -2986,7 +3087,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         const red = Math.round(255 * t), blue = Math.round(255 * (1 - t));
         const fillColor = "rgb(" + red + ",60," + blue + ")";
         const c = L.circleMarker([hs[0], hs[1]], {
-          radius: r, renderer: renderer, color: fillColor, weight: 2, fillColor: fillColor, fillOpacity: 0.35
+          radius: r, renderer: renderer, color: fillColor, weight: 2, fillColor: fillColor, fillOpacity: 0.35,
+          bubblingMouseEvents: false
         });
         (function (hs) {
           c.on("click", function () {
@@ -3270,6 +3372,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   // The server rewrites the data file every few minutes; re-import it in the
   // background so new incidents appear without a page reload.
   let refreshBusy = false;
+  let lastRefreshMs = Date.now();  // page load counts as the first refresh
 
   function onDataReplaced() {
     _dataSpanCache = null;
@@ -3291,6 +3394,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     s.onload = function () {
       refreshBusy = false;
       s.remove();
+      lastRefreshMs = Date.now();
+      renderStatus();
       const fresh = window.INCIDENTS_DATA || [];
       if (fresh === INCIDENTS) return;
       INCIDENTS = fresh;
@@ -3462,11 +3567,35 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         if (e && e.popup === activePopup) activePopup = null;
       });
 
-      // A click on empty map closes the popup — but only after a grace period,
-      // so neither the click that opened it nor a touch browser's synthesized
-      // "ghost" click (~300 ms after the tap) can immediately dismiss it.
-      map.on("click", function () {
-        if (activePopup && Date.now() - activePopupOpenedAt > 700) {
+      // Map-level tap resolver: every click is matched against the drawn
+      // incident groups and resolved to the nearest one within a generous
+      // radius. This makes taps forgiving (no need to hit a dot dead-center)
+      // and guarantees the nearest group wins — Leaflet's own canvas hit-test
+      // picks the last-drawn layer, which let an overlapping single marker
+      // steal taps from a large same-coordinates group.
+      const TAP_RADIUS = isTouch ? 28 : 16;
+
+      map.on("click", function (e) {
+        if (!e || !e.containerPoint) return;
+        // During the post-open grace window ignore clicks entirely: the touch
+        // browser's synthesized ghost click (~300 ms after a tap, at the old
+        // screen position while the map is panning) would otherwise re-target
+        // or dismiss the popup the tap just opened.
+        if (activePopup && Date.now() - activePopupOpenedAt < 700) return;
+
+        let best = null, bestDist = Infinity;
+        for (const t of hitTargets) {
+          const p = map.latLngToContainerPoint([t.lat, t.lng]);
+          const d = Math.hypot(p.x - e.containerPoint.x, p.y - e.containerPoint.y);
+          if (d > TAP_RADIUS) continue;
+          if (d < bestDist - 0.5 || (Math.abs(d - bestDist) <= 0.5 && best && t.rows.length > best.rows.length)) {
+            best = t;
+            bestDist = d;
+          }
+        }
+        if (best) {
+          openIncidentPopup([best.lat, best.lng], best.rows, { label: best.label });
+        } else if (activePopup) {
           map.closePopup();
         }
       });
@@ -3503,7 +3632,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
 
     // Periodic upkeep: status clock, weather, alerts, and background data refresh.
-    setInterval(renderStatus, 30000);
+    setInterval(renderStatus, 15000);
     setInterval(function () {
       if (document.visibilityState === "visible") {
         fetchLiveNWSWeather();
