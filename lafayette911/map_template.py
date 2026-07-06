@@ -525,6 +525,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .feed-loc { font-size: 12.5px; font-weight: 600; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .feed-sub { font-size: 11px; color: var(--text-3); margin-top: 1px; display: flex; gap: 6px; flex-wrap: wrap; }
   .feed-sub .cat-name { color: var(--cat, var(--text-3)); font-weight: 600; }
+  .feed-item.ghost { opacity: 0.8; }
+  .feed-item.ghost .feed-dot { background: transparent; border: 2px dashed var(--cat, #64748b); width: 7px; height: 7px; }
+  .feed-locating {
+    font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 1px 7px; border-radius: 999px;
+    background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn);
+  }
+
   .feed-more {
     width: 100%; margin-top: 6px; padding: 8px; font-family: var(--font); font-size: 12px; font-weight: 600;
     border: 1px dashed var(--panel-border); background: transparent; color: var(--text-2);
@@ -1009,6 +1017,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   let OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
   let HOT_SPOTS = window.HOT_SPOTS_DATA || [];
   let UNLOCATED_COUNT = window.INCIDENTS_UNLOCATED_COUNT || 0;
+  let UNLOCATED_LIST = window.INCIDENTS_UNLOCATED_LIST || [];
 
   const IDX_LAT = 0, IDX_LNG = 1, IDX_REPORTED = 2, IDX_LOCATION = 3, IDX_CAUSE = 4,
         IDX_ASSIST = 5, IDX_WEIGHT = 6, IDX_COUNT = 7, IDX_TEMP_F = 8, IDX_PRECIP_PROB = 9,
@@ -2607,19 +2616,46 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* ═══════════════════════ feed ═══════════════════════ */
   let feedLimit = 30;
 
+  // Incidents still awaiting geocoding are shown in the feed as ghost
+  // entries so nothing silently disappears while the geocode budget catches
+  // up. They are filtered with the non-geographic matchers only.
+  function pendingFeedRows(f) {
+    const out = [];
+    for (const u of UNLOCATED_LIST) {
+      // u = [location, cause, reported, assisting, created_at]
+      const pseudo = [
+        null, null, u[2] || "", u[0] || "", u[1] || "", u[3] || "", 1, 1,
+        null, null, null, null, null, null, null, "", "",
+        null, null, null, null, null, null, null, u[4] || ""
+      ];
+      if (!matchesCats(pseudo)) continue;
+      if (!matchesCauseGroup(pseudo, f.causeGroup)) continue;
+      if (!matchesCause(pseudo, f.cause)) continue;
+      if (!matchesRange(pseudo, f.range, Date.now())) continue;
+      if (!matchesDateFilter(pseudo, f)) continue;
+      if (!matchesRoadSearch(pseudo, f.roadSearch)) continue;
+      out.push(pseudo);
+    }
+    return out;
+  }
+
   function renderFeed(rows) {
     const nowMs = Date.now();
-    const sorted = rows.slice().sort(function (a, b) {
-      const da = bestRowDate(a), db = bestRowDate(b);
+    const pending = pendingFeedRows(currentFilterObj());
+    const entries = rows.map(function (r) { return { row: r, ghost: false }; })
+      .concat(pending.map(function (r) { return { row: r, ghost: true }; }));
+    entries.sort(function (a, b) {
+      const da = bestRowDate(a.row), db = bestRowDate(b.row);
       return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
     });
-    const shown = sorted.slice(0, feedLimit);
+    const shown = entries.slice(0, feedLimit);
 
-    els.feedMeta.textContent = rows.length
-      ? "Most recent " + shown.length.toLocaleString() + " of " + rows.length.toLocaleString() + " filtered incidents — tap to fly to it"
+    els.feedMeta.textContent = entries.length
+      ? "Most recent " + shown.length.toLocaleString() + " of " + rows.length.toLocaleString() + " filtered incidents" +
+        (pending.length ? " + " + pending.length + " awaiting location" : "") + " — tap to fly to it"
       : "";
 
-    if (!rows.length) {
+    if (!entries.length) {
       els.feedList.innerHTML = "<div class='feed-empty'>No incidents match the current filters.</div>";
       return;
     }
@@ -2640,7 +2676,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     const frag = document.createDocumentFragment();
     let lastBucket = null;
-    for (const row of shown) {
+    for (const entry of shown) {
+      const row = entry.row;
+      const ghost = entry.ghost;
       const cat = categoryOf(row[IDX_CAUSE]);
       const dt = bestRowDate(row);
       const bucket = bucketOf(dt);
@@ -2652,7 +2690,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         frag.appendChild(head);
       }
       const item = document.createElement("div");
-      item.className = "feed-item";
+      item.className = ghost ? "feed-item ghost" : "feed-item";
       item.style.setProperty("--cat", cat.color);
       item.setAttribute("role", "button");
       item.setAttribute("tabindex", "0");
@@ -2664,8 +2702,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         "<span class='feed-sub'><span class='cat-name'>" + esc(String(row[IDX_CAUSE] || cat.label).trim() || cat.label) + "</span>" +
         (occurrences > 1 ? "<span>× " + occurrences + "</span>" : "") +
         (dt ? "<span>" + esc(relTime(dt, nowMs)) + "</span>" : "") +
+        (ghost ? "<span class='feed-locating'>locating…</span>" : "") +
         "</span></span>";
       function activate() {
+        if (ghost) {
+          toast("Awaiting geolocation — it will appear on the map automatically");
+          return;
+        }
         if (!map) return;
         // Collapse the sheet first so the popup is positioned for the
         // uncovered map area.
@@ -2679,11 +2722,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.feedList.innerHTML = "";
     els.feedList.appendChild(frag);
 
-    if (sorted.length > feedLimit) {
+    if (entries.length > feedLimit) {
       const more = document.createElement("button");
       more.type = "button";
       more.className = "feed-more";
-      more.textContent = "Show " + Math.min(30, sorted.length - feedLimit) + " more";
+      more.textContent = "Show " + Math.min(30, entries.length - feedLimit) + " more";
       more.addEventListener("click", function () {
         feedLimit += 30;
         renderFeed(lastFiltered);
@@ -3402,6 +3445,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
       HOT_SPOTS = window.HOT_SPOTS_DATA || [];
       UNLOCATED_COUNT = window.INCIDENTS_UNLOCATED_COUNT || 0;
+      UNLOCATED_LIST = window.INCIDENTS_UNLOCATED_LIST || [];
       onDataReplaced();
       const delta = INCIDENTS.length - prevCount;
       if (delta > 0) toast(delta + " new incident" + (delta === 1 ? "" : "s") + " loaded");

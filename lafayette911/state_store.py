@@ -65,6 +65,19 @@ class StateStore:
             )
             """
         )
+        # Address-level geocode negative cache. The feed re-lists recurring
+        # unresolvable streets as brand-new incidents (fresh incident_number),
+        # and without this table every recurrence burned another Google API
+        # call — enough to drain a small daily budget on its own.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS geocode_failed_locations (
+                location_key TEXT PRIMARY KEY,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_attempt_epoch INTEGER NOT NULL
+            )
+            """
+        )
         self._ensure_incidents_columns()
         self.conn.commit()
 
@@ -183,6 +196,55 @@ class StateStore:
             )
         self.conn.commit()
         return approved
+
+    def get_skippable_geocode_failures(
+        self,
+        max_attempts: int = 3,
+        retry_after_seconds: int = 7 * 24 * 60 * 60,
+    ) -> set:
+        """Return normalized address keys that should NOT be sent to Google.
+
+        An address becomes skippable once it has failed *max_attempts* times;
+        it becomes eligible again after *retry_after_seconds* so a temporarily
+        broken address is not blacklisted forever.
+        """
+        cutoff = int(time.time()) - int(retry_after_seconds)
+        rows = self.conn.execute(
+            "SELECT location_key FROM geocode_failed_locations "
+            "WHERE attempts >= ? AND last_attempt_epoch > ?",
+            (int(max_attempts), cutoff),
+        ).fetchall()
+        return {r[0] for r in rows if r and r[0]}
+
+    def record_geocode_failures(self, location_keys: Sequence[str]) -> None:
+        """Record one failed geocode attempt for each normalized address key."""
+        keys = [k for k in location_keys if k]
+        if not keys:
+            return
+        now = int(time.time())
+        self.conn.executemany(
+            """
+            INSERT INTO geocode_failed_locations (location_key, attempts, last_attempt_epoch)
+            VALUES (?, 1, ?)
+            ON CONFLICT(location_key) DO UPDATE SET
+                attempts = attempts + 1,
+                last_attempt_epoch = excluded.last_attempt_epoch
+            """,
+            [(k, now) for k in keys],
+        )
+        self.conn.commit()
+
+    def clear_geocode_failures(self, location_keys: Sequence[str]) -> None:
+        """Forget failure history for addresses that geocoded successfully."""
+        keys = [k for k in location_keys if k]
+        if not keys:
+            return
+        placeholders = ",".join("?" for _ in keys)
+        self.conn.execute(
+            f"DELETE FROM geocode_failed_locations WHERE location_key IN ({placeholders})",
+            keys,
+        )
+        self.conn.commit()
 
     def get_remaining_geocode_requests(self, max_requests_per_24h: int = 75) -> int:
         """Return remaining Google geocode requests allowed in the rolling 24h window."""

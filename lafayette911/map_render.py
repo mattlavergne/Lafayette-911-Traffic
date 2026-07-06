@@ -66,7 +66,9 @@ def _write_text_if_changed(path: str, text: str) -> bool:
         return True
 
 
-def _build_incidents_script(incidents, osm_intersections, hot_spots=None) -> str:
+def _build_incidents_script(
+    incidents, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None
+) -> str:
     s = "window.INCIDENTS_DATA=" + json.dumps(incidents, ensure_ascii=False, separators=(",", ":"))
     s += ";\nwindow.OSM_INTERSECTIONS_DATA=" + json.dumps(
         osm_intersections, ensure_ascii=False, separators=(",", ":")
@@ -74,12 +76,21 @@ def _build_incidents_script(incidents, osm_intersections, hot_spots=None) -> str
     s += ";\nwindow.HOT_SPOTS_DATA=" + json.dumps(
         hot_spots or [], ensure_ascii=False, separators=(",", ":")
     )
+    s += f";\nwindow.INCIDENTS_UNLOCATED_COUNT={int(unlocated_count)};"
+    s += "\nwindow.INCIDENTS_UNLOCATED_LIST=" + json.dumps(
+        unlocated_list or [], ensure_ascii=False, separators=(",", ":")
+    )
     s += ";"
     return s
 
 
-def _write_jsonjs_if_changed(path: str, incidents, osm_intersections, hot_spots=None) -> bool:
-    return _write_text_if_changed(path, _build_incidents_script(incidents, osm_intersections, hot_spots))
+def _write_jsonjs_if_changed(
+    path: str, incidents, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None
+) -> bool:
+    return _write_text_if_changed(
+        path,
+        _build_incidents_script(incidents, osm_intersections, hot_spots, unlocated_count, unlocated_list),
+    )
 
 
 def _stream_jsonjs_header(handle) -> None:
@@ -93,12 +104,17 @@ def _stream_jsonjs_incident(handle, incident, first: bool) -> bool:
     return False
 
 
-def _stream_jsonjs_footer(handle, osm_intersections, hot_spots=None, unlocated_count: int = 0) -> None:
+def _stream_jsonjs_footer(
+    handle, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None
+) -> None:
     handle.write("];\nwindow.OSM_INTERSECTIONS_DATA=")
     handle.write(json.dumps(osm_intersections, ensure_ascii=False, separators=(",", ":")))
     handle.write(";\nwindow.HOT_SPOTS_DATA=")
     handle.write(json.dumps(hot_spots or [], ensure_ascii=False, separators=(",", ":")))
     handle.write(f";\nwindow.INCIDENTS_UNLOCATED_COUNT={int(unlocated_count)};")
+    handle.write("\nwindow.INCIDENTS_UNLOCATED_LIST=")
+    handle.write(json.dumps(unlocated_list or [], ensure_ascii=False, separators=(",", ":")))
+    handle.write(";")
 
 
 def _ensure_world_readable(path: str) -> None:
@@ -1053,6 +1069,7 @@ def _write_streaming_datajs(
     center_count = 0
     non_tc_count = 0
     unlocated_count = 0
+    unlocated_rows: List[List] = []
 
     map_dir = os.path.dirname(output_datajs) or "."
     os.makedirs(map_dir, exist_ok=True)
@@ -1109,6 +1126,13 @@ def _write_streaming_datajs(
                 lon = _safe_float(lon)
                 if lat is None or lon is None:
                     unlocated_count += 1
+                    unlocated_rows.append([
+                        str(location or "").strip(),
+                        str(cause or "").strip(),
+                        str(reported or "").strip(),
+                        str(assisting or "").strip(),
+                        _safe_text(created_at),
+                    ])
                     continue
 
                 cause_str = str(cause or "").strip()
@@ -1263,7 +1287,12 @@ def _write_streaming_datajs(
             osm_intersections = _stream_osm_intersections(
                 db_path, bbox, total_points, osm_cache_dir, tc_points
             )
-            _stream_jsonjs_footer(handle, osm_intersections, hot_spots, unlocated_count)
+            # Newest first so the feed can surface pending incidents in place;
+            # ISO created_at sorts lexicographically. Capped to keep the file small.
+            unlocated_rows.sort(key=lambda r: r[4] or "", reverse=True)
+            _stream_jsonjs_footer(
+                handle, osm_intersections, hot_spots, unlocated_count, unlocated_rows[:50]
+            )
     finally:
         conn.close()
 
@@ -1441,14 +1470,34 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
     df[lat_col] = pd.to_numeric(df[lat_col].astype(str).str.strip(), errors="coerce")
     df[lon_col] = pd.to_numeric(df[lon_col].astype(str).str.strip(), errors="coerce")
-    df = df.dropna(subset=[lat_col, lon_col]).copy()
-    if df.empty:
-        _write_text_if_changed(output_datajs, "window.INCIDENTS_DATA=[];window.OSM_INTERSECTIONS_DATA=[];")
-        return
 
     for c in ["reported", "location", "cause", "assisting", "incident_number"]:
         if c not in df.columns:
             df[c] = ""
+
+    # Incidents awaiting geocoding must not vanish silently: surface them to
+    # the page (feed "locating…" entries + status chip) instead of dropping
+    # them on the floor.
+    unlocated_mask = df[lat_col].isna() | df[lon_col].isna()
+    unlocated_rows: List[List] = []
+    for _, r in df[unlocated_mask].iterrows():
+        unlocated_rows.append([
+            str(r.get("location", "") or "").strip(),
+            str(r.get("cause", "") or "").strip(),
+            str(r.get("reported", "") or "").strip(),
+            str(r.get("assisting", "") or "").strip(),
+            "",  # the CSV has no created_at column
+        ])
+    unlocated_count = len(unlocated_rows)
+    unlocated_rows.sort(
+        key=lambda r: _parse_reported(r[2]) or datetime.min, reverse=True
+    )
+    unlocated_rows = unlocated_rows[:50]
+
+    df = df.dropna(subset=[lat_col, lon_col]).copy()
+    if df.empty:
+        _write_jsonjs_if_changed(output_datajs, [], [], [], unlocated_count, unlocated_rows)
+        return
 
     df = _collapse_traffic_control(df, lat_col, lon_col)
 
@@ -1563,7 +1612,9 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     except Exception:
         hot_spots = []
 
-    _write_jsonjs_if_changed(output_datajs, incidents, osm_intersections, hot_spots)
+    _write_jsonjs_if_changed(
+        output_datajs, incidents, osm_intersections, hot_spots, unlocated_count, unlocated_rows
+    )
     _ensure_world_readable(output_datajs)
 
     map_dir = os.path.dirname(output_map) or "."

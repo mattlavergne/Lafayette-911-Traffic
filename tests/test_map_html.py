@@ -94,12 +94,63 @@ class MapTemplateTests(unittest.TestCase):
             self.assertIn("window.INCIDENTS_DATA=[", datajs)
             self.assertIn("W CONGRESS ST", datajs)
             self.assertIn("window.INCIDENTS_UNLOCATED_COUNT=1", datajs)
+            # Pending incidents are exported so the feed can show them.
+            self.assertIn("window.INCIDENTS_UNLOCATED_LIST=", datajs)
+            self.assertIn("PENDING RD", datajs)
 
             with open(map_path, encoding="utf-8") as handle:
                 html = handle.read()
             self.assertIn('src="traffic_data.js"', html)
             self.assertIn('id="sidebar"', html)
             self.assertNotIn("__CENTER_LAT__", html)
+
+
+class CsvUnlocatedTests(unittest.TestCase):
+    def test_csv_render_surfaces_unlocated_incidents(self):
+        """The CSV render path used to silently drop coordless rows without
+        even counting them — the page never knew an incident was missing."""
+        from lafayette911.map_render import create_map_from_csv
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            map_path = os.path.join(tmpdir, "traffic_map.html")
+            datajs_path = os.path.join(tmpdir, "traffic_data.js")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "location,cause,reported,assisting,incident_number,latitude,longitude\n"
+                )
+                handle.write(
+                    "W CONGRESS ST,ACCIDENT,01/15/2026 8:30 AM,LPD,INC1,30.2241,-92.0198\n"
+                )
+                handle.write(
+                    "306 ERASTE LANDRY RD,RESCUE SQUAD NEEDED,01/16/2026 9:00 AM,LFD,INC2,,\n"
+                )
+
+            create_map_from_csv(csv_path, map_path, datajs_path, os.path.join(tmpdir, "osm"))
+
+            with open(datajs_path, encoding="utf-8") as handle:
+                datajs = handle.read()
+            self.assertIn("window.INCIDENTS_UNLOCATED_COUNT=1", datajs)
+            self.assertIn("window.INCIDENTS_UNLOCATED_LIST=", datajs)
+            self.assertIn("306 ERASTE LANDRY RD", datajs)
+            self.assertIn("RESCUE SQUAD NEEDED", datajs)
+
+
+class ConfigDefaultTests(unittest.TestCase):
+    def test_geocode_defaults(self):
+        from lafayette911.main import load_config
+
+        saved = {}
+        for key in ("LAF911_GEOCODE_MAX_REQUESTS_PER_24H", "LAF911_GEOCODE_RETRY_UNLOCATED_ENABLED"):
+            saved[key] = os.environ.pop(key, None)
+        try:
+            cfg = load_config(base_dir="/tmp")
+            self.assertEqual(cfg.geocode_max_requests_per_24h, 100)
+            self.assertTrue(cfg.geocode_retry_unlocated_enabled)
+        finally:
+            for key, val in saved.items():
+                if val is not None:
+                    os.environ[key] = val
 
 
 if __name__ == "__main__":
