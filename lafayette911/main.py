@@ -14,6 +14,7 @@ from lafayette911.fetch_incidents import (
     estimate_needed_geocode_requests,
     fetch_traffic_data,
     geocode_incidents,
+    normalize_geocode_key,
     parse_traffic_data,
 )
 from lafayette911.map_render import backfill_road_types, create_map_from_csv, create_map_from_db
@@ -55,6 +56,8 @@ class Config:
     geocode_sleep_seconds: float
     geocode_max_requests_per_24h: int
     geocode_retry_unlocated_enabled: bool
+    geocode_failure_max_attempts: int
+    geocode_failure_retry_days: float
     tracemalloc_interval: int
     tracemalloc_top: int
     debug_memory: bool
@@ -115,6 +118,8 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         geocode_sleep_seconds=_env_float("LAF911_GEOCODE_SLEEP", 0.0),
         geocode_max_requests_per_24h=_env_int("LAF911_GEOCODE_MAX_REQUESTS_PER_24H", 25),
         geocode_retry_unlocated_enabled=_env_bool("LAF911_GEOCODE_RETRY_UNLOCATED_ENABLED", False),
+        geocode_failure_max_attempts=_env_int("LAF911_GEOCODE_FAILURE_MAX_ATTEMPTS", 3),
+        geocode_failure_retry_days=_env_float("LAF911_GEOCODE_FAILURE_RETRY_DAYS", 7.0),
         tracemalloc_interval=_env_int("LAF911_TRACEMALLOC_INTERVAL", 0),
         tracemalloc_top=_env_int("LAF911_TRACEMALLOC_TOP", 10),
         debug_memory=_env_bool("LAF911_DEBUG_MEMORY", False),
@@ -589,12 +594,36 @@ def _render_map_in_subprocess(config: Config, logger) -> None:
         raise RuntimeError(error)
 
 
+def _record_geocode_outcomes(store: StateStore, incidents, attempted_keys: set) -> None:
+    """Persist per-address geocode outcomes into the negative cache.
+
+    Addresses that were actually sent to Google this batch and still ended up
+    without coordinates (no result, or rejected by the parish validator) get a
+    failure recorded; addresses that resolved have their failure history
+    cleared. Addresses never attempted (cache hits, budget exhausted, negative
+    cache) are left untouched.
+    """
+    if not attempted_keys:
+        return
+    succeeded = set()
+    for inc in incidents:
+        if inc.get("latitude") is not None and inc.get("longitude") is not None:
+            succeeded.add(normalize_geocode_key(inc.get("location", "")))
+    failed = attempted_keys - succeeded
+    if failed:
+        store.record_geocode_failures(sorted(failed))
+    resolved = attempted_keys & succeeded
+    if resolved:
+        store.clear_geocode_failures(sorted(resolved))
+
+
 def _geocode_unlocated_incidents(
     config: Config,
     store: StateStore,
     session,
     logger,
     location_cache: dict,
+    skip_keys: set,
 ) -> bool:
     """Re-geocode incidents that were previously stored without coordinates.
 
@@ -612,20 +641,23 @@ def _geocode_unlocated_incidents(
     if not unlocated:
         return False
 
-    needed = estimate_needed_geocode_requests(unlocated, location_cache)
+    needed = estimate_needed_geocode_requests(unlocated, location_cache, skip_keys=skip_keys)
     allowed = store.reserve_geocode_requests(
         requested=needed,
         max_requests_per_24h=config.geocode_max_requests_per_24h,
     )
-    if allowed <= 0:
+    if needed > 0 and allowed <= 0:
         log_event(
             logger,
             "geocode_budget_exhausted",
             target="unlocated",
+            requested=needed,
             max_requests_per_24h=config.geocode_max_requests_per_24h,
         )
         return False
+    # needed == 0 still proceeds: cache hits are applied without API calls.
 
+    attempted_keys: set = set()
     geocode_incidents(
         session,
         unlocated,
@@ -633,8 +665,11 @@ def _geocode_unlocated_incidents(
         sleep_seconds=config.geocode_sleep_seconds,
         location_cache=location_cache,
         api_call_limit=allowed,
+        skip_keys=skip_keys,
+        attempted_keys=attempted_keys,
     )
     _filter_geocode_results(unlocated, location_cache)
+    _record_geocode_outcomes(store, unlocated, attempted_keys)
     updated = store.update_incident_coords(unlocated)
     if updated:
         log_event(logger, "unlocated_geocoded", count=updated)
@@ -664,6 +699,14 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
         # regardless of how many incidents share that address.
         location_cache: dict = store.get_location_coords_map()
 
+        # Persistent negative cache: addresses that repeatedly failed to
+        # geocode are skipped entirely so recurring unresolvable streets can't
+        # drain the daily API budget every time they reappear in the feed.
+        skip_keys: set = store.get_skippable_geocode_failures(
+            max_attempts=config.geocode_failure_max_attempts,
+            retry_after_seconds=int(config.geocode_failure_retry_days * 86400),
+        )
+
         raw = fetch_traffic_data(session, timeout=config.fetch_timeout_seconds, logger=logger)
         incidents = parse_traffic_data(raw)
         if incidents:
@@ -671,18 +714,33 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
             if new_incidents:
                 allowed_new = None
                 if config.google_api_key:
-                    needed_new = estimate_needed_geocode_requests(new_incidents, location_cache)
+                    needed_new = estimate_needed_geocode_requests(
+                        new_incidents, location_cache, skip_keys=skip_keys
+                    )
                     allowed_new = store.reserve_geocode_requests(
                         requested=needed_new,
                         max_requests_per_24h=config.geocode_max_requests_per_24h,
                     )
-                    if needed_new > 0 and allowed_new <= 0:
-                        log_event(
-                            logger,
-                            "geocode_budget_exhausted",
-                            target="new_incidents",
-                            max_requests_per_24h=config.geocode_max_requests_per_24h,
-                        )
+                    if needed_new > 0:
+                        if allowed_new <= 0:
+                            log_event(
+                                logger,
+                                "geocode_budget_exhausted",
+                                target="new_incidents",
+                                requested=needed_new,
+                                max_requests_per_24h=config.geocode_max_requests_per_24h,
+                            )
+                        else:
+                            log_event(
+                                logger,
+                                "geocode_reserved",
+                                requested=needed_new,
+                                approved=allowed_new,
+                                remaining_24h=store.get_remaining_geocode_requests(
+                                    config.geocode_max_requests_per_24h
+                                ),
+                            )
+                attempted_keys: set = set()
                 geocode_incidents(
                     session,
                     new_incidents,
@@ -690,8 +748,11 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                     sleep_seconds=config.geocode_sleep_seconds,
                     location_cache=location_cache,
                     api_call_limit=allowed_new,
+                    skip_keys=skip_keys,
+                    attempted_keys=attempted_keys,
                 )
                 _filter_geocode_results(new_incidents, location_cache)
+                _record_geocode_outcomes(store, new_incidents, attempted_keys)
                 if config.weather_enabled:
                     snapshot = fetch_weather_snapshot(
                         session,
@@ -749,7 +810,7 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
         # Operators can opt in by setting:
         #   LAF911_GEOCODE_RETRY_UNLOCATED_ENABLED=true
         if config.geocode_retry_unlocated_enabled:
-            if _geocode_unlocated_incidents(config, store, session, logger, location_cache):
+            if _geocode_unlocated_incidents(config, store, session, logger, location_cache, skip_keys):
                 has_new_incidents = True
 
     if config.mode in {"all", "renderer"}:
@@ -780,6 +841,23 @@ def main(base_dir: Optional[str] = None) -> int:
 
     store = StateStore(config.db_path, config.csv_path)
     session = build_session()
+
+    # Surface the persistent rolling-24h geocode budget at startup so an
+    # immediately "exhausted" budget after a redeploy is explainable from the
+    # logs (the counter lives in SQLite and survives restarts by design).
+    if config.google_api_key:
+        log_event(
+            logger,
+            "geocode_budget_status",
+            remaining_24h=store.get_remaining_geocode_requests(config.geocode_max_requests_per_24h),
+            max_requests_per_24h=config.geocode_max_requests_per_24h,
+            skipped_bad_addresses=len(
+                store.get_skippable_geocode_failures(
+                    max_attempts=config.geocode_failure_max_attempts,
+                    retry_after_seconds=int(config.geocode_failure_retry_days * 86400),
+                )
+            ),
+        )
 
     # Backfill OSM road types for historical incidents that were stored before
     # the OSM write-back was introduced.  Runs once at startup; safe no-op if

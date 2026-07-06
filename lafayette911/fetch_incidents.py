@@ -164,6 +164,8 @@ def geocode_incidents(
     sleep_seconds: float = 0.0,
     location_cache: Optional[Dict[str, tuple]] = None,
     api_call_limit: Optional[int] = None,
+    skip_keys: Optional[set] = None,
+    attempted_keys: Optional[set] = None,
 ) -> List[Dict[str, str]]:
     """Geocode a list of incidents, updating each dict with latitude/longitude.
 
@@ -174,6 +176,11 @@ def geocode_incidents(
     (case/whitespace-insensitive) index over the same cache catches feed
     formatting jitter, and addresses that fail to geocode are remembered for
     the rest of the batch so duplicates never burn a second API call.
+
+    *skip_keys* is a persistent negative cache: normalized address keys that
+    have repeatedly failed before and must not consume API quota again.
+    *attempted_keys* (if provided) collects the normalized keys this call
+    actually sent to Google, so the caller can persist new failures.
     """
     if not incidents:
         return []
@@ -197,8 +204,11 @@ def geocode_incidents(
         if not api_key:
             continue
 
-        # Skip addresses that already failed earlier in this batch.
+        # Skip addresses known to be unresolvable (persistent negative cache)
+        # or that already failed earlier in this batch.
         norm_key = normalize_geocode_key(loc)
+        if skip_keys is not None and norm_key in skip_keys:
+            continue
         if norm_key in failed_keys:
             continue
 
@@ -208,6 +218,8 @@ def geocode_incidents(
         address = f"{loc}, {DEFAULT_FULL_CITY}"
         result = geocode_with_google(session, address, api_key)
         calls_made += 1
+        if attempted_keys is not None:
+            attempted_keys.add(norm_key)
         if not result:
             failed_keys.add(norm_key)
             continue
@@ -232,6 +244,7 @@ def geocode_incidents(
 def estimate_needed_geocode_requests(
     incidents: List[Dict[str, str]],
     location_cache: Optional[Dict[str, tuple]] = None,
+    skip_keys: Optional[set] = None,
 ) -> int:
     """Estimate how many Google API calls would be needed for this batch."""
     if not incidents:
@@ -249,6 +262,8 @@ def estimate_needed_geocode_requests(
             continue
         key = normalize_geocode_key(loc)
         if key in seen:
+            continue
+        if skip_keys is not None and key in skip_keys:
             continue
         seen.add(key)
         needed += 1
