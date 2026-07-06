@@ -116,8 +116,8 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         mode=os.getenv("LAF911_MODE", "all"),
         render_source=os.getenv("LAF911_RENDER_SOURCE", "db"),
         geocode_sleep_seconds=_env_float("LAF911_GEOCODE_SLEEP", 0.0),
-        geocode_max_requests_per_24h=_env_int("LAF911_GEOCODE_MAX_REQUESTS_PER_24H", 25),
-        geocode_retry_unlocated_enabled=_env_bool("LAF911_GEOCODE_RETRY_UNLOCATED_ENABLED", False),
+        geocode_max_requests_per_24h=_env_int("LAF911_GEOCODE_MAX_REQUESTS_PER_24H", 100),
+        geocode_retry_unlocated_enabled=_env_bool("LAF911_GEOCODE_RETRY_UNLOCATED_ENABLED", True),
         geocode_failure_max_attempts=_env_int("LAF911_GEOCODE_FAILURE_MAX_ATTEMPTS", 3),
         geocode_failure_retry_days=_env_float("LAF911_GEOCODE_FAILURE_RETRY_DAYS", 7.0),
         tracemalloc_interval=_env_int("LAF911_TRACEMALLOC_INTERVAL", 0),
@@ -804,11 +804,11 @@ def run_once(config: Config, store: StateStore, session, logger) -> bool:
                 has_new_incidents = bool(new_incidents)
 
         # Retry geocoding for incidents already in the DB that still lack
-        # coordinates, up to the per-incident attempt limit.
-        #
-        # Disabled by default to avoid surprise quota spikes after deploys.
-        # Operators can opt in by setting:
-        #   LAF911_GEOCODE_RETRY_UNLOCATED_ENABLED=true
+        # coordinates (e.g. they arrived while the daily budget was exhausted),
+        # up to the per-incident attempt limit. Enabled by default: the
+        # per-address negative cache, the 3-attempt cap, and the budget
+        # reservation make it safe. Opt out with:
+        #   LAF911_GEOCODE_RETRY_UNLOCATED_ENABLED=false
         if config.geocode_retry_unlocated_enabled:
             if _geocode_unlocated_incidents(config, store, session, logger, location_cache, skip_keys):
                 has_new_incidents = True
