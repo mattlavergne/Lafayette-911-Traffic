@@ -153,6 +153,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .leaflet-popup-content { margin: 12px 14px; font-family: var(--font); font-size: 13px; line-height: 1.45; }
   .leaflet-popup-close-button { color: var(--text-3) !important; font-size: 18px !important; padding: 6px 8px 0 0 !important; }
   .leaflet-container { font-family: var(--font); }
+  /* Entrance animation on the card only — Leaflet positions .leaflet-popup
+     itself with an inline transform, so that element must not be animated. */
+  @keyframes popup-in {
+    from { opacity: 0; transform: translateY(7px) scale(0.95); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip-container {
+    animation: popup-in 0.24s cubic-bezier(0.34, 1.3, 0.64, 1);
+    transform-origin: bottom center;
+  }
 
   /* ── Popup card ───────────────────────────────────────────────────── */
   .pc { min-width: 220px; max-width: 300px; }
@@ -414,6 +424,55 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .trend-delta { font-weight: 700; }
   .trend-delta.up { color: var(--bad); }
   .trend-delta.down { color: var(--good); }
+
+  /* hour × day heatmap */
+  .chart-svg .hm-cell { transition: fill-opacity 0.15s ease; }
+  .chart-svg .hm-cell:hover { stroke: var(--accent); stroke-width: 1; }
+  .chart-svg .hm-peak { stroke: var(--bad); stroke-width: 1.2; }
+
+  /* category mix */
+  .mix-bar { display: flex; height: 12px; border-radius: 7px; overflow: hidden; margin: 2px 0 8px 0; }
+  .mix-seg { min-width: 3px; transition: flex-basis 0.35s ease; }
+  .mix-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; }
+  .mix-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); min-width: 0; }
+  .mix-row .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .mix-row .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mix-row .n { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text-3); white-space: nowrap; }
+
+  /* corridor leaderboard */
+  .cor-row {
+    display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 8px;
+    cursor: pointer; transition: background 0.12s ease; border: none; width: 100%;
+    background: transparent; font-family: var(--font); text-align: left;
+  }
+  .cor-row:hover { background: var(--chip); }
+  .cor-rank { flex: 0 0 16px; font-size: 10px; font-weight: 700; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .cor-name { flex: 0 0 108px; font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cor-bar-wrap { flex: 1; background: var(--bar-track); border-radius: 3px; height: 7px; overflow: hidden; min-width: 0; }
+  .cor-bar { height: 7px; border-radius: 3px; background: var(--accent); transition: width 0.35s ease; min-width: 2px; }
+  .cor-n { flex: 0 0 auto; font-size: 10.5px; color: var(--text-2); font-variant-numeric: tabular-nums; min-width: 26px; text-align: right; }
+
+  /* feed date-group headers */
+  .feed-group {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em;
+    color: var(--text-3); padding: 10px 8px 4px 8px; position: sticky; top: 0;
+    background: linear-gradient(var(--panel-solid) 70%, transparent); z-index: 1;
+  }
+
+  /* pulse beacons on very recent incidents */
+  .beacon-wrap { pointer-events: none !important; }
+  .beacon { position: relative; display: block; width: 18px; height: 18px; }
+  .beacon::before, .beacon::after {
+    content: ""; position: absolute; inset: 0; border-radius: 50%;
+    border: 2px solid var(--cat, #e5484d); opacity: 0;
+    animation: beacon-ping 2.4s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+  }
+  .beacon::after { animation-delay: 1.2s; }
+  @keyframes beacon-ping {
+    0% { transform: scale(0.35); opacity: 0.85; }
+    70% { transform: scale(1.6); opacity: 0; }
+    100% { transform: scale(1.6); opacity: 0; }
+  }
 
   .rates-group { margin-bottom: 12px; }
   .rates-group-title { font-size: 10.5px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px; }
@@ -849,8 +908,28 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
 
       <div class="chart-block">
+        <div class="chart-title">Hour × day heatmap <span class="sub" id="chartMatrixSub"></span></div>
+        <div id="chartMatrix"></div>
+      </div>
+
+      <div class="chart-block">
         <div class="chart-title">12-week trend <span class="sub" id="chartTrendSub"></span></div>
         <div id="chartTrend"></div>
+      </div>
+
+      <div class="chart-block">
+        <div class="chart-title">Seasonality by month <span class="sub" id="chartMonthSub"></span></div>
+        <div id="chartMonth"></div>
+      </div>
+
+      <div class="chart-block">
+        <div class="chart-title">Category mix</div>
+        <div id="chartMix"></div>
+      </div>
+
+      <div class="chart-block">
+        <div class="chart-title">Top corridors <span class="sub">tap to filter the map</span></div>
+        <div id="corridorList"></div>
       </div>
 
       <div class="section">
@@ -1100,6 +1179,30 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return dt;
   }
 
+  // ~100 m grid index over the full dataset (ignores filters) powering the
+  // "location history" line in popups. Rebuilt whenever the data reloads.
+  let locHistory = new Map();
+
+  function locHistoryKey(row) {
+    return row[IDX_LAT].toFixed(3) + "," + row[IDX_LNG].toFixed(3);
+  }
+
+  function buildLocHistory() {
+    locHistory = new Map();
+    for (const row of INCIDENTS) {
+      const key = locHistoryKey(row);
+      const n = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? (parseInt(row[IDX_COUNT], 10) || 1) : 1;
+      let entry = locHistory.get(key);
+      if (!entry) {
+        entry = { count: 0, firstMs: null };
+        locHistory.set(key, entry);
+      }
+      entry.count += n;
+      const dt = bestRowDate(row);
+      if (dt && (entry.firstMs == null || dt.getTime() < entry.firstMs)) entry.firstMs = dt.getTime();
+    }
+  }
+
   function dayTypeOf(dt) {
     const d = dt.getDay();
     return (d === 0 || d === 6) ? "weekend" : "weekday";
@@ -1166,6 +1269,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     chartHour: $("chartHour"), chartHourSub: $("chartHourSub"),
     chartDow: $("chartDow"), chartDowSub: $("chartDowSub"),
     chartTrend: $("chartTrend"), chartTrendSub: $("chartTrendSub"),
+    chartMatrix: $("chartMatrix"), chartMatrixSub: $("chartMatrixSub"),
+    chartMonth: $("chartMonth"), chartMonthSub: $("chartMonthSub"),
+    chartMix: $("chartMix"), corridorList: $("corridorList"),
     ratesContent: $("ratesContent"), insightsContent: $("insightsContent"),
     feedList: $("feedList"), feedMeta: $("feedMeta"),
     weatherChip: $("weatherChip"), wxIcon: $("wxIcon"), wxMain: $("wxMain"),
@@ -1333,6 +1439,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (row.length > IDX_SCHOOL_DAY && row[IDX_SCHOOL_DAY] === 1) ctx.push("school day");
     if (ctx.length) rows.push("<div>Context: <b>" + esc(ctx.join(" · ")) + "</b></div>");
 
+    // Location history: how active is this ~100 m grid cell across the whole
+    // dataset, regardless of current filters.
+    const hist = locHistory.get(locHistoryKey(row));
+    if (hist && hist.count > 1) {
+      rows.push("<div>This spot: <b>" + hist.count + " incidents on record</b>" +
+        (hist.firstMs ? " <span style='color:var(--text-3)'>· first " + esc(relTime(new Date(hist.firstMs))) + "</span>" : "") + "</div>");
+    }
+
     const alerts = [];
     if (row.length > IDX_NWS_FLOOD && (row[IDX_NWS_FLOOD] === 1 || row[IDX_NWS_FLOOD] === true)) alerts.push("Flash Flood Warning");
     if (row.length > IDX_NWS_STORM && (row[IDX_NWS_STORM] === 1 || row[IDX_NWS_STORM] === true)) alerts.push("Severe Thunderstorm Warning");
@@ -1364,6 +1478,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const lat = row[IDX_LAT], lng = row[IDX_LNG];
     const gmaps = "https://www.google.com/maps/search/?api=1&query=" + lat + "," + lng;
     const sview = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=" + lat + "," + lng;
+    const waze = "https://waze.com/ul?ll=" + lat + "%2C" + lng + "&navigate=yes";
 
     return "<div class='pc' style='--cat:" + cat.color + "'>" +
       "<div class='pc-head'><span class='pc-badge'>" + esc(titleCase(causeText)) + "</span>" +
@@ -1372,8 +1487,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       "<div class='pc-rows'>" + rows.join("") + "</div>" +
       alertLine + wxHtml +
       "<div class='pc-links'>" +
-      "<a href='" + gmaps + "' target='_blank' rel='noopener'>Google Maps</a>" +
+      "<a href='" + gmaps + "' target='_blank' rel='noopener'>Maps</a>" +
       "<a href='" + sview + "' target='_blank' rel='noopener'>Street View</a>" +
+      "<a href='" + waze + "' target='_blank' rel='noopener'>Waze</a>" +
       "</div></div>";
   }
 
@@ -1801,6 +1917,23 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   /* ═══════════════════════ stat tiles / status ═══════════════════════ */
+  // Animate a numeric element from its current value to the target.
+  function countUp(el, target) {
+    const from = parseInt(String(el.textContent).replace(/[^0-9]/g, ""), 10) || 0;
+    if (from === target) { el.textContent = target.toLocaleString(); return; }
+    if (REDUCED_MOTION || Math.abs(target - from) < 2) { el.textContent = target.toLocaleString(); return; }
+    const t0 = performance.now(), dur = 650;
+    if (el.__countRaf) cancelAnimationFrame(el.__countRaf);
+    function step(now) {
+      const t = Math.min(1, (now - t0) / dur);
+      const eased = 1 - Math.pow(1 - t, 3);
+      el.textContent = Math.round(from + (target - from) * eased).toLocaleString();
+      if (t < 1) el.__countRaf = requestAnimationFrame(step);
+      else el.__countRaf = null;
+    }
+    el.__countRaf = requestAnimationFrame(step);
+  }
+
   function renderStatTiles() {
     const now = new Date();
     const nowMs = now.getTime();
@@ -1813,11 +1946,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (age <= 7 * 86400000) week++;
       if (age <= 30 * 86400000) month++;
     }
-    els.tileToday.querySelector("b").textContent = today.toLocaleString();
+    countUp(els.tileToday.querySelector("b"), today);
     els.tileToday.classList.toggle("hot", today > 0);
-    els.tileWeekVal.textContent = week.toLocaleString();
-    els.tileMonthVal.textContent = month.toLocaleString();
-    els.tileTotalVal.textContent = INCIDENTS.length.toLocaleString();
+    countUp(els.tileWeekVal, week);
+    countUp(els.tileMonthVal, month);
+    countUp(els.tileTotalVal, INCIDENTS.length);
   }
 
   function newestDataDate() {
@@ -1954,16 +2087,65 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return (h - 12) + "p";
   }
 
+  // 7×24 hour-by-day heatmap. Cell intensity is count/max; the peak cell is
+  // outlined. Rendered as one SVG so it scales with the panel.
+  function heatmapSVG(matrix) {
+    const W = 360, labelW = 22, gap = 1.5, ch = 10.5, labelH = 11;
+    const cw = (W - labelW - 23 * gap) / 24;
+    const H = 7 * (ch + gap) - gap + labelH + 3;
+    const dayLetters = ["S", "M", "T", "W", "T", "F", "S"];
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let max = 0, peakR = -1, peakC = -1;
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 24; c++) {
+        if (matrix[r][c] > max) { max = matrix[r][c]; peakR = r; peakC = c; }
+      }
+    }
+    let cells = "";
+    for (let r = 0; r < 7; r++) {
+      const y = r * (ch + gap);
+      cells += "<text class='axis-label' x='" + (labelW - 7) + "' y='" + (y + ch - 2.2) + "' text-anchor='middle'>" + dayLetters[r] + "</text>";
+      for (let c = 0; c < 24; c++) {
+        const x = labelW + c * (cw + gap);
+        const v = matrix[r][c];
+        const t = max > 0 ? v / max : 0;
+        const cls = (r === peakR && c === peakC && max > 0) ? "hm-cell hm-peak" : "hm-cell";
+        const fill = v > 0 ? "var(--accent)" : "var(--bar-track)";
+        const op = v > 0 ? (0.14 + 0.86 * t).toFixed(2) : "0.35";
+        cells += "<rect class='" + cls + "' x='" + x.toFixed(1) + "' y='" + y.toFixed(1) +
+          "' width='" + cw.toFixed(1) + "' height='" + ch + "' rx='2' fill='" + fill + "' fill-opacity='" + op + "'>" +
+          "<title>" + dayNames[r] + " " + fmtHour(c) + ": " + v + "</title></rect>";
+      }
+    }
+    let hourLabels = "";
+    for (const spec of [[0, "12a"], [6, "6a"], [12, "12p"], [18, "6p"]]) {
+      const x = labelW + spec[0] * (cw + gap) + cw / 2;
+      hourLabels += "<text class='axis-label' x='" + x.toFixed(1) + "' y='" + (H - 1) + "' text-anchor='middle'>" + spec[1] + "</text>";
+    }
+    return {
+      svg: "<svg class='chart-svg' viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Incidents by hour and day of week'>" + cells + hourLabels + "</svg>",
+      peak: max > 0 ? { day: dayNames[peakR], hour: fmtHour(peakC), count: max } : null
+    };
+  }
+
   function renderCharts(rows) {
     const byHour = new Array(24).fill(0);
     const byDow = new Array(7).fill(0);
+    const byMonth = new Array(12).fill(0);
+    const matrix = [];
+    for (let r = 0; r < 7; r++) matrix.push(new Array(24).fill(0));
     let datedCount = 0;
     for (const row of rows) {
       const pr = parseReported(row[IDX_REPORTED]);
       if (pr && pr.dt) {
         datedCount++;
-        if (Number.isInteger(pr.hh) && pr.hh >= 0 && pr.hh < 24) byHour[pr.hh]++;
-        byDow[pr.dt.getDay()]++;
+        const jsDow = pr.dt.getDay();
+        byDow[jsDow]++;
+        byMonth[pr.dt.getMonth()]++;
+        if (Number.isInteger(pr.hh) && pr.hh >= 0 && pr.hh < 24) {
+          byHour[pr.hh]++;
+          matrix[jsDow][pr.hh]++;
+        }
       }
     }
 
@@ -2009,6 +2191,79 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       els.chartTrendSub.innerHTML = "this week <span class='trend-delta " + dir + "'>" + (pct >= 0 ? "▲" : "▼") + " " + Math.abs(pct).toFixed(0) + "%</span>";
     } else {
       els.chartTrendSub.textContent = lastW > 0 ? (lastW + " this week") : "";
+    }
+
+    // Hour × day heatmap
+    const hm = heatmapSVG(matrix);
+    els.chartMatrix.innerHTML = hm.svg;
+    els.chartMatrixSub.textContent = hm.peak ? ("hottest " + hm.peak.day + " " + hm.peak.hour + " · " + hm.peak.count) : "";
+
+    // Seasonality by month
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    els.chartMonth.innerHTML = barChartSVG(byMonth, {
+      labels: monthNames.map(function (nm, i) { return [i, nm.charAt(0)]; }),
+      titles: monthNames.map(function (nm, i) { return nm + ": " + byMonth[i]; }),
+      gap: 4, aria: "Incidents by month"
+    });
+    const peakM = byMonth.indexOf(Math.max.apply(null, byMonth));
+    els.chartMonthSub.textContent = byMonth[peakM] > 0 ? ("peak " + monthNames[peakM] + " · " + byMonth[peakM]) : "";
+
+    // Category mix: stacked proportion bar + legend
+    const catCounts = new Map();
+    for (const row of rows) {
+      const cat = categoryOf(row[IDX_CAUSE]);
+      catCounts.set(cat.id, (catCounts.get(cat.id) || 0) + 1);
+    }
+    let mixHtml = "";
+    if (rows.length) {
+      let segs = "", legend = "";
+      for (const cat of CATEGORIES) {
+        const n = catCounts.get(cat.id) || 0;
+        if (!n) continue;
+        const pct = (n / rows.length) * 100;
+        segs += "<span class='mix-seg' style='flex:0 0 " + pct.toFixed(2) + "%;background:" + cat.color + "' title='" +
+          esc(cat.label) + ": " + n + " (" + pct.toFixed(1) + "%)'></span>";
+        legend += "<span class='mix-row'><span class='dot' style='background:" + cat.color + "'></span>" +
+          "<span class='lbl'>" + esc(cat.label) + "</span><span class='n'>" + n.toLocaleString() + " · " + pct.toFixed(0) + "%</span></span>";
+      }
+      mixHtml = "<div class='mix-bar'>" + segs + "</div><div class='mix-legend'>" + legend + "</div>";
+    } else {
+      mixHtml = "<span class='rates-no-data'>No incidents in this selection.</span>";
+    }
+    els.chartMix.innerHTML = mixHtml;
+
+    // Corridor leaderboard: tap a corridor to filter the map by that road
+    const byCorr = new Map();
+    for (const row of rows) {
+      const corr = inferCorridor(row[IDX_LOCATION]);
+      if (corr === "Unknown location") continue;
+      byCorr.set(corr, (byCorr.get(corr) || 0) + 1);
+    }
+    const topCorrs = Array.from(byCorr.entries()).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 8);
+    if (topCorrs.length) {
+      const maxC = topCorrs[0][1];
+      const cfrag = document.createDocumentFragment();
+      topCorrs.forEach(function (entry, i) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "cor-row";
+        btn.title = "Filter the map to " + titleCase(entry[0]);
+        btn.innerHTML = "<span class='cor-rank'>" + (i + 1) + "</span>" +
+          "<span class='cor-name'>" + esc(titleCase(entry[0])) + "</span>" +
+          "<span class='cor-bar-wrap'><span class='cor-bar' style='width:" + ((entry[1] / maxC) * 100).toFixed(1) + "%'></span></span>" +
+          "<span class='cor-n'>" + entry[1].toLocaleString() + "</span>";
+        btn.addEventListener("click", function () {
+          els.roadSearch.value = entry[0];
+          els.roadSearchClear.classList.add("show");
+          toast("Filtering: " + titleCase(entry[0]));
+          scheduleRender(0);
+        });
+        cfrag.appendChild(btn);
+      });
+      els.corridorList.innerHTML = "";
+      els.corridorList.appendChild(cfrag);
+    } else {
+      els.corridorList.innerHTML = "<span class='rates-no-data'>No corridor data in this selection.</span>";
     }
   }
 
@@ -2281,10 +2536,33 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       return;
     }
 
+    // Date-group buckets (rows are already sorted newest first, so buckets
+    // are contiguous and each header is emitted once).
+    function bucketOf(dt) {
+      if (!dt) return "Undated";
+      const now = new Date(nowMs);
+      const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const t = dt.getTime();
+      if (t >= startToday) return "Today";
+      if (t >= startToday - 86400000) return "Yesterday";
+      if (t >= startToday - 6 * 86400000) return "This week";
+      if (t >= startToday - 29 * 86400000) return "This month";
+      return "Earlier";
+    }
+
     const frag = document.createDocumentFragment();
+    let lastBucket = null;
     for (const row of shown) {
       const cat = categoryOf(row[IDX_CAUSE]);
       const dt = bestRowDate(row);
+      const bucket = bucketOf(dt);
+      if (bucket !== lastBucket) {
+        lastBucket = bucket;
+        const head = document.createElement("div");
+        head.className = "feed-group";
+        head.textContent = bucket;
+        frag.appendChild(head);
+      }
       const item = document.createElement("div");
       item.className = "feed-item";
       item.style.setProperty("--cat", cat.color);
@@ -2301,22 +2579,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         "</span></span>";
       function activate() {
         if (!map) return;
-        const latlng = L.latLng(row[IDX_LAT], row[IDX_LNG]);
-        const targetZoom = Math.max(map.getZoom(), 15);
-        let opened = false;
-        function openIt() {
-          if (opened) return;
-          opened = true;
-          L.popup({ maxWidth: 320, autoPan: false })
-            .setLatLng(latlng)
-            .setContent(createIncidentPopup([row]))
-            .openOn(map);
-        }
-        map.once("moveend", openIt);
-        // If the map is already at the target view, no move event fires.
-        setTimeout(openIt, REDUCED_MOTION ? 150 : 800);
-        if (REDUCED_MOTION) map.setView(latlng, targetZoom); else map.flyTo(latlng, targetZoom, { duration: 0.6 });
+        // Collapse the sheet first so the popup is positioned for the
+        // uncovered map area.
         if (window.innerWidth <= 700) setSheetExpanded(false);
+        openIncidentPopup([row[IDX_LAT], row[IDX_LNG]], [row], { zoom: 15 });
       }
       item.addEventListener("click", activate);
       item.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(); } });
@@ -2339,7 +2605,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   /* ═══════════════════════ marker layers ═══════════════════════ */
-  const layers = { points: null, heat: null, intersections: null, osmIntersections: null, micro: null, rings: null, hotSpots: null };
+  const layers = { points: null, beacons: null, heat: null, intersections: null, osmIntersections: null, micro: null, rings: null, hotSpots: null };
   let lastFiltered = [];
   let renderTimer = null;
   let pointRenderMode = "exact";
@@ -2415,12 +2681,18 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
   }
 
-  // Pan (never zoom) just enough to fit an open popup fully within the visible
-  // map area — clear of the screen edges and, on mobile, above the bottom
-  // sheet. Measures the popup's real size so even tall cards aren't clipped.
-  // Called on every popup open so tapping a marker never hides its details.
-  function keepPopupInView(popup) {
-    if (!map || !popup || !popup.getLatLng) return;
+  /* ── standalone popup engine ──────────────────────────────────────────
+     Popups are owned by the app, never bound to marker layers. In aggregated
+     performance mode every map move rebuilds the marker layers, and a popup
+     bound to a destroyed marker closes with it — which made incident details
+     unreadable on large datasets. A standalone popup anchored to coordinates
+     survives those rebuilds, and the map is panned so the tapped incident is
+     centered in the visible area (above the bottom sheet on mobile). */
+  let activePopup = null;
+  let activePopupOpenedAt = 0;
+
+  function positionActivePopup(popup) {
+    if (!map || !popup || popup !== activePopup || !popup.getLatLng) return;
     const latlng = popup.getLatLng();
     const size = map.getSize();
     let sheetH = 0;
@@ -2430,25 +2702,61 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         : 236;
     }
     const el = popup.getElement();
-    const popH = el ? el.offsetHeight : 200;
-    const popW = el ? el.offsetWidth : 300;
-    const tip = 18;                       // popup tip height below the card
-    const marginTop = 58;                 // clear the floating weather chip up top
-    const marginBottom = sheetH + 16;     // keep the whole card above the sheet
-    const marginSide = 10;
+    const popH = el ? el.offsetHeight : 220;
+    const tip = 18;        // popup tip below the card
+    const topSafe = 58;    // clear the floating weather chip
+    const visibleH = size.y - sheetH;
+
+    // Anchor y that vertically centers the whole card in the visible strip,
+    // clamped so it never rides under the weather chip or behind the sheet.
+    let targetY = (visibleH + popH + tip) / 2;
+    targetY = Math.min(targetY, visibleH - 18);
+    targetY = Math.max(targetY, Math.min(popH + tip + topSafe, visibleH - 18));
+
+    // Horizontally: center of the area not covered by the desktop sidebar.
+    const sidebarW = window.innerWidth > 700 ? 430 : 0;
+    let targetX = (sidebarW + size.x) / 2;
+    targetX = Math.min(targetX, size.x - 170);
 
     const p = map.latLngToContainerPoint(latlng);
-    // The card sits above the anchor: it spans [p.y - popH - tip, p.y].
-    const popTop = p.y - popH - tip;
-    const halfW = popW / 2;
-    let dx = 0, dy = 0;
+    const dx = p.x - targetX;
+    const dy = p.y - targetY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      map.panBy([dx, dy], { animate: !REDUCED_MOTION, duration: 0.3 });
+    }
+  }
 
-    if (popTop < marginTop) dy = popTop - marginTop;                       // too high → nudge down
-    else if (p.y > size.y - marginBottom) dy = p.y - (size.y - marginBottom); // behind sheet → nudge up
-    if (p.x - halfW < marginSide) dx = (p.x - halfW) - marginSide;
-    else if (p.x + halfW > size.x - marginSide) dx = (p.x + halfW) - (size.x - marginSide);
+  // content: an incident-row array (gets the card + prev/next UI) or a
+  // prebuilt HTML string / DOM node for analyst layers.
+  function openIncidentPopup(latlng, content, opts) {
+    if (!map) return;
+    opts = opts || {};
+    const node = Array.isArray(content) ? createIncidentPopup(content) : content;
+    const popup = L.popup({ maxWidth: 320, autoPan: false, closeOnClick: false })
+      .setLatLng(latlng)
+      .setContent(node);
+    activePopup = popup;
+    activePopupOpenedAt = Date.now();
+    popup.openOn(map);
 
-    if (dx || dy) map.panBy([dx, dy], { animate: !REDUCED_MOTION, duration: 0.25 });
+    let positioned = false;
+    function position() {
+      if (positioned) return;
+      positioned = true;
+      positionActivePopup(popup);
+    }
+
+    const currentZoom = map.getZoom();
+    const targetZoom = Math.max(currentZoom, opts.zoom || 0);
+    if (targetZoom > currentZoom) {
+      // Feed fly-to: zoom onto the incident first, then fit the card.
+      map.once("moveend", position);
+      setTimeout(position, REDUCED_MOTION ? 150 : 800);
+      map.setView(latlng, targetZoom, { animate: !REDUCED_MOTION, duration: 0.5 });
+    } else {
+      // Defer a frame so the popup is laid out and its height measurable.
+      requestAnimationFrame(position);
+    }
   }
 
   function clearLayers() {
@@ -2511,20 +2819,22 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       for (const group of grouped) {
         let mk = null;
         const groupCount = usePerfMode ? group.count : group.rows.length;
+        const anchor = [group.lat, group.lng];
         if (groupCount > 1) {
           if (usePerfMode) {
             // Canvas circles scale far better than divIcons for thousands of symbols.
             const cat = categoryOf(group.sample[IDX_CAUSE]);
             const radius = Math.max(4, Math.min(12, 3 + Math.sqrt(groupCount)));
-            mk = L.circleMarker([group.lat, group.lng], {
+            mk = L.circleMarker(anchor, {
               radius: radius, renderer: renderer,
               color: cat.color, weight: isTouch ? 2.4 : 1.8,
               fillColor: cat.fill, fillOpacity: 0.72
             });
-            mk.bindPopup(
-              "<b>" + groupCount + " nearby incidents</b><br><br>" + popupHtml(group.sample),
-              { maxWidth: 340, autoPan: false }
-            );
+            (function (sample, count) {
+              mk.on("click", function () {
+                openIncidentPopup(anchor, "<b>" + count + " nearby incidents</b> <span style='color:var(--text-3);font-size:11px'>(zoom in to separate)</span><br><br>" + popupHtml(sample));
+              });
+            })(group.sample, groupCount);
           } else {
             const cat = dominantCategory(group.rows);
             const icon = L.divIcon({
@@ -2533,31 +2843,56 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
               iconSize: [sizing.countSize, sizing.countSize],
               iconAnchor: [sizing.countSize / 2, sizing.countSize / 2]
             });
-            mk = L.marker([group.lat, group.lng], { icon: icon, riseOnHover: true });
+            mk = L.marker(anchor, { icon: icon, riseOnHover: true });
             mk.__count = groupCount;
             mk.__catColor = cat.color;
             pointMarkers.counts.push(mk);
             (function (rows) {
-              mk.bindPopup(function () { return createIncidentPopup(rows); }, { maxWidth: 320, autoPan: false });
+              mk.on("click", function () { openIncidentPopup(anchor, rows); });
             })(group.rows);
           }
         } else {
           const singleRow = usePerfMode ? group.sample : group.rows[0];
           const cat = categoryOf(singleRow[IDX_CAUSE]);
-          mk = L.circleMarker([group.lat, group.lng], {
+          mk = L.circleMarker(anchor, {
             radius: sizing.radius, renderer: renderer,
             color: cat.color, weight: isTouch ? 2.2 : 1.4,
             fillColor: cat.fill, fillOpacity: 0.6
           });
           pointMarkers.singles.push(mk);
           (function (row) {
-            mk.bindPopup(function () { return popupHtml(row); }, { maxWidth: 320, autoPan: false });
+            mk.on("click", function () { openIncidentPopup(anchor, [row]); });
           })(singleRow);
         }
         mkList.push(mk);
       }
       pointSymbolCount = mkList.length;
       layers.points = L.layerGroup(mkList).addTo(map);
+
+      // Pulse beacons on incidents reported within the last 2 hours, so live
+      // activity is visible at a glance. Non-interactive: taps pass through
+      // to the incident marker underneath.
+      if (!REDUCED_MOTION) {
+        const nowMs = Date.now();
+        const beacons = [];
+        for (const row of filtered) {
+          const dt = bestRowDate(row);
+          if (!dt || nowMs - dt.getTime() > 2 * 3600 * 1000) continue;
+          const cat = categoryOf(row[IDX_CAUSE]);
+          beacons.push(L.marker([row[IDX_LAT], row[IDX_LNG]], {
+            interactive: false,
+            keyboard: false,
+            icon: L.divIcon({
+              className: "beacon-wrap",
+              html: "<span class='beacon' style='--cat:" + cat.color + "'></span>",
+              iconSize: [18, 18],
+              iconAnchor: [9, 9]
+            })
+          }));
+          if (beacons.length >= 20) break;
+        }
+        if (beacons.length) layers.beacons = L.layerGroup(beacons).addTo(map);
+      }
     } else {
       pointRenderMode = "exact";
       pointSymbolCount = 0;
@@ -2576,7 +2911,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       for (const g of groups) {
         const radius = Math.max(7, Math.min(30, 4 + Math.sqrt(g.count) * 3));
         const c = L.circleMarker([g.lat, g.lng], { radius: radius, renderer: renderer, color: "#2563eb", fillColor: "#93c5fd", fillOpacity: 0.4, weight: 1.5 });
-        c.bindPopup("<b>Rounded cluster</b><br>Count: " + g.count + "<br><br>" + popupHtml(g.sample), { maxWidth: 340 });
+        (function (g) {
+          c.on("click", function () {
+            openIncidentPopup([g.lat, g.lng], "<b>Rounded cluster</b><br>Count: " + g.count + "<br><br>" + popupHtml(g.sample));
+          });
+        })(g);
         c.addTo(layer);
       }
       layers.intersections = layer;
@@ -2587,14 +2926,20 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (!OSM_INTERSECTIONS || OSM_INTERSECTIONS.length === 0) {
         const center = getCenterFromData();
         const mk = L.circleMarker(center, { radius: 8, renderer: renderer });
-        mk.bindPopup("OSM intersection data unavailable.<br>Install osmnx server-side and rebuild once.");
+        mk.on("click", function () {
+          openIncidentPopup(center, "OSM intersection data unavailable.<br>Install osmnx server-side and rebuild once.");
+        });
         mk.addTo(layer);
       } else {
         const top = OSM_INTERSECTIONS.slice(0, topN);
         for (const it of top) {
           const radius = Math.max(8, Math.min(34, 4 + Math.sqrt(it[2]) * 3));
           const c = L.circleMarker([it[0], it[1]], { radius: radius, renderer: renderer, color: "#0d9488", fillColor: "#5eead4", fillOpacity: 0.4, weight: 1.5 });
-          c.bindPopup("<b>OSM intersection hotspot</b><br>Count: " + it[2] + "<br>Node: " + esc(it[3]), { maxWidth: 320 });
+          (function (it) {
+            c.on("click", function () {
+              openIncidentPopup([it[0], it[1]], "<b>OSM intersection hotspot</b><br>Count: " + it[2] + "<br>Node: " + esc(it[3]));
+            });
+          })(it);
           c.addTo(layer);
         }
       }
@@ -2607,7 +2952,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       for (const g of groups) {
         const radius = Math.max(6, Math.min(26, 3 + Math.sqrt(g.count) * 2.5));
         const c = L.circleMarker([g.lat, g.lng], { radius: radius, renderer: renderer, color: "#9333ea", fillColor: "#d8b4fe", fillOpacity: 0.4, weight: 1.5 });
-        c.bindPopup("<b>Micro-hotspot</b><br>Count: " + g.count + "<br><br>" + popupHtml(g.sample), { maxWidth: 340 });
+        (function (g) {
+          c.on("click", function () {
+            openIncidentPopup([g.lat, g.lng], "<b>Micro-hotspot</b><br>Count: " + g.count + "<br><br>" + popupHtml(g.sample));
+          });
+        })(g);
         c.addTo(layer);
       }
       layers.micro = layer;
@@ -2620,7 +2969,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         L.circle(center, { radius: rk * 1000, weight: 1, fill: false, color: "#64748b", dashArray: "4 5" }).addTo(ringLayer);
       }
       const centerMarker = L.circleMarker(center, { radius: 7, renderer: renderer, color: "#64748b" });
-      centerMarker.bindPopup("Dataset center<br>" + center[0].toFixed(5) + ", " + center[1].toFixed(5));
+      centerMarker.on("click", function () {
+        openIncidentPopup(center, "Dataset center<br>" + center[0].toFixed(5) + ", " + center[1].toFixed(5));
+      });
       centerMarker.addTo(ringLayer);
       layers.rings = ringLayer;
     }
@@ -2637,12 +2988,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         const c = L.circleMarker([hs[0], hs[1]], {
           radius: r, renderer: renderer, color: fillColor, weight: 2, fillColor: fillColor, fillOpacity: 0.35
         });
-        c.bindPopup(
-          "<b>Hot spot</b><br>" + esc(titleCase(hs[4] || "Unknown location")) +
-          "<br>Incidents: " + hs[2] + "<br>Recency score: " + hs[3].toFixed(2) +
-          "<br><span style='color:var(--text-3);font-size:11px;'>Recent incidents weigh more.</span>",
-          { maxWidth: 320 }
-        );
+        (function (hs) {
+          c.on("click", function () {
+            openIncidentPopup([hs[0], hs[1]],
+              "<b>Hot spot</b><br>" + esc(titleCase(hs[4] || "Unknown location")) +
+              "<br>Incidents: " + hs[2] + "<br>Recency score: " + hs[3].toFixed(2) +
+              "<br><span style='color:var(--text-3);font-size:11px;'>Recent incidents weigh more.</span>");
+          });
+        })(hs);
         c.addTo(hsLayer);
       }
       layers.hotSpots = hsLayer;
@@ -2921,6 +3274,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function onDataReplaced() {
     _dataSpanCache = null;
     _catCache.clear();
+    buildLocHistory();
     renderStatTiles();
     renderStatus();
     renderLegend();
@@ -3104,12 +3458,17 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     });
 
     if (map) {
-      // Whenever a popup opens (marker tap or feed fly-to), nudge it fully into
-      // the visible map area so its details are always readable. Deferred a
-      // frame so the popup has been laid out and its height can be measured.
-      map.on("popupopen", function (e) {
-        if (!e || !e.popup) return;
-        requestAnimationFrame(function () { keepPopupInView(e.popup); });
+      map.on("popupclose", function (e) {
+        if (e && e.popup === activePopup) activePopup = null;
+      });
+
+      // A click on empty map closes the popup — but only after a grace period,
+      // so neither the click that opened it nor a touch browser's synthesized
+      // "ghost" click (~300 ms after the tap) can immediately dismiss it.
+      map.on("click", function () {
+        if (activePopup && Date.now() - activePopupOpenedAt > 700) {
+          map.closePopup();
+        }
       });
 
       map.on("moveend", function () {
@@ -3159,6 +3518,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ═══════════════════════ boot ═══════════════════════ */
   applyTheme();
+  buildLocHistory();
   buildCauseDropdown();
   buildCauseGroupDropdown();
   applyHash();
