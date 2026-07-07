@@ -651,7 +651,9 @@ def _compute_hot_spots_from_db(db_path: str, top_n: int = 100, min_count: int = 
 
 
 def _normalize_location(s: str) -> str:
-    return re.sub(r"\s+", " ", str(s or "").strip().upper())
+    # _safe_text, not `s or ""`: pandas string-dtype columns yield pd.NA for
+    # empty cells, and pd.NA raises "boolean value of NA is ambiguous" in `or`.
+    return re.sub(r"\s+", " ", _safe_text(s).upper())
 
 
 def _collapse_traffic_control(df: pd.DataFrame, lat_col: str, lon_col: str) -> pd.DataFrame:
@@ -752,7 +754,9 @@ def _safe_text(value) -> str:
     text = str(value).strip()
     if not text:
         return ""
-    if text.lower() in {"nan", "none", "null", "undefined"}:
+    # "<na>" is str(pd.NA) — pandas string-dtype columns yield pd.NA for
+    # missing cells, and pd.NA cannot be used in boolean context at all.
+    if text.lower() in {"nan", "none", "null", "undefined", "<na>"}:
         return ""
     return text
 
@@ -1475,6 +1479,17 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
         if c not in df.columns:
             df[c] = ""
 
+    # Blank out pandas NA in every text column up front: string-dtype columns
+    # yield pd.NA for empty CSV cells, which crashes any `value or ...`
+    # truthiness check downstream and stringifies to "<NA>" in output.
+    for c in [
+        "reported", "location", "cause", "assisting", "incident_number",
+        "road_type", "weather_observed_at", "weather_source",
+        "tc_first_reported", "tc_last_reported",
+    ]:
+        if c in df.columns:
+            df[c] = df[c].fillna("")
+
     # Incidents awaiting geocoding must not vanish silently: surface them to
     # the page (feed "locating…" entries + status chip) instead of dropping
     # them on the floor.
@@ -1482,10 +1497,10 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     unlocated_rows: List[List] = []
     for _, r in df[unlocated_mask].iterrows():
         unlocated_rows.append([
-            str(r.get("location", "") or "").strip(),
-            str(r.get("cause", "") or "").strip(),
-            str(r.get("reported", "") or "").strip(),
-            str(r.get("assisting", "") or "").strip(),
+            _safe_text(r.get("location")),
+            _safe_text(r.get("cause")),
+            _safe_text(r.get("reported")),
+            _safe_text(r.get("assisting")),
             "",  # the CSV has no created_at column
         ])
     unlocated_count = len(unlocated_rows)
@@ -1522,7 +1537,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
         cause_norm = cause.strip().upper()
         if cause_norm == "TRAFFIC CONTROL":
             weight = 1.0
-            total_count = int(pd.to_numeric(r.get("tc_total_count", 1), errors="coerce") or 1)
+            total_count = int(_safe_float(r.get("tc_total_count")) or 1)
         else:
             weight = 1.0
             total_count = 1
@@ -1591,7 +1606,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
                     "lon": round(lon_v, 3),
                     "count": 0,
                     "hot_score": 0.0,
-                    "label": str(r.get("location", "") or "").strip(),
+                    "label": _safe_text(r.get("location")),
                 }
             spots[key]["count"] += 1
             reported_dt = _parse_reported(r.get("reported"))
