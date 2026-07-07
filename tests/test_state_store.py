@@ -147,3 +147,73 @@ class StateStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContentDedupeTests(unittest.TestCase):
+    def test_feed_formatting_jitter_cannot_duplicate_an_incident(self):
+        """The bottom-line guarantee: the same real-world incident re-listed
+        with different whitespace/casing (which changes the synthesized
+        incident_number) must NOT be stored twice."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            db_path = os.path.join(tmpdir, "incident_index.sqlite")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write("location,cause,reported,assisting,incident_number,latitude,longitude\n")
+
+            store = StateStore(db_path, csv_path)
+            original = {
+                "location": "W CONGRESS ST & AMBASSADOR CAFFERY PKWY",
+                "cause": "ACCIDENT",
+                "reported": "07/06/2026 10:00 AM",
+                "assisting": "LPD",
+                "incident_number": "N1",
+            }
+            jittered = {
+                "location": "W  Congress St &  Ambassador Caffery Pkwy",  # extra spaces + case
+                "cause": "Accident",
+                "reported": "07/06/2026  10:00 AM",
+                "assisting": "LPD",
+                "incident_number": "N2",  # different synthesized id!
+            }
+            stored = store.store_new_incidents([original])
+            self.assertEqual(len(stored), 1)
+            stored2 = store.store_new_incidents([jittered])
+            self.assertEqual(stored2, [], "jittered duplicate must be rejected")
+
+            count = store.conn.execute("SELECT COUNT(1) FROM incidents").fetchone()[0]
+            self.assertEqual(count, 1)
+            store.close()
+
+    def test_in_batch_duplicates_collapse(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write("location,cause,reported,assisting,incident_number,latitude,longitude\n")
+            store = StateStore(os.path.join(tmpdir, "db.sqlite"), csv_path)
+            batch = [
+                {"location": "MOSS ST", "cause": "ACCIDENT", "reported": "07/06/2026 9:00 AM",
+                 "assisting": "", "incident_number": "A"},
+                {"location": "Moss  St", "cause": "accident", "reported": "07/06/2026 9:00 AM",
+                 "assisting": "", "incident_number": "B"},
+            ]
+            self.assertEqual(len(store.store_new_incidents(batch)), 1)
+            store.close()
+
+    def test_content_index_backfilled_for_existing_rows(self):
+        """Rows stored before the content index existed are protected after
+        the one-time backfill migration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            db_path = os.path.join(tmpdir, "db.sqlite")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write("location,cause,reported,assisting,incident_number,latitude,longitude\n")
+                handle.write("PINHOOK RD,ACCIDENT,07/01/2026 8:00 AM,LPD,OLD1,30.2,-92.0\n")
+
+            store = StateStore(db_path, csv_path)  # seeds from CSV + backfills index
+            jittered = {
+                "location": "Pinhook  Rd", "cause": "Accident",
+                "reported": "07/01/2026 8:00 AM", "assisting": "LPD",
+                "incident_number": "NEW-ID",
+            }
+            self.assertEqual(store.store_new_incidents([jittered]), [])
+            store.close()

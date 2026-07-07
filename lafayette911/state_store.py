@@ -1,6 +1,7 @@
 import csv
 import math
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -62,6 +63,19 @@ class StateStore:
             CREATE TABLE IF NOT EXISTS geocode_api_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 requested_at_epoch INTEGER NOT NULL
+            )
+            """
+        )
+        # Second line of dedupe defence. The primary key is the synthesized
+        # incident_number (location+cause+reported verbatim), which breaks if
+        # the feed ever reformats whitespace or casing of an existing entry.
+        # This index keys the same triple in normalized form so formatting
+        # jitter can never re-insert an incident we already have.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS incident_content_index (
+                content_key TEXT PRIMARY KEY,
+                incident_number TEXT NOT NULL
             )
             """
         )
@@ -140,6 +154,9 @@ class StateStore:
         # a historical cache bug. This should never run every startup because
         # that would allow infinite geocoding retries and burn API quota.
         self._reset_geocode_attempts_for_unlocated_once()
+        # One-time backfill of the normalized-content dedupe index for rows
+        # stored before the index existed.
+        self._backfill_content_index_once()
 
     def _meta_get(self, key: str) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM app_meta WHERE key = ?", (key,)).fetchone()
@@ -342,11 +359,18 @@ class StateStore:
 
             rows: List[Tuple] = []
             index_rows: List[Tuple[str]] = []
+            content_rows: List[Tuple[str, str]] = []
             for row in reader:
                 incident_number = (row.get("incident_number") or "").strip()
                 if not incident_number:
                     continue
                 index_rows.append((incident_number,))
+                content_rows.append(
+                    (
+                        self.content_key(row.get("location"), row.get("cause"), row.get("reported")),
+                        incident_number,
+                    )
+                )
                 rows.append(
                     (
                         incident_number,
@@ -381,18 +405,72 @@ class StateStore:
                     )
                 )
                 if len(rows) >= 500:
-                    self._insert_batch(rows, index_rows)
+                    self._insert_batch(rows, index_rows, content_rows)
                     rows = []
                     index_rows = []
+                    content_rows = []
 
             if rows:
-                self._insert_batch(rows, index_rows)
+                self._insert_batch(rows, index_rows, content_rows)
 
-    def _insert_batch(self, rows: Sequence[Tuple], index_rows: Sequence[Tuple[str]]) -> None:
+    @staticmethod
+    def content_key(location, cause, reported) -> str:
+        """Normalized identity of an incident: whitespace-collapsed, uppercased
+        location|cause|reported. Two feed entries with the same key are the
+        same real-world incident regardless of formatting."""
+        def norm(value) -> str:
+            return re.sub(r"\s+", " ", str(value or "").strip()).upper()
+        return norm(location) + "|" + norm(cause) + "|" + norm(reported)
+
+    def _backfill_content_index_once(self) -> None:
+        if self._meta_get("content_index_backfill_v1") == "1":
+            return
+        try:
+            rows = self.conn.execute(
+                "SELECT incident_number, location, cause, reported FROM incidents"
+            ).fetchall()
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO incident_content_index (content_key, incident_number) VALUES (?, ?)",
+                [
+                    (self.content_key(loc, cause, reported), num)
+                    for num, loc, cause, reported in rows
+                    if num
+                ],
+            )
+            self.conn.commit()
+            self._meta_set("content_index_backfill_v1", "1")
+        except Exception:
+            pass
+
+    def _existing_content_keys(self, keys: Sequence[str], batch_size: int = 900) -> set:
+        existing = set()
+        for i in range(0, len(keys), batch_size):
+            chunk = keys[i : i + batch_size]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.conn.execute(
+                f"SELECT content_key FROM incident_content_index WHERE content_key IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            existing.update(r[0] for r in rows if r and r[0] is not None)
+        return existing
+
+    def _insert_batch(
+        self,
+        rows: Sequence[Tuple],
+        index_rows: Sequence[Tuple[str]],
+        content_rows: Sequence[Tuple[str, str]] = (),
+    ) -> None:
         self.conn.executemany(
             "INSERT OR IGNORE INTO incident_index (incident_number) VALUES (?)",
             index_rows,
         )
+        if content_rows:
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO incident_content_index (content_key, incident_number) VALUES (?, ?)",
+                content_rows,
+            )
         self.conn.executemany(
             """
             INSERT OR IGNORE INTO incidents
@@ -431,11 +509,18 @@ class StateStore:
 
         rows: List[Tuple] = []
         index_rows: List[Tuple[str]] = []
+        content_rows: List[Tuple[str, str]] = []
         for inc in new_incidents:
             incident_number = str(inc.get("incident_number") or "").strip()
             if not incident_number:
                 continue
             index_rows.append((incident_number,))
+            content_rows.append(
+                (
+                    self.content_key(inc.get("location"), inc.get("cause"), inc.get("reported")),
+                    incident_number,
+                )
+            )
             rows.append(
                 (
                     incident_number,
@@ -471,17 +556,39 @@ class StateStore:
             )
 
         if rows:
-            self._insert_batch(rows, index_rows)
+            self._insert_batch(rows, index_rows, content_rows)
 
         return new_incidents
 
     def filter_new_incidents(self, incidents: Sequence[Dict]) -> List[Dict]:
+        """Return only incidents we have never stored.
+
+        Two filters, both required for the no-duplicates guarantee:
+          1. exact incident_number match against incident_index;
+          2. normalized content match against incident_content_index, which
+             also dedupes repeats *within* the same feed snapshot.
+        """
         if not incidents:
             return []
 
         ids = [str(inc.get("incident_number") or "") for inc in incidents]
         existing = self._existing_ids(ids)
-        return [inc for inc in incidents if str(inc.get("incident_number") or "") not in existing]
+        keys = [
+            self.content_key(inc.get("location"), inc.get("cause"), inc.get("reported"))
+            for inc in incidents
+        ]
+        existing_keys = self._existing_content_keys(keys)
+
+        out: List[Dict] = []
+        seen_in_batch: set = set()
+        for inc, key in zip(incidents, keys):
+            if str(inc.get("incident_number") or "") in existing:
+                continue
+            if key in existing_keys or key in seen_in_batch:
+                continue
+            seen_in_batch.add(key)
+            out.append(inc)
+        return out
 
     def get_location_coords_map(self) -> Dict[str, tuple]:
         """Return {location: (lat, lon)} for all incidents with valid coordinates.
