@@ -246,6 +246,76 @@ class StateStore:
         )
         self.conn.commit()
 
+    def count_unlocated_incidents(self) -> int:
+        """Total incidents still waiting for coordinates (the geocode queue)."""
+        row = self.conn.execute(
+            "SELECT COUNT(1) FROM incidents WHERE latitude IS NULL OR longitude IS NULL"
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def retire_unlocated_incidents(self, incident_numbers: Sequence[str], attempts: int = 3) -> None:
+        """Take incidents out of the retry queue without spending API budget.
+
+        Used for incidents whose address is blacklisted in the negative cache:
+        leaving them in the queue would clog the retry batch every cycle and
+        starve incidents behind them.
+        """
+        nums = [n for n in incident_numbers if n]
+        if not nums:
+            return
+        placeholders = ",".join("?" for _ in nums)
+        self.conn.execute(
+            f"""
+            UPDATE incidents
+            SET geocode_attempts = MAX(COALESCE(geocode_attempts, 0), ?)
+            WHERE incident_number IN ({placeholders})
+              AND (latitude IS NULL OR longitude IS NULL)
+            """,
+            [int(attempts)] + nums,
+        )
+        self.conn.commit()
+
+    def seed_negative_cache_from_history(self) -> int:
+        """One-time migration: blacklist addresses that already failed 3+ times.
+
+        Incidents stored before the address-level negative cache existed carry
+        their failure history only in per-incident geocode_attempts. Without
+        this seeding, a large historical backlog re-burns API budget on
+        addresses that were already proven unresolvable.
+        """
+        if self._meta_get("negcache_seed_v1"):
+            return 0
+        from lafayette911.fetch_incidents import normalize_geocode_key
+
+        rows = self.conn.execute(
+            """
+            SELECT location, MAX(COALESCE(geocode_attempts, 0))
+            FROM incidents
+            WHERE (latitude IS NULL OR longitude IS NULL)
+              AND location IS NOT NULL AND location != ''
+              AND COALESCE(geocode_attempts, 0) >= 3
+            GROUP BY location
+            """
+        ).fetchall()
+        now = int(time.time())
+        seeded = 0
+        for location, attempts in rows:
+            key = normalize_geocode_key(location)
+            if not key:
+                continue
+            self.conn.execute(
+                """
+                INSERT INTO geocode_failed_locations (location_key, attempts, last_attempt_epoch)
+                VALUES (?, ?, ?)
+                ON CONFLICT(location_key) DO NOTHING
+                """,
+                (key, int(attempts), now),
+            )
+            seeded += 1
+        self._meta_set("negcache_seed_v1", "1")
+        self.conn.commit()
+        return seeded
+
     def get_remaining_geocode_requests(self, max_requests_per_24h: int = 75) -> int:
         """Return remaining Google geocode requests allowed in the rolling 24h window."""
         now = int(time.time())
