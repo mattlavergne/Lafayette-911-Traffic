@@ -135,6 +135,44 @@ class CsvUnlocatedTests(unittest.TestCase):
             self.assertIn("306 ERASTE LANDRY RD", datajs)
             self.assertIn("RESCUE SQUAD NEEDED", datajs)
 
+    def test_csv_render_survives_empty_cells_anywhere(self):
+        """Regression: pandas string-dtype columns yield pd.NA for empty CSV
+        cells, and pd.NA in boolean context raises "boolean value of NA is
+        ambiguous" — which crashed the whole render cycle in production.
+        The observed crash site was _normalize_location(pd.NA) inside
+        _collapse_traffic_control, i.e. a LOCATED row with an empty location
+        cell, but every text column must tolerate empty cells."""
+        from lafayette911.map_render import create_map_from_csv
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            map_path = os.path.join(tmpdir, "traffic_map.html")
+            datajs_path = os.path.join(tmpdir, "traffic_data.js")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "location,cause,reported,assisting,incident_number,latitude,longitude\n"
+                )
+                handle.write(
+                    "W CONGRESS ST,ACCIDENT,01/15/2026 8:30 AM,LPD,INC1,30.2241,-92.0198\n"
+                )
+                # LOCATED rows with empty text cells (the production crash):
+                handle.write(",TRAFFIC CONTROL,01/15/2026 9:30 AM,LPD,INC2,30.23,-92.03\n")
+                handle.write("MOSS ST,,01/15/2026 10:00 AM,,INC3,30.22,-92.02\n")
+                # Unlocated rows with empty cells.
+                handle.write("PINHOOK RD,STALLED VEHICLE,01/16/2026 9:00 AM,,INC4,,\n")
+                handle.write("VEROT SCHOOL RD,ACCIDENT,,,INC5,,\n")
+
+            create_map_from_csv(csv_path, map_path, datajs_path, os.path.join(tmpdir, "osm"))
+
+            with open(datajs_path, encoding="utf-8") as handle:
+                datajs = handle.read()
+            self.assertIn("window.INCIDENTS_UNLOCATED_COUNT=2", datajs)
+            self.assertIn("PINHOOK RD", datajs)
+            self.assertIn("VEROT SCHOOL RD", datajs)
+            self.assertIn("MOSS ST", datajs)
+            # pd.NA must never leak into the page as the string "<NA>".
+            self.assertNotIn("<NA>", datajs)
+
 
 class ConfigDefaultTests(unittest.TestCase):
     def test_geocode_defaults(self):
