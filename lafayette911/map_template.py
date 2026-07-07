@@ -54,13 +54,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   :root {
     --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    --radius: 18px;
-    --radius-sm: 11px;
+    --radius: 26px;
+    --radius-sm: 14px;
 
     --bg: #f5f6f8;
-    --panel: rgba(255, 255, 255, 0.86);
+    --panel: rgba(255, 255, 255, 0.68);
     --panel-solid: #ffffff;
-    --panel-border: rgba(15, 23, 42, 0.10);
+    --panel-border: rgba(255, 255, 255, 0.55);
+    --edge: inset 0 1px 0 rgba(255, 255, 255, 0.85), inset 0 0 0 0.5px rgba(255, 255, 255, 0.35);
+    --sheen: linear-gradient(155deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.06) 42%, transparent 60%);
+    --glass-blur: blur(30px) saturate(1.7);
     --hairline: rgba(15, 23, 42, 0.07);
     --text: #0f172a;
     --text-2: rgba(15, 23, 42, 0.62);
@@ -80,9 +83,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   html[data-theme="dark"] {
     --bg: #0b1120;
-    --panel: rgba(17, 24, 39, 0.82);
+    --panel: rgba(15, 23, 42, 0.60);
     --panel-solid: #111827;
-    --panel-border: rgba(148, 163, 184, 0.16);
+    --panel-border: rgba(148, 163, 184, 0.22);
+    --edge: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 0 0 0.5px rgba(255, 255, 255, 0.05);
+    --sheen: linear-gradient(155deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.02) 42%, transparent 60%);
     --hairline: rgba(148, 163, 184, 0.10);
     --text: #e5e9f0;
     --text-2: rgba(226, 232, 240, 0.64);
@@ -124,10 +129,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     background: var(--panel) !important;
     color: var(--text) !important;
     border: none !important;
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
   }
-  .leaflet-bar { border: 1px solid var(--panel-border) !important; border-radius: 12px !important; overflow: hidden; box-shadow: var(--shadow-sm) !important; }
+  .leaflet-bar { border: 1px solid var(--panel-border) !important; border-radius: 16px !important; overflow: hidden; box-shadow: var(--shadow-sm), var(--edge) !important; }
   .leaflet-control-attribution {
     background: var(--panel) !important;
     color: var(--text-3) !important;
@@ -143,13 +148,19 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-color: var(--panel-border) !important;
   }
   .leaflet-popup-content-wrapper {
-    background: var(--panel-solid);
+    background: var(--panel);
     color: var(--text);
-    border-radius: 14px;
+    border-radius: 20px;
     border: 1px solid var(--panel-border);
-    box-shadow: var(--shadow);
+    box-shadow: var(--shadow), var(--edge);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
   }
-  .leaflet-popup-tip { background: var(--panel-solid); border: 1px solid var(--panel-border); }
+  .leaflet-popup-tip {
+    background: var(--panel); border: 1px solid var(--panel-border);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+  }
   .leaflet-popup-content { margin: 12px 14px; font-family: var(--font); font-size: 13px; line-height: 1.45; }
   .leaflet-popup-close-button { color: var(--text-3) !important; font-size: 18px !important; padding: 6px 8px 0 0 !important; }
   .leaflet-container { font-family: var(--font); }
@@ -242,12 +253,18 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    backdrop-filter: blur(22px) saturate(1.35);
-    -webkit-backdrop-filter: blur(22px) saturate(1.35);
+    box-shadow: var(--shadow), var(--edge);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     overflow: hidden;
     font-size: 13px;
   }
+  /* refractive sheen sweeping the top of the glass slab */
+  #sidebar::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    background: var(--sheen); pointer-events: none; z-index: 0;
+  }
+  #sidebar > * { position: relative; z-index: 1; }
   #sbHandle { display: none; }
 
   .sb-header { display: flex; align-items: center; gap: 10px; padding: 14px 14px 10px 16px; }
@@ -263,12 +280,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .brand-sub { font-size: 11px; color: var(--text-2); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sb-actions { display: flex; gap: 6px; }
   .icon-btn {
-    width: 32px; height: 32px; border-radius: 10px; border: 1px solid var(--panel-border);
+    width: 34px; height: 34px; border-radius: 999px; border: 1px solid var(--panel-border);
     background: var(--chip); color: var(--text); cursor: pointer;
     display: flex; align-items: center; justify-content: center; padding: 0;
-    transition: background 0.13s ease, transform 0.1s ease;
+    box-shadow: var(--edge);
+    transition: background 0.13s ease, transform 0.12s ease, box-shadow 0.12s ease;
   }
-  .icon-btn:hover { background: var(--chip-hover); }
+  .icon-btn:hover { background: var(--chip-hover); transform: translateY(-1px); box-shadow: var(--edge), 0 4px 10px rgba(0,0,0,0.12); }
   .icon-btn:active { transform: scale(0.94); }
   .icon-btn svg { width: 16px; height: 16px; }
 
@@ -300,7 +318,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   .stat-tile {
     background: var(--chip); border-radius: var(--radius-sm);
-    padding: 8px 6px 7px 6px; text-align: center; min-width: 0;
+    padding: 9px 6px 8px 6px; text-align: center; min-width: 0;
+    box-shadow: var(--edge);
     transition: background 0.15s ease;
   }
   .stat-tile b { display: block; font-size: 17px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
@@ -313,28 +332,32 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   .legend-chip {
     display: inline-flex; align-items: center; gap: 5px;
-    font-size: 11px; font-weight: 600; padding: 4px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
     border: 1px solid var(--panel-border); background: var(--chip); color: var(--text-2);
-    cursor: pointer; user-select: none;
-    transition: background 0.13s ease, opacity 0.13s ease, border-color 0.13s ease;
+    cursor: pointer; user-select: none; box-shadow: var(--edge);
+    transition: background 0.13s ease, opacity 0.13s ease, border-color 0.13s ease, transform 0.12s ease;
   }
   .legend-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cat); flex: none; }
   .legend-chip .n { font-variant-numeric: tabular-nums; color: var(--text-3); font-weight: 500; }
   .legend-chip.off { opacity: 0.38; }
-  .legend-chip:hover { background: var(--chip-hover); }
+  .legend-chip:hover { background: var(--chip-hover); transform: translateY(-1px); }
   .legend-chip.on { border-color: color-mix(in srgb, var(--cat) 55%, transparent); color: var(--text); }
 
   .tabs {
-    display: flex; gap: 4px; padding: 0 14px 10px 14px;
+    display: flex; gap: 4px; padding: 4px; margin: 0 14px 10px 14px;
+    background: var(--chip); border-radius: 999px; box-shadow: var(--edge);
   }
   .tab {
     flex: 1; text-align: center; font-size: 12.5px; font-weight: 600; color: var(--text-2);
-    padding: 7px 4px; border-radius: 10px; border: none; background: transparent; cursor: pointer;
+    padding: 7px 4px; border-radius: 999px; border: none; background: transparent; cursor: pointer;
     font-family: var(--font); position: relative;
-    transition: background 0.13s ease, color 0.13s ease;
+    transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
   }
-  .tab:hover { background: var(--chip); }
-  .tab.active { background: var(--accent-soft); color: var(--accent); }
+  .tab:hover { background: var(--chip-hover); }
+  .tab.active {
+    background: var(--panel-solid); color: var(--accent);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.35);
+  }
   .tab .badge {
     position: absolute; top: 2px; right: 6px;
     min-width: 15px; height: 15px; border-radius: 999px; padding: 0 4px;
@@ -409,8 +432,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     padding: 5px 11px; border-radius: 999px; border: 1px solid var(--panel-border);
     background: var(--chip); cursor: pointer; transition: all 0.13s ease;
   }
-  .range-chip:hover { background: var(--chip-hover); }
-  .range-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .range-chip:hover { background: var(--chip-hover); transform: translateY(-1px); }
+  .range-chip.active {
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 82%, #fff), var(--accent));
+    border-color: transparent; color: #fff;
+    box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 45%, transparent), inset 0 1px 0 rgba(255,255,255,0.45);
+  }
+  .range-chip { transition: all 0.15s ease; }
 
   .search-wrap { position: relative; display: flex; align-items: center; margin-bottom: 8px; }
   .search-icon { position: absolute; left: 10px; color: var(--text-3); display: flex; pointer-events: none; }
@@ -545,9 +573,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #weatherChip {
     position: absolute; top: 14px; right: 14px; z-index: 1150;
     background: var(--panel); border: 1px solid var(--panel-border);
-    border-radius: 999px; box-shadow: var(--shadow-sm);
-    backdrop-filter: blur(18px) saturate(1.3);
-    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+    border-radius: 999px; box-shadow: var(--shadow-sm), var(--edge);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     font-size: 12.5px; font-weight: 600; color: var(--text);
     padding: 7px 13px; cursor: pointer; user-select: none;
     display: flex; align-items: center; gap: 7px; max-width: min(70vw, 320px);
@@ -560,9 +588,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     position: absolute; top: 54px; right: 14px; z-index: 1150;
     width: min(290px, calc(100vw - 28px));
     background: var(--panel); border: 1px solid var(--panel-border);
-    border-radius: 14px; box-shadow: var(--shadow);
-    backdrop-filter: blur(20px) saturate(1.3);
-    -webkit-backdrop-filter: blur(20px) saturate(1.3);
+    border-radius: 18px; box-shadow: var(--shadow), var(--edge);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     padding: 12px 14px; font-size: 12.5px; display: none;
   }
   #weatherPanel.open { display: block; }
@@ -576,9 +604,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* ── toast / overlays ─────────────────────────────────────────────── */
   #toast {
     position: fixed; bottom: 26px; left: 50%; transform: translate(-50%, 18px);
-    background: var(--panel-solid); color: var(--text); border: 1px solid var(--panel-border);
-    border-radius: 999px; padding: 9px 18px; font-size: 12.5px; font-weight: 600;
-    box-shadow: var(--shadow); z-index: 3000; opacity: 0; pointer-events: none;
+    background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 999px; padding: 10px 20px; font-size: 12.5px; font-weight: 600;
+    box-shadow: var(--shadow), var(--edge); z-index: 3000; opacity: 0; pointer-events: none;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     transition: opacity 0.22s ease, transform 0.22s ease;
   }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
@@ -602,6 +632,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     .leaflet-bottom.leaflet-left { left: 430px; }
   }
 
+  /* Graceful fallback when backdrop-filter is unavailable: solid surfaces. */
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    #sidebar, #weatherChip, #weatherPanel, #toast,
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+      background: var(--panel-solid);
+    }
+  }
+
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: var(--bar-track); border-radius: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -614,7 +652,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   @media (max-width: 700px) {
     #sidebar {
       top: auto; left: 0; right: 0; bottom: 0; width: 100%;
-      border-radius: 20px 20px 0 0;
+      border-radius: 28px 28px 0 0;
       max-height: 88dvh;
       height: 236px;
       transition: height 0.3s cubic-bezier(0.32, 0.72, 0, 1);

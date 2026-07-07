@@ -58,6 +58,8 @@ class Config:
     geocode_retry_unlocated_enabled: bool
     geocode_failure_max_attempts: int
     geocode_failure_retry_days: float
+    geocode_retry_batch: int
+    geocode_retry_reserve: int
     tracemalloc_interval: int
     tracemalloc_top: int
     debug_memory: bool
@@ -120,6 +122,8 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         geocode_retry_unlocated_enabled=_env_bool("LAF911_GEOCODE_RETRY_UNLOCATED_ENABLED", True),
         geocode_failure_max_attempts=_env_int("LAF911_GEOCODE_FAILURE_MAX_ATTEMPTS", 3),
         geocode_failure_retry_days=_env_float("LAF911_GEOCODE_FAILURE_RETRY_DAYS", 7.0),
+        geocode_retry_batch=_env_int("LAF911_GEOCODE_RETRY_BATCH", 25),
+        geocode_retry_reserve=_env_int("LAF911_GEOCODE_RETRY_RESERVE", 25),
         tracemalloc_interval=_env_int("LAF911_TRACEMALLOC_INTERVAL", 0),
         tracemalloc_top=_env_int("LAF911_TRACEMALLOC_TOP", 10),
         debug_memory=_env_bool("LAF911_DEBUG_MEMORY", False),
@@ -625,37 +629,66 @@ def _geocode_unlocated_incidents(
     location_cache: dict,
     skip_keys: set,
 ) -> bool:
-    """Re-geocode incidents that were previously stored without coordinates.
+    """Drain the queue of incidents stored without coordinates, fail-safe.
 
-    Only retries incidents with fewer than 3 prior failed attempts so
-    permanently-unresolvable addresses don't burn API quota indefinitely.
-    Uses *location_cache* (address → coords) to resolve already-seen
-    locations without an API call.
+    Guarantees:
+      - addresses in the persistent negative cache are never sent to Google,
+        and their queued incidents are retired so they don't clog the batch;
+      - a budget reserve is kept for brand-new incidents, so the backlog only
+        spends leftover budget and simply waits when there is none;
+      - an incident's retry lifetime (geocode_attempts) is consumed only by
+        real API attempts — budget starvation never retires anything.
 
     Returns True if any incidents gained coordinates (caller should re-render).
     """
     if not config.google_api_key:
         return False
 
-    unlocated = store.get_unlocated_incidents(limit=100)
+    unlocated = store.get_unlocated_incidents(limit=config.geocode_retry_batch)
     if not unlocated:
         return False
 
+    # Incidents at blacklisted addresses can never geocode; retire them from
+    # the queue so they stop occupying batch slots and blocking the incidents
+    # behind them. Their addresses stay in the negative cache and get another
+    # chance when the blacklist entry expires.
+    blacklisted = [
+        inc for inc in unlocated
+        if normalize_geocode_key(inc.get("location", "")) in skip_keys
+    ]
+    if blacklisted:
+        store.retire_unlocated_incidents(
+            [inc["incident_number"] for inc in blacklisted],
+            attempts=config.geocode_failure_max_attempts,
+        )
+        log_event(logger, "geocode_retry_retired", count=len(blacklisted), reason="blacklisted_address")
+
     needed = estimate_needed_geocode_requests(unlocated, location_cache, skip_keys=skip_keys)
-    allowed = store.reserve_geocode_requests(
-        requested=needed,
-        max_requests_per_24h=config.geocode_max_requests_per_24h,
-    )
-    if needed > 0 and allowed <= 0:
+
+    # The backlog only spends what the day's budget can spare: a reserve is
+    # kept for brand-new incidents so a large historical queue can never
+    # starve live traffic. Queued incidents simply wait for headroom.
+    remaining = store.get_remaining_geocode_requests(config.geocode_max_requests_per_24h)
+    spendable = max(0, remaining - max(0, config.geocode_retry_reserve))
+    requested = min(needed, spendable)
+    if needed > 0 and requested <= 0:
         log_event(
             logger,
-            "geocode_budget_exhausted",
-            target="unlocated",
-            requested=needed,
-            max_requests_per_24h=config.geocode_max_requests_per_24h,
+            "geocode_retry_deferred",
+            queued=store.count_unlocated_incidents(),
+            needed=needed,
+            remaining_24h=remaining,
+            reserve=config.geocode_retry_reserve,
         )
+        # Nothing is attempted and no attempt counters move: the queue is
+        # intact and will drain when the rolling window frees budget.
         return False
-    # needed == 0 still proceeds: cache hits are applied without API calls.
+
+    allowed = store.reserve_geocode_requests(
+        requested=requested,
+        max_requests_per_24h=config.geocode_max_requests_per_24h,
+    )
+    # requested == 0 with needed == 0 still proceeds: cache hits are free.
 
     attempted_keys: set = set()
     geocode_incidents(
@@ -675,14 +708,26 @@ def _geocode_unlocated_incidents(
         log_event(logger, "unlocated_geocoded", count=updated)
         store.update_csv_coords(unlocated)
 
-    # Increment attempt counter for incidents that still have no coordinates
-    # so they are eventually retired from the retry queue.
+    # Count an attempt ONLY for incidents whose address was actually sent to
+    # Google and still failed. Incidents the budget never reached keep their
+    # full retry lifetime — they are queued, not punished.
     still_missing = [
         inc["incident_number"]
         for inc in unlocated
-        if inc.get("latitude") is None or inc.get("longitude") is None
+        if (inc.get("latitude") is None or inc.get("longitude") is None)
+        and normalize_geocode_key(inc.get("location", "")) in attempted_keys
     ]
     store.increment_geocode_attempts(still_missing)
+
+    if attempted_keys or updated:
+        log_event(
+            logger,
+            "geocode_retry_pass",
+            batch=len(unlocated),
+            attempted=len(attempted_keys),
+            located=updated,
+            queued=store.count_unlocated_incidents(),
+        )
 
     return updated > 0
 
@@ -846,11 +891,18 @@ def main(base_dir: Optional[str] = None) -> int:
     # immediately "exhausted" budget after a redeploy is explainable from the
     # logs (the counter lives in SQLite and survives restarts by design).
     if config.google_api_key:
+        # One-time: import failure history recorded before the address-level
+        # negative cache existed, so a large legacy backlog of known-bad
+        # addresses never re-burns budget.
+        seeded = store.seed_negative_cache_from_history()
+        if seeded:
+            log_event(logger, "geocode_negative_cache_seeded", addresses=seeded)
         log_event(
             logger,
             "geocode_budget_status",
             remaining_24h=store.get_remaining_geocode_requests(config.geocode_max_requests_per_24h),
             max_requests_per_24h=config.geocode_max_requests_per_24h,
+            queued_unlocated=store.count_unlocated_incidents(),
             skipped_bad_addresses=len(
                 store.get_skippable_geocode_failures(
                     max_attempts=config.geocode_failure_max_attempts,
