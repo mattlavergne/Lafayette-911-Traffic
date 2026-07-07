@@ -1073,7 +1073,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const text = String(value).trim();
     if (!text) return "";
     const lower = text.toLowerCase();
-    if (lower === "nan" || lower === "none" || lower === "null" || lower === "undefined") return "";
+    if (lower === "nan" || lower === "none" || lower === "null" || lower === "undefined" || lower === "<na>") return "";
     return text;
   }
 
