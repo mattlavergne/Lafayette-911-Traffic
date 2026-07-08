@@ -316,15 +316,49 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
     padding: 0 14px 10px 14px;
   }
+  /* Stat tiles double as the time-range filter: each shows a live count and
+     applies that range when tapped. A top accent rail + label mark them as
+     interactive; the active range gets a filled accent border. */
   .stat-tile {
-    background: var(--chip); border-radius: var(--radius-sm);
-    padding: 9px 6px 8px 6px; text-align: center; min-width: 0;
-    box-shadow: var(--edge);
-    transition: background 0.15s ease;
+    position: relative; background: var(--chip); border-radius: var(--radius-sm);
+    padding: 10px 6px 8px 6px; text-align: center; min-width: 0;
+    box-shadow: var(--edge); border: 1px solid transparent; cursor: pointer;
+    font-family: var(--font); color: inherit; overflow: hidden;
+    transition: background 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
   }
+  .stat-tile::before {
+    content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 0; height: 2.5px; border-radius: 0 0 3px 3px; background: var(--accent);
+    transition: width 0.2s ease;
+  }
+  .stat-tile:hover { background: var(--chip-hover); transform: translateY(-1px); }
+  .stat-tile:hover::before { width: 40%; }
+  .stat-tile.active { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
+  .stat-tile.active::before { width: 100%; }
   .stat-tile b { display: block; font-size: 17px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
   .stat-tile span { display: block; font-size: 10px; color: var(--text-3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 1px; }
+  .stat-tile.active span { color: var(--accent); }
   .stat-tile.hot b { color: var(--bad); }
+  .stat-tile.active.hot { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+
+  /* Collapsible filter sections */
+  .acc .acc-head {
+    width: 100%; display: flex; align-items: center; gap: 8px;
+    padding: 11px 2px; background: none; border: none; cursor: pointer;
+    font-family: var(--font); -webkit-tap-highlight-color: transparent;
+  }
+  .acc .acc-head .section-title { margin: 0; flex: 1; text-align: left; }
+  .acc .acc-chev { color: var(--text-3); font-size: 16px; line-height: 1; transition: transform 0.2s ease; }
+  .acc.open .acc-chev { transform: rotate(90deg); }
+  .acc .acc-badge {
+    min-width: 16px; height: 16px; padding: 0 5px; border-radius: 999px;
+    background: var(--accent); color: #fff; font-size: 9.5px; font-weight: 700;
+    display: none; align-items: center; justify-content: center;
+  }
+  .acc .acc-badge.show { display: inline-flex; }
+  .acc .acc-body { display: none; padding-bottom: 10px; }
+  .acc.open .acc-body { display: block; }
+  .acc .acc-head:hover .section-title { color: var(--text); }
 
   .legend-chips {
     display: flex; flex-wrap: wrap; gap: 5px;
@@ -707,6 +741,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     #sidebar:not(.expanded) .kbd-hint { display: none; }
     #sidebar:not(.expanded) .sb-footer { border-top: none; padding-top: 2px; }
     .stat-tiles { padding-bottom: 6px; }
+    .stat-tile { padding: 12px 6px 10px 6px; }
+    .acc .acc-head { padding: 14px 2px; }
     select, .check { min-height: 42px; font-size: 14px; }
     .check input { width: 19px; height: 19px; }
     #roadSearch { font-size: 16px; min-height: 44px; }
@@ -766,11 +802,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <div id="alertBanner" role="status"></div>
 
-  <div class="stat-tiles" aria-label="Incident counts">
-    <div class="stat-tile" id="tileToday"><b>–</b><span>Today</span></div>
-    <div class="stat-tile"><b id="tileWeekVal">–</b><span>7 days</span></div>
-    <div class="stat-tile"><b id="tileMonthVal">–</b><span>30 days</span></div>
-    <div class="stat-tile"><b id="tileTotalVal">–</b><span>All time</span></div>
+  <div class="stat-tiles" id="rangeTiles" role="group" aria-label="Filter by time range — each tile shows its count and applies that range">
+    <button class="stat-tile" id="tileToday" data-range="today" type="button"><b>–</b><span>Today</span></button>
+    <button class="stat-tile" data-range="7d" type="button"><b id="tileWeekVal">–</b><span>7 days</span></button>
+    <button class="stat-tile" data-range="30d" type="button"><b id="tileMonthVal">–</b><span>30 days</span></button>
+    <button class="stat-tile active" data-range="" type="button"><b id="tileTotalVal">–</b><span>All time</span></button>
   </div>
 
   <div class="legend-chips" id="legendChips" aria-label="Incident categories (tap to toggle)"></div>
@@ -797,193 +833,219 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
           <input type="text" id="roadSearch" placeholder="Search roads — typos OK" autocomplete="off" spellcheck="false" aria-label="Filter by road name">
           <button class="search-clear" id="roadSearchClear" type="button" aria-label="Clear road search">✕</button>
         </div>
+      </div>
 
-        <div class="range-chips" id="rangeChips" aria-label="Quick time range">
-          <button class="range-chip active" data-range="" type="button">All time</button>
-          <button class="range-chip" data-range="today" type="button">Today</button>
-          <button class="range-chip" data-range="24h" type="button">24 h</button>
-          <button class="range-chip" data-range="7d" type="button">7 days</button>
-          <button class="range-chip" data-range="30d" type="button">30 days</button>
+      <!-- Collapsible sections keep the tab uncluttered; each header shows a
+           badge with how many filters are active inside when collapsed. -->
+      <div class="section acc open" data-acc="type" data-filter-acc>
+        <button class="acc-head" type="button"><span class="section-title">Incident type</span><span class="acc-badge"></span><span class="acc-chev">›</span></button>
+        <div class="acc-body">
+          <div class="row row-grid">
+            <label class="field">Group
+              <select id="causeGroupSelect"><option value="__ALL__">All groups</option></select>
+            </label>
+            <label class="field">Type
+              <select id="causeSelect"><option value="__ALL__">All types</option></select>
+            </label>
+          </div>
+          <div class="row">
+            <label class="field" style="flex:1">Responding agency
+              <select id="assistSelect"><option value="__ALL__">Any agency</option></select>
+            </label>
+          </div>
         </div>
       </div>
 
-      <div class="section">
-        <div class="section-title">Incident type</div>
-        <div class="row row-grid">
-          <label class="field">Group
-            <select id="causeGroupSelect"><option value="__ALL__">All groups</option></select>
-          </label>
-          <label class="field">Type
-            <select id="causeSelect"><option value="__ALL__">All types</option></select>
-          </label>
+      <div class="section acc" data-acc="datetime" data-filter-acc>
+        <button class="acc-head" type="button"><span class="section-title">Date &amp; time</span><span class="acc-badge"></span><span class="acc-chev">›</span></button>
+        <div class="acc-body">
+          <div class="row row-checks">
+            <label class="check"><input type="checkbox" id="chkRushHour"> Rush hour only</label>
+            <label class="check"><input type="checkbox" id="chkSchoolDay"> School days only</label>
+            <label class="check"><input type="checkbox" id="chkHoliday"> Holidays only</label>
+          </div>
+          <div class="row" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
+            <label class="field">Month
+              <select id="monthSelect">
+                <option value="">All</option>
+                <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
+                <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
+                <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
+                <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+              </select>
+            </label>
+            <label class="field">Day
+              <select id="daySelect">__DAY_OPTIONS__</select>
+            </label>
+            <label class="field">Year
+              <select id="yearSelect">__YEAR_OPTIONS__</select>
+            </label>
+          </div>
+          <div class="row row-grid">
+            <label class="field">Day of week
+              <select id="dowSelect">
+                <option value="all">All days</option>
+                <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option>
+                <option value="4">Thursday</option><option value="5">Friday</option>
+                <option value="6">Saturday</option><option value="0">Sunday</option>
+              </select>
+            </label>
+            <label class="field">Day type
+              <select id="dayTypeSelect">
+                <option value="all">All</option>
+                <option value="weekday">Weekdays</option>
+                <option value="weekend">Weekends</option>
+              </select>
+            </label>
+          </div>
+          <div class="row row-grid">
+            <label class="field">Time of day
+              <select id="timeBlockSelect">
+                <option value="all">All hours</option>
+                <option value="morning">Morning (6–10 am)</option>
+                <option value="midday">Midday (10 am–3 pm)</option>
+                <option value="evening">Evening (3–7 pm)</option>
+                <option value="night">Night (7 pm–12 am)</option>
+                <option value="latenight">Late night (12–6 am)</option>
+              </select>
+            </label>
+            <label class="field">Light
+              <select id="lightSelect">
+                <option value="any">Any</option>
+                <option value="day">Daylight</option>
+                <option value="dark">After dark</option>
+              </select>
+            </label>
+          </div>
         </div>
       </div>
 
-      <div class="section">
-        <div class="section-title">Date &amp; time</div>
-        <div class="row row-checks">
-          <label class="check"><input type="checkbox" id="chkRushHour"> Rush hour only</label>
-          <label class="check"><input type="checkbox" id="chkSchoolDay"> School days only</label>
-        </div>
-        <div class="row" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
-          <label class="field">Month
-            <select id="monthSelect">
-              <option value="">All</option>
-              <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
-              <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
-              <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
-              <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
-            </select>
-          </label>
-          <label class="field">Day
-            <select id="daySelect">__DAY_OPTIONS__</select>
-          </label>
-          <label class="field">Year
-            <select id="yearSelect">__YEAR_OPTIONS__</select>
-          </label>
-        </div>
-        <div class="row row-grid">
-          <label class="field">Day of week
-            <select id="dowSelect">
-              <option value="all">All days</option>
-              <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option>
-              <option value="4">Thursday</option><option value="5">Friday</option>
-              <option value="6">Saturday</option><option value="0">Sunday</option>
-            </select>
-          </label>
-          <label class="field">Day type
-            <select id="dayTypeSelect">
-              <option value="all">All</option>
-              <option value="weekday">Weekdays</option>
-              <option value="weekend">Weekends</option>
-            </select>
-          </label>
-        </div>
-        <div class="row row-grid">
-          <label class="field">Time of day
-            <select id="timeBlockSelect">
-              <option value="all">All hours</option>
-              <option value="morning">Morning (6–10 am)</option>
-              <option value="midday">Midday (10 am–3 pm)</option>
-              <option value="evening">Evening (3–7 pm)</option>
-              <option value="night">Night (7 pm–12 am)</option>
-              <option value="latenight">Late night (12–6 am)</option>
-            </select>
-          </label>
-          <label class="field">Road type
-            <select id="roadTypeSelect">
-              <option value="any">Any road</option>
-              <option value="motorway">Interstate / motorway</option>
-              <option value="trunk">US highway (trunk)</option>
-              <option value="primary">Primary arterial</option>
-              <option value="secondary">Secondary / tertiary</option>
-              <option value="residential">Residential / local</option>
-            </select>
-          </label>
+      <div class="section acc" data-acc="road" data-filter-acc>
+        <button class="acc-head" type="button"><span class="section-title">Road</span><span class="acc-badge"></span><span class="acc-chev">›</span></button>
+        <div class="acc-body">
+          <div class="row">
+            <label class="field" style="flex:1">Road type
+              <select id="roadTypeSelect">
+                <option value="any">Any road</option>
+                <option value="motorway">Interstate / motorway</option>
+                <option value="trunk">US highway (trunk)</option>
+                <option value="primary">Primary arterial</option>
+                <option value="secondary">Secondary / tertiary</option>
+                <option value="residential">Residential / local</option>
+              </select>
+            </label>
+          </div>
         </div>
       </div>
 
-      <div class="section">
-        <div class="section-title">Weather at time of incident</div>
-        <div class="row row-checks">
-          <label class="check"><input type="checkbox" id="chkWeatherOnly"> Has weather data</label>
-        </div>
-        <div class="row row-grid">
-          <label class="field">Temperature
-            <select id="tempBand">
-              <option value="any">Any</option>
-              <option value="cold">Cold (≤50°F)</option>
-              <option value="mild">Mild (50–70°F)</option>
-              <option value="warm">Warm (70–85°F)</option>
-              <option value="hot">Hot (≥85°F)</option>
-            </select>
-          </label>
-          <label class="field">Precip chance
-            <select id="precipBand">
-              <option value="any">Any</option>
-              <option value="low">Low (&lt;20%)</option>
-              <option value="med">Medium (20–60%)</option>
-              <option value="high">High (≥60%)</option>
-            </select>
-          </label>
-        </div>
-        <div class="row row-grid">
-          <label class="field">Wind
-            <select id="windBand">
-              <option value="any">Any</option>
-              <option value="calm">Calm (&lt;10 mph)</option>
-              <option value="breezy">Breezy (10–20 mph)</option>
-              <option value="windy">Windy (≥20 mph)</option>
-            </select>
-          </label>
-          <label class="field">Visibility
-            <select id="visBand">
-              <option value="any">Any</option>
-              <option value="low">Low (&lt;3 mi)</option>
-              <option value="hazy">Hazy (3–10 mi)</option>
-              <option value="clear">Clear (≥10 mi)</option>
-            </select>
-          </label>
-        </div>
-        <div class="row row-grid">
-          <label class="field">Liquid precip
-            <select id="precipAmountBand">
-              <option value="any">Any</option>
-              <option value="none">None (0 in)</option>
-              <option value="light">Light (≤0.10 in)</option>
-              <option value="moderate">Moderate (0.10–0.50 in)</option>
-              <option value="heavy">Heavy (≥0.50 in)</option>
-            </select>
-          </label>
-          <label class="field">Cloud cover
-            <select id="cloudBand">
-              <option value="any">Any</option>
-              <option value="clear">Mostly clear (&lt;25%)</option>
-              <option value="partly">Partly cloudy (25–70%)</option>
-              <option value="overcast">Overcast (≥70%)</option>
-            </select>
-          </label>
-        </div>
-        <div class="row-note">Weather filters ignore incidents without weather unless a specific condition is chosen.</div>
-      </div>
-
-      <div class="section">
-        <div class="section-title">Active NWS alerts at report time</div>
-        <div class="row row-checks">
-          <label class="check"><input type="checkbox" id="chkFloodWarning"> Flash flood</label>
-          <label class="check"><input type="checkbox" id="chkThunderstormWarning"> Severe storm</label>
-          <label class="check"><input type="checkbox" id="chkTornadoWatch"> Tornado watch</label>
+      <div class="section acc" data-acc="weather" data-filter-acc>
+        <button class="acc-head" type="button"><span class="section-title">Conditions at time of incident</span><span class="acc-badge"></span><span class="acc-chev">›</span></button>
+        <div class="acc-body">
+          <div class="row row-checks">
+            <label class="check"><input type="checkbox" id="chkWeatherOnly"> Has weather data</label>
+          </div>
+          <div class="row row-grid">
+            <label class="field">Temperature
+              <select id="tempBand">
+                <option value="any">Any</option>
+                <option value="cold">Cold (≤50°F)</option>
+                <option value="mild">Mild (50–70°F)</option>
+                <option value="warm">Warm (70–85°F)</option>
+                <option value="hot">Hot (≥85°F)</option>
+              </select>
+            </label>
+            <label class="field">Precip chance
+              <select id="precipBand">
+                <option value="any">Any</option>
+                <option value="low">Low (&lt;20%)</option>
+                <option value="med">Medium (20–60%)</option>
+                <option value="high">High (≥60%)</option>
+              </select>
+            </label>
+          </div>
+          <div class="row row-grid">
+            <label class="field">Wind
+              <select id="windBand">
+                <option value="any">Any</option>
+                <option value="calm">Calm (&lt;10 mph)</option>
+                <option value="breezy">Breezy (10–20 mph)</option>
+                <option value="windy">Windy (≥20 mph)</option>
+              </select>
+            </label>
+            <label class="field">Visibility
+              <select id="visBand">
+                <option value="any">Any</option>
+                <option value="low">Low (&lt;3 mi)</option>
+                <option value="hazy">Hazy (3–10 mi)</option>
+                <option value="clear">Clear (≥10 mi)</option>
+              </select>
+            </label>
+          </div>
+          <div class="row row-grid">
+            <label class="field">Liquid precip
+              <select id="precipAmountBand">
+                <option value="any">Any</option>
+                <option value="none">None (0 in)</option>
+                <option value="light">Light (≤0.10 in)</option>
+                <option value="moderate">Moderate (0.10–0.50 in)</option>
+                <option value="heavy">Heavy (≥0.50 in)</option>
+              </select>
+            </label>
+            <label class="field">Cloud cover
+              <select id="cloudBand">
+                <option value="any">Any</option>
+                <option value="clear">Mostly clear (&lt;25%)</option>
+                <option value="partly">Partly cloudy (25–70%)</option>
+                <option value="overcast">Overcast (≥70%)</option>
+              </select>
+            </label>
+          </div>
+          <div class="row-note">Weather filters ignore incidents without weather data unless a specific condition is chosen.</div>
         </div>
       </div>
 
-      <div class="section">
-        <div class="section-title">Map layers</div>
-        <div class="row row-checks">
-          <label class="check"><input type="checkbox" id="chkPoints" checked> Incidents</label>
-          <label class="check"><input type="checkbox" id="chkHeat"> Heatmap</label>
-          <label class="check"><input type="checkbox" id="chkHotSpots"> Hot spots</label>
-          <label class="check"><input type="checkbox" id="chkIntersections"> Rounded clusters</label>
-          <label class="check"><input type="checkbox" id="chkOsmIntersections"> OSM intersections</label>
-          <label class="check"><input type="checkbox" id="chkMicro"> Micro hotspots</label>
-          <label class="check"><input type="checkbox" id="chkRings"> Distance rings</label>
+      <div class="section acc" data-acc="nws" data-filter-acc>
+        <button class="acc-head" type="button"><span class="section-title">Active NWS alerts at report time</span><span class="acc-badge"></span><span class="acc-chev">›</span></button>
+        <div class="acc-body">
+          <div class="row row-checks">
+            <label class="check"><input type="checkbox" id="chkFloodWarning"> Flash flood</label>
+            <label class="check"><input type="checkbox" id="chkThunderstormWarning"> Severe storm</label>
+            <label class="check"><input type="checkbox" id="chkTornadoWatch"> Tornado watch</label>
+          </div>
+          <div class="row-note">Matches incidents recorded while that alert was active for Lafayette Parish (zone LAZ034).</div>
         </div>
-        <div class="row" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
-          <label class="field">Top N
-            <select id="topNSelect">
-              <option value="5">5</option><option value="10" selected>10</option>
-              <option value="20">20</option><option value="50">50</option>
-            </select>
-          </label>
-          <label class="field">Cluster size
-            <select id="precIntersections">
-              <option value="3" selected>~100 m</option><option value="4">~10 m</option>
-            </select>
-          </label>
-          <label class="field">Micro size
-            <select id="precMicro">
-              <option value="4" selected>~10 m</option><option value="5">~1 m</option>
-            </select>
-          </label>
+      </div>
+
+      <div class="section acc" data-acc="layers">
+        <button class="acc-head" type="button"><span class="section-title">Map layers &amp; display</span><span class="acc-chev">›</span></button>
+        <div class="acc-body">
+          <div class="row row-checks">
+            <label class="check"><input type="checkbox" id="chkPoints" checked> Incidents</label>
+            <label class="check"><input type="checkbox" id="chkHeat"> Heatmap</label>
+            <label class="check"><input type="checkbox" id="chkHotSpots"> Hot spots</label>
+            <label class="check"><input type="checkbox" id="chkIntersections"> Rounded clusters</label>
+            <label class="check"><input type="checkbox" id="chkOsmIntersections"> OSM intersections</label>
+            <label class="check"><input type="checkbox" id="chkMicro"> Micro hotspots</label>
+            <label class="check"><input type="checkbox" id="chkRings"> Distance rings</label>
+          </div>
+          <div class="row" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
+            <label class="field">Top N
+              <select id="topNSelect">
+                <option value="5">5</option><option value="10" selected>10</option>
+                <option value="20">20</option><option value="50">50</option>
+              </select>
+            </label>
+            <label class="field">Cluster size
+              <select id="precIntersections">
+                <option value="3" selected>~100 m</option><option value="4">~10 m</option>
+              </select>
+            </label>
+            <label class="field">Micro size
+              <select id="precMicro">
+                <option value="4" selected>~10 m</option><option value="5">~1 m</option>
+              </select>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -1095,7 +1157,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         IDX_PRECIP_IN = 10, IDX_WIND_SPEED = 11, IDX_WIND_GUST = 12, IDX_VISIBILITY = 13,
         IDX_SKY_COVER = 14, IDX_WEATHER_AT = 15, IDX_WEATHER_SOURCE = 16, IDX_HOUR = 17,
         IDX_DOW = 18, IDX_SCHOOL_DAY = 19, IDX_NWS_FLOOD = 20, IDX_NWS_STORM = 21,
-        IDX_NWS_TORNADO = 22, IDX_HIGHWAY = 23, IDX_CREATED_AT = 24;
+        IDX_NWS_TORNADO = 22, IDX_HIGHWAY = 23, IDX_CREATED_AT = 24, IDX_HOLIDAY = 25;
 
   const DATAJS_SRC = "__DATAJS_SRC__";
   const REDUCED_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1339,6 +1401,30 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return true;
   }
 
+  // Major US federal + Louisiana holidays. Mirrors the backend _is_holiday
+  // heuristic and is the fallback for rows lacking the stored is_holiday flag.
+  function nthWeekdayDay(year, month0, weekday, n) {
+    const first = new Date(year, month0, 1).getDay();
+    return 1 + ((7 + weekday - first) % 7) + (n - 1) * 7;
+  }
+  function lastWeekdayDay(year, month0, weekday) {
+    const last = new Date(year, month0 + 1, 0);
+    return last.getDate() - ((7 + last.getDay() - weekday) % 7);
+  }
+  function isHolidayJS(dt) {
+    if (!dt) return false;
+    const y = dt.getFullYear(), m = dt.getMonth() + 1, d = dt.getDate();
+    if ((m === 1 && d === 1) || (m === 6 && d === 19) || (m === 7 && d === 4) ||
+        (m === 11 && d === 11) || (m === 12 && d === 25)) return true;
+    if (m === 1 && d === nthWeekdayDay(y, 0, 1, 3)) return true;   // MLK
+    if (m === 2 && d === nthWeekdayDay(y, 1, 1, 3)) return true;   // Presidents
+    if (m === 5 && d === lastWeekdayDay(y, 4, 1)) return true;     // Memorial
+    if (m === 9 && d === nthWeekdayDay(y, 8, 1, 1)) return true;   // Labor
+    if (m === 10 && d === nthWeekdayDay(y, 9, 1, 2)) return true;  // Columbus
+    if (m === 11 && d === nthWeekdayDay(y, 10, 4, 4)) return true; // Thanksgiving
+    return false;
+  }
+
   /* ═══════════════════════ elements ═══════════════════════ */
   function $(id) { return document.getElementById(id); }
   const els = {
@@ -1352,7 +1438,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     panelFilters: $("panelFilters"), panelAnalytics: $("panelAnalytics"), panelFeed: $("panelFeed"),
     filterBadge: $("filterBadge"),
     roadSearch: $("roadSearch"), roadSearchClear: $("roadSearchClear"),
-    rangeChips: $("rangeChips"),
+    rangeTiles: $("rangeTiles"),
+    assistSelect: $("assistSelect"), chkHoliday: $("chkHoliday"), lightSelect: $("lightSelect"),
     causeGroupSelect: $("causeGroupSelect"), causeSelect: $("causeSelect"),
     monthSelect: $("monthSelect"), daySelect: $("daySelect"), yearSelect: $("yearSelect"),
     dowSelect: $("dowSelect"), dayTypeSelect: $("dayTypeSelect"), timeBlockSelect: $("timeBlockSelect"),
@@ -1915,6 +2002,46 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return true;
   }
 
+  function matchesAssist(row, selected) {
+    if (!selected || selected === "__ALL__") return true;
+    // assisting is free text and may list several agencies; substring match.
+    return String(row[IDX_ASSIST] || "").toUpperCase().indexOf(selected.toUpperCase()) !== -1;
+  }
+
+  function matchesHoliday(row, checked) {
+    if (!checked) return true;
+    const v = (row.length > IDX_HOLIDAY) ? row[IDX_HOLIDAY] : null;
+    if (v === 1 || v === true) return true;
+    if (v === 0 || v === false) return false;
+    // Unknown (older/CSV rows without the flag): fall back to the same
+    // holiday heuristic the backend uses, from the reported date.
+    const pr = parseReported(row[IDX_REPORTED]);
+    return pr && pr.dt ? isHolidayJS(pr.dt) : false;
+  }
+
+  // Approximate Lafayette (30.2°N) sunrise/sunset in local Central time, by
+  // month. A day/night FILTER doesn't need astronomical precision, and a
+  // fixed table is TZ/DST-proof: reported times are already local Central.
+  // [sunriseMinutes, sunsetMinutes] from local midnight.
+  const SUN_TABLE = [
+    [423, 1042], [400, 1075], [447, 1155], [400, 1177], [369, 1200], [361, 1215],
+    [372, 1216], [393, 1188], [412, 1147], [432, 1108], [388, 1039], [412, 1024]
+  ];
+  function isDaylight(pr) {
+    if (!pr || pr.dt == null || pr.hh == null) return null;  // no time → unknown
+    const m = pr.dt.getMonth();
+    const mins = pr.hh * 60 + (pr.dt.getMinutes ? pr.dt.getMinutes() : 0);
+    const band = SUN_TABLE[m] || SUN_TABLE[0];
+    return mins >= band[0] && mins < band[1];
+  }
+  function matchesLight(row, light) {
+    if (!light || light === "any") return true;
+    const pr = parseReported(row[IDX_REPORTED]);
+    const day = isDaylight(pr);
+    if (day == null) return false;
+    return light === "day" ? day : !day;
+  }
+
   function matchesNwsAlerts(row, f) {
     if (!f.chkFlood && !f.chkStorm && !f.chkTornado) return true;
     const flood = (row.length > IDX_NWS_FLOOD) ? row[IDX_NWS_FLOOD] : null;
@@ -1951,6 +2078,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       chkFlood: !!els.chkFloodWarning.checked,
       chkStorm: !!els.chkThunderstormWarning.checked,
       chkTornado: !!els.chkTornadoWatch.checked,
+      assist: (els.assistSelect.value || "__ALL__").trim(),
+      holiday: !!els.chkHoliday.checked,
+      light: (els.lightSelect.value || "any").trim(),
       range: state.range
     };
   }
@@ -1976,6 +2106,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (f.visBand !== "any") n++;
     if (f.cloudBand !== "any") n++;
     if (f.chkFlood || f.chkStorm || f.chkTornado) n++;
+    if (f.assist !== "__ALL__") n++;
+    if (f.holiday) n++;
+    if (f.light !== "any") n++;
     if (state.cats.size < CATEGORIES.length) n++;
     return n;
   }
@@ -1999,6 +2132,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (!matchesRoadType(row, f.roadType)) continue;
       if (!matchesRoadSearch(row, f.roadSearch)) continue;
       if (!matchesNwsAlerts(row, f)) continue;
+      if (!matchesAssist(row, f.assist)) continue;
+      if (!matchesHoliday(row, f.holiday)) continue;
+      if (!matchesLight(row, f.light)) continue;
       if (bounds && !bounds.contains(L.latLng(row[IDX_LAT], row[IDX_LNG]))) continue;
       out.push(row);
     }
@@ -2022,12 +2158,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     ["dow", "dowSelect", "all"], ["dt", "dayTypeSelect", "all"], ["tb", "timeBlockSelect", "all"],
     ["rt", "roadTypeSelect", "any"],
     ["tmp", "tempBand", "any"], ["pp", "precipBand", "any"], ["pa", "precipAmountBand", "any"],
-    ["wnd", "windBand", "any"], ["vis", "visBand", "any"], ["cld", "cloudBand", "any"]
+    ["wnd", "windBand", "any"], ["vis", "visBand", "any"], ["cld", "cloudBand", "any"],
+    ["ag", "assistSelect", "__ALL__"], ["lt", "lightSelect", "any"]
   ];
   const HASH_CHECKS = [
     ["rush", "chkRushHour"], ["school", "chkSchoolDay"], ["wo", "chkWeatherOnly"],
     ["flood", "chkFloodWarning"], ["storm", "chkThunderstormWarning"], ["tor", "chkTornadoWatch"],
-    ["heat", "chkHeat"], ["hot", "chkHotSpots"]
+    ["hol", "chkHoliday"], ["heat", "chkHeat"], ["hot", "chkHotSpots"]
   ];
 
   let hashApplying = false;
@@ -3361,6 +3498,20 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (el.textContent !== next) el.textContent = next;
   }
 
+  // Show, on each collapsed filter section, how many of its controls are
+  // active — so a filter hidden inside a closed section is never a surprise.
+  function updateAccordionBadges() {
+    document.querySelectorAll("#panelFilters .acc[data-filter-acc]").forEach(function (acc) {
+      const badge = acc.querySelector(".acc-badge");
+      if (!badge) return;
+      let n = 0;
+      acc.querySelectorAll(".acc-body select").forEach(function (s) { if (s.selectedIndex > 0) n++; });
+      acc.querySelectorAll(".acc-body input[type=checkbox]").forEach(function (c) { if (c.checked) n++; });
+      badge.textContent = String(n);
+      badge.classList.toggle("show", n > 0);
+    });
+  }
+
   function renderAll() {
     const f = currentFilterObj();
     const filtered = filteredIncidents(f, map);
@@ -3374,6 +3525,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const nActive = countActiveFilters(f);
     els.filterBadge.textContent = String(nActive);
     els.filterBadge.classList.toggle("show", nActive > 0);
+    updateAccordionBadges();
 
     drawLayers(filtered);
     renderCharts(filtered);
@@ -3407,9 +3559,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* ═══════════════════════ quick range chips ═══════════════════════ */
   function setRange(range, silent) {
     state.range = range || "";
-    const chips = els.rangeChips.querySelectorAll(".range-chip");
-    chips.forEach(function (chip) {
-      chip.classList.toggle("active", (chip.getAttribute("data-range") || "") === state.range);
+    els.rangeTiles.querySelectorAll(".stat-tile").forEach(function (tile) {
+      tile.classList.toggle("active", (tile.getAttribute("data-range") || "") === state.range);
     });
     if (!silent) scheduleRender(0);
   }
@@ -3431,6 +3582,34 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       els.causeSelect.appendChild(opt);
     }
     if (prev && causes.indexOf(prev) !== -1) els.causeSelect.value = prev;
+  }
+
+  // Populate the responding-agency dropdown from distinct agency tokens seen
+  // in the data (the feed's "assisting" field, e.g. "LPD", "LFD / LPSO").
+  function buildAssistDropdown() {
+    const counts = new Map();
+    for (const r of INCIDENTS) {
+      const raw = String(r[IDX_ASSIST] || "").trim();
+      if (!raw) continue;
+      raw.split(/[,/&]|\s{2,}/).forEach(function (tok) {
+        const t = tok.trim().toUpperCase();
+        if (t && t.length <= 24) counts.set(t, (counts.get(t) || 0) + 1);
+      });
+    }
+    const prev = els.assistSelect.value;
+    const items = Array.from(counts.entries())
+      .filter(function (e) { return e[1] >= 2; })   // ignore one-off noise
+      .sort(function (a, b) { return b[1] - a[1] || a[0].localeCompare(b[0]); });
+    while (els.assistSelect.options.length > 1) els.assistSelect.remove(1);
+    for (const [tok, n] of items) {
+      const opt = document.createElement("option");
+      opt.value = tok;
+      opt.textContent = tok + " (" + n.toLocaleString() + ")";
+      els.assistSelect.appendChild(opt);
+    }
+    if (prev && els.assistSelect.querySelector('option[value="' + prev.replace(/"/g, "") + '"]')) {
+      els.assistSelect.value = prev;
+    }
   }
 
   function buildCauseGroupDropdown() {
@@ -3469,6 +3648,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.chkFloodWarning.checked = false;
     els.chkThunderstormWarning.checked = false;
     els.chkTornadoWatch.checked = false;
+    els.assistSelect.value = "__ALL__";
+    els.chkHoliday.checked = false;
+    els.lightSelect.value = "any";
     els.chkPoints.checked = true;
     els.chkHeat.checked = false;
     els.chkIntersections.checked = false;
@@ -3633,6 +3815,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     renderStatus();
     renderLegend();
     buildCauseDropdown();
+    buildAssistDropdown();
     scheduleRender(0);
   }
 
@@ -3714,6 +3897,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       "dayTypeSelect", "timeBlockSelect",
       "chkRushHour", "chkSchoolDay", "dowSelect", "roadTypeSelect",
       "chkFloodWarning", "chkThunderstormWarning", "chkTornadoWatch",
+      "assistSelect", "chkHoliday", "lightSelect",
       "chkWeatherOnly", "tempBand", "precipBand", "precipAmountBand", "windBand", "visBand", "cloudBand",
       "chkPoints", "chkHeat", "chkIntersections", "chkOsmIntersections", "chkMicro", "chkRings", "chkHotSpots",
       "topNSelect", "precIntersections", "precMicro"
@@ -3723,9 +3907,25 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (el) el.addEventListener("change", function () { scheduleRender(0); });
     }
 
-    els.rangeChips.addEventListener("click", function (e) {
-      const btn = e.target.closest(".range-chip");
-      if (btn) setRange(btn.getAttribute("data-range") || "");
+    // Stat tiles double as the time-range filter.
+    els.rangeTiles.addEventListener("click", function (e) {
+      const tile = e.target.closest(".stat-tile");
+      if (tile) setRange(tile.getAttribute("data-range") || "");
+    });
+
+    // Collapsible filter sections; remembers open/closed per section.
+    let accState = {};
+    try { accState = JSON.parse(localStorage.getItem("laf911.acc") || "{}"); } catch (e) {}
+    document.querySelectorAll("#panelFilters .acc").forEach(function (acc) {
+      const id = acc.getAttribute("data-acc");
+      if (accState[id] === true) acc.classList.add("open");
+      else if (accState[id] === false) acc.classList.remove("open");
+      const head = acc.querySelector(".acc-head");
+      if (head) head.addEventListener("click", function () {
+        const open = acc.classList.toggle("open");
+        accState[id] = open;
+        try { localStorage.setItem("laf911.acc", JSON.stringify(accState)); } catch (e) {}
+      });
     });
 
     els.roadSearch.addEventListener("input", function () {
@@ -3981,6 +4181,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   applyTheme();
   buildLocHistory();
   buildCauseDropdown();
+  buildAssistDropdown();
   buildCauseGroupDropdown();
   applyHash();
   renderLegend();

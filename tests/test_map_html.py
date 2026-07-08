@@ -66,7 +66,7 @@ class MapTemplateTests(unittest.TestCase):
                     hour_of_day INTEGER, day_of_week INTEGER, is_school_day INTEGER,
                     nws_flash_flood_warning INTEGER, nws_severe_thunderstorm_warning INTEGER,
                     nws_tornado_watch INTEGER, road_type TEXT, created_at TEXT,
-                    geocode_attempts INTEGER
+                    geocode_attempts INTEGER, is_holiday INTEGER
                 )
                 """
             )
@@ -183,6 +183,43 @@ class CsvUnlocatedTests(unittest.TestCase):
             self.assertIn("MOSS ST", datajs)
             # pd.NA must never leak into the page as the string "<NA>".
             self.assertNotIn("<NA>", datajs)
+
+
+class CsvEnrichmentExportTests(unittest.TestCase):
+    def test_nws_and_enrichment_flags_survive_csv_render(self):
+        """Regression: the CSV render path hardcoded the NWS alert / hour /
+        day-of-week fields to None, so those filters matched nothing on
+        CSV-rendered deployments even though the archive carried the columns."""
+        from lafayette911.map_render import create_map_from_csv
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            datajs_path = os.path.join(tmpdir, "traffic_data.js")
+            cols = (
+                "location,cause,reported,assisting,incident_number,latitude,longitude,"
+                "hour_of_day,day_of_week,is_school_day,is_holiday,"
+                "nws_flash_flood_warning,nws_severe_thunderstorm_warning,nws_tornado_watch,road_type"
+            )
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write(cols + "\n")
+                handle.write(
+                    "JOHNSTON ST,ACCIDENT,07/04/2026 8:30 AM,LPD,INC1,30.2241,-92.0198,"
+                    "8,4,0,1,1,1,0,primary\n"
+                )
+
+            create_map_from_csv(csv_path, os.path.join(tmpdir, "m.html"), datajs_path, os.path.join(tmpdir, "osm"))
+            datajs = open(datajs_path, encoding="utf-8").read()
+            # The incident row must carry the flags (not None): flash-flood=1,
+            # severe-storm=1, tornado=0, is_holiday=1 at their indices.
+            import json, re
+            arr = json.loads(re.search(r"window\.INCIDENTS_DATA=(\[.*?\]);", datajs).group(1))
+            self.assertEqual(len(arr), 1)
+            row = arr[0]
+            self.assertEqual(row[17], 8)    # hour_of_day
+            self.assertEqual(row[20], 1)    # nws_flash_flood_warning
+            self.assertEqual(row[21], 1)    # nws_severe_thunderstorm_warning
+            self.assertEqual(row[22], 0)    # nws_tornado_watch
+            self.assertEqual(row[25], 1)    # is_holiday
 
 
 class ConfigDefaultTests(unittest.TestCase):

@@ -1111,7 +1111,7 @@ def _write_streaming_datajs(
                        weather_sky_cover_pct, weather_observed_at, weather_source,
                        hour_of_day, day_of_week, is_school_day,
                        nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch,
-                       road_type, created_at
+                       road_type, created_at, is_holiday
                 FROM incidents
                 """
             )
@@ -1141,6 +1141,7 @@ def _write_streaming_datajs(
                 nws_tornado,
                 db_road_type,
                 created_at,
+                is_holiday,
             ) in cursor:
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
@@ -1240,6 +1241,8 @@ def _write_streaming_datajs(
                     highway_type,
                     # created_at ISO timestamp (index 24)
                     _safe_text(created_at),
+                    # holiday flag (index 25)
+                    _safe_int(is_holiday),
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
@@ -1296,6 +1299,7 @@ def _write_streaming_datajs(
                     None,   # nws_tornado
                     None,   # highway_type
                     "",     # created_at
+                    None,   # is_holiday
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 tc_count += 1
@@ -1404,6 +1408,13 @@ def _load_dataframe_from_csv(input_csv: str) -> pd.DataFrame:
         "weather_observed_at",
         "weather_source",
         "road_type",
+        "hour_of_day",
+        "day_of_week",
+        "is_school_day",
+        "is_holiday",
+        "nws_flash_flood_warning",
+        "nws_severe_thunderstorm_warning",
+        "nws_tornado_watch",
     }
     if header_cols:
         normalized = {c.strip().lower(): c for c in header_cols}
@@ -1634,15 +1645,20 @@ def _create_map_from_dataframe(
                 sky_cover,
                 observed_at,
                 source,
-                # New enrichment fields — not available from CSV path
-                None,  # hour_of_day
-                None,  # day_of_week
-                None,  # is_school_day
-                None,  # nws_flash_flood_warning
-                None,  # nws_severe_thunderstorm_warning
-                None,  # nws_tornado_watch
+                # Enrichment fields (indices 17-22) — the CSV archive has
+                # carried these columns since enrichment shipped; hardcoding
+                # None here made the NWS/rush-hour filters dead on
+                # CSV-rendered deployments.
+                _safe_int(r.get("hour_of_day")),
+                _safe_int(r.get("day_of_week")),
+                _safe_int(r.get("is_school_day")),
+                _safe_int(r.get("nws_flash_flood_warning")),
+                _safe_int(r.get("nws_severe_thunderstorm_warning")),
+                _safe_int(r.get("nws_tornado_watch")),
                 # Road type: use CSV value if present, otherwise infer from location name
                 _safe_text(r.get("road_type")) or _infer_road_type(loc) or None,
+                "",  # created_at (index 24): not tracked in the CSV
+                _safe_int(r.get("is_holiday")),  # index 25
             ]
         )
         incidents_latlng.append((lat, lng))
