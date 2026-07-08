@@ -63,7 +63,10 @@ def _render_map_from_source(config: Config) -> None:
     if config.render_source == "db":
         create_map_from_db(config.db_path, config.map_path, config.datajs_path, config.osm_cache_dir)
     else:
-        create_map_from_csv(config.csv_path, config.map_path, config.datajs_path, config.osm_cache_dir)
+        create_map_from_csv(
+            config.csv_path, config.map_path, config.datajs_path, config.osm_cache_dir,
+            db_path=config.db_path,
+        )
 
 
 def _render_map_worker(conn, config: Config) -> None:

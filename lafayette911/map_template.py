@@ -542,7 +542,35 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .insight-list li strong, .insight-list li b { color: var(--text); font-weight: 700; }
 
   /* ── feed ─────────────────────────────────────────────────────────── */
-  .feed-meta { font-size: 11px; color: var(--text-3); margin: 8px 0; }
+  .feed-meta { font-size: 11px; color: var(--text-3); }
+  .feed-meta-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .feed-meta-row .feed-meta { flex: 1; margin: 0; }
+  #feedRefreshBtn {
+    flex: none; width: 26px; height: 26px; border-radius: 999px;
+    border: 1px solid var(--panel-border); background: var(--chip); color: var(--text-2);
+    font-size: 13px; cursor: pointer; box-shadow: var(--edge);
+    transition: transform 0.3s ease, background 0.13s ease;
+  }
+  #feedRefreshBtn:hover { background: var(--chip-hover); }
+  #feedRefreshBtn.spin { animation: ptr-spin 0.8s linear infinite; }
+
+  /* pull-to-refresh */
+  .ptr {
+    height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center;
+    gap: 7px; color: var(--text-3); font-size: 11.5px; font-weight: 600;
+    transition: height 0.18s ease;
+  }
+  .ptr.dragging { transition: none; }
+  .ptr-icon { display: inline-block; transition: transform 0.15s ease; }
+  .ptr.armed .ptr-icon { transform: rotate(180deg); }
+  .ptr.loading .ptr-icon { animation: ptr-spin 0.8s linear infinite; }
+  @keyframes ptr-spin { to { transform: rotate(360deg); } }
+
+  .chart-note { font-size: 10.5px; color: var(--text-3); margin-top: 3px; line-height: 1.4; }
+  .chart-svg .bar, .chart-svg .hm-cell { cursor: pointer; }
+  .mix-row { cursor: pointer; border: none; background: transparent; font-family: var(--font); padding: 0; text-align: left; }
+  .mix-row:hover .lbl { color: var(--text); }
+  .rates-explain { font-size: 10.5px; color: var(--text-3); margin: 2px 0 6px 0; line-height: 1.4; }
   .feed-item {
     display: flex; gap: 9px; padding: 8px 8px; border-radius: var(--radius-sm);
     cursor: pointer; transition: background 0.12s ease; align-items: flex-start;
@@ -1014,7 +1042,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     <!-- ═══ FEED ═══ -->
     <div class="panel" id="panelFeed">
-      <div class="feed-meta" id="feedMeta"></div>
+      <div class="ptr" id="ptrBar" aria-hidden="true"><span class="ptr-icon" id="ptrIcon">↓</span><span id="ptrText">Pull to refresh</span></div>
+      <div class="feed-meta-row">
+        <div class="feed-meta" id="feedMeta"></div>
+        <button id="feedRefreshBtn" type="button" title="Check for new incidents now" aria-label="Refresh feed">↻</button>
+      </div>
       <div id="feedList"></div>
     </div>
 
@@ -1056,6 +1088,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   let HOT_SPOTS = window.HOT_SPOTS_DATA || [];
   let UNLOCATED_COUNT = window.INCIDENTS_UNLOCATED_COUNT || 0;
   let UNLOCATED_LIST = window.INCIDENTS_UNLOCATED_LIST || [];
+  let UNMAPPABLE_COUNT = window.INCIDENTS_UNMAPPABLE_COUNT || 0;
 
   const IDX_LAT = 0, IDX_LNG = 1, IDX_REPORTED = 2, IDX_LOCATION = 3, IDX_CAUSE = 4,
         IDX_ASSIST = 5, IDX_WEIGHT = 6, IDX_COUNT = 7, IDX_TEMP_F = 8, IDX_PRECIP_PROB = 9,
@@ -1344,6 +1377,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     chartMix: $("chartMix"), corridorList: $("corridorList"),
     ratesContent: $("ratesContent"), insightsContent: $("insightsContent"),
     feedList: $("feedList"), feedMeta: $("feedMeta"),
+    feedRefreshBtn: $("feedRefreshBtn"), sbBody: document.querySelector(".sb-body"),
     weatherChip: $("weatherChip"), wxIcon: $("wxIcon"), wxMain: $("wxMain"),
     weatherPanel: $("weatherPanel"), weatherPanelBody: $("weatherPanelBody"),
     toast: $("toast"), metaThemeColor: $("metaThemeColor")
@@ -2118,6 +2152,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (UNLOCATED_COUNT > 0) {
       els.unlocChip.style.display = "";
       els.unlocChip.textContent = UNLOCATED_COUNT + " locating…";
+      els.unlocChip.title = UNLOCATED_COUNT + (UNLOCATED_COUNT === 1 ? " incident is" : " incidents are") +
+        " queued for geocoding and will appear on the map as the daily API budget allows" +
+        (UNMAPPABLE_COUNT > 0
+          ? ". " + UNMAPPABLE_COUNT + (UNMAPPABLE_COUNT === 1 ? " older incident" : " older incidents") + " could not be located and are excluded."
+          : ".");
     } else {
       els.unlocChip.style.display = "none";
     }
@@ -2175,7 +2214,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       const x = i * (bw + gap);
       const y = H - padB - h;
       const cls = (i === peakIdx && values[i] > 0) ? "bar peak" : "bar";
-      bars += "<rect class='" + cls + "' x='" + x.toFixed(1) + "' y='" + y.toFixed(1) +
+      bars += "<rect class='" + cls + "' data-i='" + i + "' x='" + x.toFixed(1) + "' y='" + y.toFixed(1) +
         "' width='" + bw.toFixed(1) + "' height='" + h.toFixed(1) + "' rx='2'>" +
         "<title>" + esc(opts.titles ? opts.titles[i] : values[i]) + "</title></rect>";
     }
@@ -2247,9 +2286,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         const cls = (r === peakR && c === peakC && max > 0) ? "hm-cell hm-peak" : "hm-cell";
         const fill = v > 0 ? "var(--accent)" : "var(--bar-track)";
         const op = v > 0 ? (0.14 + 0.86 * t).toFixed(2) : "0.35";
-        cells += "<rect class='" + cls + "' x='" + x.toFixed(1) + "' y='" + y.toFixed(1) +
+        cells += "<rect class='" + cls + "' data-d='" + r + "' data-h='" + c + "' x='" + x.toFixed(1) + "' y='" + y.toFixed(1) +
           "' width='" + cw.toFixed(1) + "' height='" + ch + "' rx='2' fill='" + fill + "' fill-opacity='" + op + "'>" +
-          "<title>" + dayNames[r] + " " + fmtHour(c) + ": " + v + "</title></rect>";
+          "<title>" + dayNames[r] + " " + fmtHour(c) + ": " + v + " — tap to filter</title></rect>";
       }
     }
     let hourLabels = "";
@@ -2284,27 +2323,66 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
+    const span = computeSpanFor(rows.length ? rows : INCIDENTS);
     els.analyticsSummary.innerHTML = "Analyzing <b>" + rows.length.toLocaleString() + "</b> filtered incident" +
-      (rows.length === 1 ? "" : "s") + (datedCount < rows.length ? " (" + datedCount.toLocaleString() + " with timestamps)" : "");
+      (rows.length === 1 ? "" : "s") +
+      (span ? " across <b>" + span.totalDays.toLocaleString() + "</b> days" : "") +
+      (datedCount < rows.length ? " (" + datedCount.toLocaleString() + " with timestamps)" : "") +
+      ". Tap any bar, cell, or category to filter the map.";
+
+    const TIMEBLOCK_OF_HOUR = function (h) {
+      if (h >= 6 && h < 10) return ["morning", "Morning (6–10 am)"];
+      if (h >= 10 && h < 15) return ["midday", "Midday (10 am–3 pm)"];
+      if (h >= 15 && h < 19) return ["evening", "Evening (3–7 pm)"];
+      if (h >= 19) return ["night", "Night (7 pm–12 am)"];
+      return ["latenight", "Late night (12–6 am)"];
+    };
+    function wireBarClicks(container, fn) {
+      container.querySelectorAll(".bar").forEach(function (rect) {
+        rect.addEventListener("click", function () {
+          fn(parseInt(rect.getAttribute("data-i"), 10));
+        });
+      });
+    }
 
     // Hour chart
-    const hourTitles = byHour.map(function (v, h) { return fmtHour(h) + "–" + fmtHour((h + 1) % 24) + ": " + v; });
+    const hourTitles = byHour.map(function (v, h) { return fmtHour(h) + "–" + fmtHour((h + 1) % 24) + ": " + v + " — tap to filter"; });
     els.chartHour.innerHTML = barChartSVG(byHour, {
       labels: [[0, "12a"], [6, "6a"], [12, "12p"], [18, "6p"], [23, "11p"]],
       titles: hourTitles, aria: "Incidents by hour of day"
     });
     const peakH = byHour.indexOf(Math.max.apply(null, byHour));
     els.chartHourSub.textContent = byHour[peakH] > 0 ? ("peak " + fmtHour(peakH) + " · " + byHour[peakH]) : "";
-
-    // Day-of-week chart
-    const dowNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    els.chartDow.innerHTML = barChartSVG(byDow, {
-      labels: dowNames.map(function (nm, i) { return [i, nm]; }),
-      titles: dowNames.map(function (nm, i) { return nm + ": " + byDow[i]; }),
-      gap: 6, aria: "Incidents by day of week"
+    wireBarClicks(els.chartHour, function (h) {
+      const tb = TIMEBLOCK_OF_HOUR(h);
+      els.timeBlockSelect.value = tb[0];
+      toast("Filtered to " + tb[1]);
+      scheduleRender(0);
     });
-    const peakD = byDow.indexOf(Math.max.apply(null, byDow));
-    els.chartDowSub.textContent = byDow[peakD] > 0 ? ("peak " + dowNames[peakD] + " · " + byDow[peakD]) : "";
+
+    // Day-of-week chart — normalized to the number of times each weekday
+    // occurs in the filtered range, so 5 weekdays vs 2 weekend days can't
+    // skew the picture.
+    const dowNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const dowRates = byDow.map(function (n, i) {
+      const occ = span ? span.perDow[i] : 0;
+      return occ > 0 ? n / occ : 0;
+    });
+    els.chartDow.innerHTML = barChartSVG(dowRates, {
+      labels: dowNames.map(function (nm, i) { return [i, nm]; }),
+      titles: dowNames.map(function (nm, i) {
+        const occ = span ? span.perDow[i] : 0;
+        return nm + ": " + dowRates[i].toFixed(1) + "/day avg (" + byDow[i] + " total over " + occ + " " + nm + "s) — tap to filter";
+      }),
+      gap: 6, aria: "Average incidents per day of week"
+    }) + "<div class='chart-note'>Average per day — normalized so each weekday counts once no matter how many occurred in the range.</div>";
+    const peakD = dowRates.indexOf(Math.max.apply(null, dowRates));
+    els.chartDowSub.textContent = dowRates[peakD] > 0 ? ("peak " + dowNames[peakD] + " · " + dowRates[peakD].toFixed(1) + "/day") : "";
+    wireBarClicks(els.chartDow, function (i) {
+      els.dowSelect.value = String(i);
+      toast("Filtered to " + ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"][i]);
+      scheduleRender(0);
+    });
 
     // 12-week trend
     const WEEKS = 12;
@@ -2330,18 +2408,39 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     // Hour × day heatmap
     const hm = heatmapSVG(matrix);
-    els.chartMatrix.innerHTML = hm.svg;
+    els.chartMatrix.innerHTML = hm.svg + "<div class='chart-note'>Every cell covers the same amount of clock time, so raw counts compare fairly here. Tap a cell to filter to that day + time.</div>";
     els.chartMatrixSub.textContent = hm.peak ? ("hottest " + hm.peak.day + " " + hm.peak.hour + " · " + hm.peak.count) : "";
-
-    // Seasonality by month
-    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    els.chartMonth.innerHTML = barChartSVG(byMonth, {
-      labels: monthNames.map(function (nm, i) { return [i, nm.charAt(0)]; }),
-      titles: monthNames.map(function (nm, i) { return nm + ": " + byMonth[i]; }),
-      gap: 4, aria: "Incidents by month"
+    els.chartMatrix.querySelectorAll(".hm-cell").forEach(function (cell) {
+      cell.addEventListener("click", function () {
+        const d = parseInt(cell.getAttribute("data-d"), 10);
+        const h = parseInt(cell.getAttribute("data-h"), 10);
+        const tb = TIMEBLOCK_OF_HOUR(h);
+        els.dowSelect.value = String(d);
+        els.timeBlockSelect.value = tb[0];
+        toast("Filtered to " + ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d] + " · " + tb[1]);
+        scheduleRender(0);
+      });
     });
-    const peakM = byMonth.indexOf(Math.max.apply(null, byMonth));
-    els.chartMonthSub.textContent = byMonth[peakM] > 0 ? ("peak " + monthNames[peakM] + " · " + byMonth[peakM]) : "";
+
+    // Seasonality by month — normalized per covered day, because the range
+    // rarely contains every month equally (or at all).
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const monthRates = byMonth.map(function (n, i) {
+      const days = span ? span.perMonthDays[i] : 0;
+      return days > 0 ? n / days : 0;
+    });
+    els.chartMonth.innerHTML = barChartSVG(monthRates, {
+      labels: monthNames.map(function (nm, i) { return [i, nm.charAt(0)]; }),
+      titles: monthNames.map(function (nm, i) {
+        const days = span ? span.perMonthDays[i] : 0;
+        return days > 0
+          ? nm + ": " + monthRates[i].toFixed(1) + "/day avg (" + byMonth[i] + " total over " + days + " covered days)"
+          : nm + ": no coverage in the filtered range";
+      }),
+      gap: 4, aria: "Average incidents per day, by month"
+    }) + "<div class='chart-note'>Average per covered day — months the range doesn't include show empty rather than misleading zeros-as-quiet.</div>";
+    const peakM = monthRates.indexOf(Math.max.apply(null, monthRates));
+    els.chartMonthSub.textContent = monthRates[peakM] > 0 ? ("peak " + monthNames[peakM] + " · " + monthRates[peakM].toFixed(1) + "/day") : "";
 
     // Category mix: stacked proportion bar + legend
     const catCounts = new Map();
@@ -2358,14 +2457,29 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         const pct = (n / rows.length) * 100;
         segs += "<span class='mix-seg' style='flex:0 0 " + pct.toFixed(2) + "%;background:" + cat.color + "' title='" +
           esc(cat.label) + ": " + n + " (" + pct.toFixed(1) + "%)'></span>";
-        legend += "<span class='mix-row'><span class='dot' style='background:" + cat.color + "'></span>" +
-          "<span class='lbl'>" + esc(cat.label) + "</span><span class='n'>" + n.toLocaleString() + " · " + pct.toFixed(0) + "%</span></span>";
+        legend += "<button type='button' class='mix-row' data-cat='" + cat.id + "' title='Tap to isolate " + esc(cat.label.toLowerCase()) + " on the map'>" +
+          "<span class='dot' style='background:" + cat.color + "'></span>" +
+          "<span class='lbl'>" + esc(cat.label) + "</span><span class='n'>" + n.toLocaleString() + " · " + pct.toFixed(0) + "%</span></button>";
       }
       mixHtml = "<div class='mix-bar'>" + segs + "</div><div class='mix-legend'>" + legend + "</div>";
     } else {
       mixHtml = "<span class='rates-no-data'>No incidents in this selection.</span>";
     }
     els.chartMix.innerHTML = mixHtml;
+    els.chartMix.querySelectorAll(".mix-row").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const id = btn.getAttribute("data-cat");
+        if (state.cats.size === 1 && state.cats.has(id)) {
+          state.cats = new Set(CATEGORIES.map(function (c) { return c.id; }));
+          toast("Showing all categories");
+        } else {
+          state.cats = new Set([id]);
+          toast("Isolated: " + (CAT_BY_ID[id] ? CAT_BY_ID[id].label : id));
+        }
+        renderLegend();
+        scheduleRender(0);
+      });
+    });
 
     // Corridor leaderboard: tap a corridor to filter the map by that road
     const byCorr = new Map();
@@ -2402,41 +2516,60 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
   }
 
-  /* ═══════════════════════ normalized rates (denominator-aware) ═══════════════════════ */
-  let _dataSpanCache = null;
+  /* ═══════════════════════ exposure normalization ═══════════════════════
+     Raw incident counts are misleading: a date range contains ~5× more
+     weekday hours than weekend days, more school days than breaks, etc.
+     computeSpanFor() walks the FILTERED rows' own date range once and counts
+     how much of each kind of time actually occurred, so every comparison in
+     the Analytics tab can be a fair rate (per hour / per day). */
+  let _dataSpanCache = new Map();
 
-  function computeDataSpan() {
-    if (!INCIDENTS.length) return null;
+  function computeSpanFor(rows) {
     let minMs = Infinity, maxMs = -Infinity;
-    for (const row of INCIDENTS) {
-      const pr = parseReported(row[IDX_REPORTED]);
-      if (!pr || !pr.dt) continue;
-      const ms = pr.dt.getTime();
+    for (const row of rows) {
+      const dt = bestRowDate(row);
+      if (!dt) continue;
+      const ms = dt.getTime();
       if (ms < minMs) minMs = ms;
       if (ms > maxMs) maxMs = ms;
     }
     if (!isFinite(minMs)) return null;
+    const key = minMs + "|" + maxMs;
+    if (_dataSpanCache.has(key)) return _dataSpanCache.get(key);
 
     let rushHours = 0, nonRushWeekdayHours = 0, schoolDayHours = 0, nonSchoolWeekdayHours = 0;
+    let weekdayDays = 0, weekendDays = 0, totalDays = 0;
+    const perDow = [0, 0, 0, 0, 0, 0, 0];
+    const perMonthDays = new Array(12).fill(0);
     const d = new Date(minMs);
     d.setHours(0, 0, 0, 0);
     const end = new Date(maxMs);
     end.setHours(23, 59, 59, 999);
     while (d <= end) {
       const dow = d.getDay();
+      totalDays += 1;
+      perDow[dow] += 1;
+      perMonthDays[d.getMonth()] += 1;
       if (dow !== 0 && dow !== 6) {
+        weekdayDays += 1;
         rushHours += 5;
         nonRushWeekdayHours += 19;
         if (isSchoolDayJS(d)) schoolDayHours += 24; else nonSchoolWeekdayHours += 24;
+      } else {
+        weekendDays += 1;
       }
       d.setDate(d.getDate() + 1);
     }
-    return { rushHours: rushHours, nonRushWeekdayHours: nonRushWeekdayHours, schoolDayHours: schoolDayHours, nonSchoolWeekdayHours: nonSchoolWeekdayHours };
-  }
-
-  function _getDataSpan() {
-    if (!_dataSpanCache) _dataSpanCache = computeDataSpan();
-    return _dataSpanCache;
+    const span = {
+      minMs: minMs, maxMs: maxMs, totalDays: totalDays,
+      weekdayDays: weekdayDays, weekendDays: weekendDays,
+      perDow: perDow, perMonthDays: perMonthDays,
+      rushHours: rushHours, nonRushWeekdayHours: nonRushWeekdayHours,
+      schoolDayHours: schoolDayHours, nonSchoolWeekdayHours: nonSchoolWeekdayHours
+    };
+    if (_dataSpanCache.size > 16) _dataSpanCache.clear();
+    _dataSpanCache.set(key, span);
+    return span;
   }
 
   function _isRushHourRow(row) {
@@ -2469,17 +2602,21 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   function renderRatesPanel(rows) {
     const el = els.ratesContent;
-    const span = _getDataSpan();
-    if (!span || span.rushHours === 0) {
-      el.innerHTML = '<span class="rates-no-data">Not enough data to compute rates.</span>';
+    const span = computeSpanFor(rows.length ? rows : INCIDENTS);
+    if (!span || span.totalDays === 0) {
+      el.innerHTML = '<span class="rates-no-data">Not enough dated incidents to compute rates.</span>';
       return;
     }
 
     let rushCount = 0, nonRushCount = 0, schoolCount = 0, nonSchoolCount = 0;
+    let weekdayCount = 0, weekendCount = 0;
     let rainCount = 0, noRainCount = 0, windyCount = 0, calmCount = 0, lowVisCount = 0, goodVisCount = 0;
 
     for (const row of rows) {
-      if (!_isWeekendRow(row)) {
+      if (_isWeekendRow(row)) {
+        weekendCount++;
+      } else {
+        weekdayCount++;
         if (_isRushHourRow(row)) rushCount++; else nonRushCount++;
         if (_isSchoolDayRow(row)) schoolCount++; else nonSchoolCount++;
       }
@@ -2495,85 +2632,118 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
-    function barRow(label, count, denominator, maxRate, colorVar, isRate) {
-      const rate = denominator > 0 ? count / denominator : 0;
-      const pct = maxRate > 0 ? Math.min(100, (rate / maxRate) * 100) : 0;
-      let valText;
-      if (isRate) {
-        if (denominator <= 0 || count === 0) {
-          valText = '<span class="rates-n">0</span>';
-        } else {
-          const rStr = rate >= 0.1 ? rate.toFixed(2) + "/hr" : (rate * 1000).toFixed(1) + "/1000 hr";
-          valText = rStr + '<span class="rates-n"> (' + count + ')</span>';
-        }
-      } else {
-        const p = denominator > 0 ? ((count / denominator) * 100).toFixed(1) + "%" : "—";
-        valText = p + '<span class="rates-n"> (' + count + ')</span>';
-      }
+    // One labelled bar. `value` is the already-normalized rate or share;
+    // `maxValue` (same units) sets the 100% fill so bars are comparable
+    // within their group.
+    function barRow(label, value, maxValue, colorVar, valText) {
+      const pct = maxValue > 0 ? Math.min(100, (value / maxValue) * 100) : 0;
       return '<div class="rates-row">' +
         '<span class="rates-label">' + esc(label) + '</span>' +
         '<div class="rates-bar-wrap"><div class="rates-bar-fill" style="width:' + pct.toFixed(1) + '%;background:var(' + colorVar + ')"></div></div>' +
         '<span class="rates-val">' + valText + '</span></div>';
     }
-
-    function relRisk(countA, hoursA, countB, hoursB, labelA, labelB) {
-      if (hoursA <= 0 || hoursB <= 0) return "";
-      const rA = countA / hoursA, rB = countB / hoursB;
-      if (rA === 0 && rB === 0) return "";
-      if (rB === 0) return labelA + " has incidents but " + labelB + " does not.";
-      const ratio = rA / rB;
-      if (Math.abs(ratio - 1) < 0.05) return labelA + " and " + labelB + " are about equal per hour.";
-      if (ratio > 1) return labelA + " is <strong>" + ratio.toFixed(1) + "&times;</strong> more frequent per hour than " + labelB + ".";
-      return labelB + " is <strong>" + (1 / ratio).toFixed(1) + "&times;</strong> more frequent per hour than " + labelA + ".";
+    function rateText(count, hours) {
+      if (hours <= 0 || count === 0) return '<span class="rates-n">0</span>';
+      const r = count / hours;
+      const s = r >= 0.1 ? r.toFixed(2) + "/hr" : (r * 1000).toFixed(1) + "/1000 hr";
+      return s + '<span class="rates-n"> (' + count + ')</span>';
+    }
+    function ratio(a, ha, b, hb, la, lb) {
+      if (ha <= 0 || hb <= 0) return "";
+      const ra = a / ha, rb = b / hb;
+      if (ra === 0 && rb === 0) return "";
+      if (rb === 0) return la + " has incidents but " + lb + " has none.";
+      const q = ra / rb;
+      if (Math.abs(q - 1) < 0.05) return la + " and " + lb + " are about equal.";
+      if (q > 1) return la + " runs <strong>" + q.toFixed(1) + "&times;</strong> the rate of " + lb + ".";
+      return lb + " runs <strong>" + (1 / q).toFixed(1) + "&times;</strong> the rate of " + la + ".";
+    }
+    function group(title, note, body, explain) {
+      return '<div class="rates-group"><div class="rates-group-title">' + title +
+        (note ? ' <span class="rates-span-note">' + note + '</span>' : '') + '</div>' +
+        body + (explain ? '<div class="rates-explain">' + explain + '</div>' : '') + '</div>';
     }
 
-    const maxRR = Math.max(rushCount / span.rushHours, nonRushCount / span.nonRushWeekdayHours) || 1e-9;
+    // Rush hour vs off-peak: per-HOUR rates.
+    const rushRate = span.rushHours > 0 ? rushCount / span.rushHours : 0;
+    const offRate = span.nonRushWeekdayHours > 0 ? nonRushCount / span.nonRushWeekdayHours : 0;
+    const maxRR = Math.max(rushRate, offRate) || 1;
     const rushHTML =
-      barRow("Rush hour", rushCount, span.rushHours, maxRR, "--bad", true) +
-      barRow("Off-peak", nonRushCount, span.nonRushWeekdayHours, maxRR, "--accent", true);
-    const rushRatio = relRisk(rushCount, span.rushHours, nonRushCount, span.nonRushWeekdayHours, "Rush hour", "Off-peak");
+      barRow("Rush hour", rushRate, maxRR, "--bad", rateText(rushCount, span.rushHours)) +
+      barRow("Off-peak", offRate, maxRR, "--accent", rateText(nonRushCount, span.nonRushWeekdayHours)) +
+      '<div class="rates-ratio">' + ratio(rushCount, span.rushHours, nonRushCount, span.nonRushWeekdayHours, "Rush hour", "off-peak") + '</div>';
 
-    const maxSR = Math.max(schoolCount / span.schoolDayHours, nonSchoolCount / span.nonSchoolWeekdayHours) || 1e-9;
-    const schoolHTML =
-      barRow("School day", schoolCount, span.schoolDayHours, maxSR, "--bad", true) +
-      barRow("No school", nonSchoolCount, span.nonSchoolWeekdayHours, maxSR, "--accent", true);
-    const schoolRatio = relRisk(schoolCount, span.schoolDayHours, nonSchoolCount, span.nonSchoolWeekdayHours, "School days", "No-school days");
+    // Weekday vs weekend: per-DAY rates (raw totals would favor weekdays 5:2).
+    const wdRate = span.weekdayDays > 0 ? weekdayCount / span.weekdayDays : 0;
+    const weRate = span.weekendDays > 0 ? weekendCount / span.weekendDays : 0;
+    const maxWD = Math.max(wdRate, weRate) || 1;
+    function perDayText(count, days) {
+      if (days <= 0) return '<span class="rates-n">—</span>';
+      return (count / days).toFixed(1) + "/day" + '<span class="rates-n"> (' + count + ')</span>';
+    }
+    const wdHTML =
+      barRow("Weekdays", wdRate, maxWD, "--bad", perDayText(weekdayCount, span.weekdayDays)) +
+      barRow("Weekends", weRate, maxWD, "--accent", perDayText(weekendCount, span.weekendDays)) +
+      '<div class="rates-ratio">' + ratio(weekdayCount, span.weekdayDays, weekendCount, span.weekendDays, "A weekday", "a weekend day") + '</div>';
 
+    // School day vs no school: per-HOUR rates over weekdays.
+    const schRate = span.schoolDayHours > 0 ? schoolCount / span.schoolDayHours : 0;
+    const noSchRate = span.nonSchoolWeekdayHours > 0 ? nonSchoolCount / span.nonSchoolWeekdayHours : 0;
+    const maxSR = Math.max(schRate, noSchRate) || 1;
+    const schHTML =
+      barRow("School day", schRate, maxSR, "--bad", rateText(schoolCount, span.schoolDayHours)) +
+      barRow("No school", noSchRate, maxSR, "--accent", rateText(nonSchoolCount, span.nonSchoolWeekdayHours)) +
+      '<div class="rates-ratio">' + ratio(schoolCount, span.schoolDayHours, nonSchoolCount, span.nonSchoolWeekdayHours, "School days", "no-school days") + '</div>';
+
+    // Conditions at incident time: SHARES of weather-tagged incidents, bars
+    // filled relative to the larger share in each pair so both are readable.
     const wTotal = rainCount + noRainCount;
     let weatherHTML = "";
     if (wTotal === 0) {
       weatherHTML = '<div class="rates-row"><span class="rates-no-data">No weather data in this selection.</span></div>';
     } else {
-      const maxW = Math.max(rainCount, noRainCount) || 1;
-      weatherHTML +=
-        barRow("Rain / precip", rainCount, wTotal, maxW, "--accent", false) +
-        barRow("No rain", noRainCount, wTotal, maxW, "--good", false);
-      if (windyCount + calmCount > 0) {
-        const wndT = windyCount + calmCount;
-        const maxWnd = Math.max(windyCount, calmCount) || 1;
-        weatherHTML +=
-          barRow("Windy (≥20 mph)", windyCount, wndT, maxWnd, "--warn", false) +
-          barRow("Calm wind", calmCount, wndT, maxWnd, "--good", false);
+      function shareText(count, total) {
+        return ((count / total) * 100).toFixed(1) + "%" + '<span class="rates-n"> (' + count + ')</span>';
       }
-      if (lowVisCount + goodVisCount > 0) {
-        const visT = lowVisCount + goodVisCount;
-        const maxVis = Math.max(lowVisCount, goodVisCount) || 1;
+      const rainShare = rainCount / wTotal, dryShare = noRainCount / wTotal;
+      const maxRain = Math.max(rainShare, dryShare) || 1;
+      weatherHTML +=
+        barRow("Rain / precip", rainShare, maxRain, "--accent", shareText(rainCount, wTotal)) +
+        barRow("No rain", dryShare, maxRain, "--good", shareText(noRainCount, wTotal));
+      const wndT = windyCount + calmCount;
+      if (wndT > 0) {
+        const a = windyCount / wndT, b = calmCount / wndT, mx = Math.max(a, b) || 1;
         weatherHTML +=
-          barRow("Low vis (<5 mi)", lowVisCount, visT, maxVis, "--warn", false) +
-          barRow("Good vis", goodVisCount, visT, maxVis, "--good", false);
+          barRow("Windy (≥20 mph)", a, mx, "--warn", shareText(windyCount, wndT)) +
+          barRow("Calm wind", b, mx, "--good", shareText(calmCount, wndT));
+      }
+      const visT = lowVisCount + goodVisCount;
+      if (visT > 0) {
+        const a = lowVisCount / visT, b = goodVisCount / visT, mx = Math.max(a, b) || 1;
+        weatherHTML +=
+          barRow("Low vis (<5 mi)", a, mx, "--warn", shareText(lowVisCount, visT)) +
+          barRow("Good vis", b, mx, "--good", shareText(goodVisCount, visT));
       }
     }
 
+    const d1 = new Date(span.minMs), d2 = new Date(span.maxMs);
+    const fmt = function (d) { return (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear(); };
     el.innerHTML =
-      '<div class="rates-subtitle">From ' + rows.length.toLocaleString() + ' filtered incident' + (rows.length !== 1 ? 's' : '') + ' — denominators are hours in the dataset’s date range</div>' +
-      '<div class="rates-group"><div class="rates-group-title">Rush hour vs. off-peak ' +
-      '<span class="rates-span-note">(' + span.rushHours.toLocaleString() + ' rush hrs · ' + span.nonRushWeekdayHours.toLocaleString() + ' off-peak hrs)</span></div>' +
-      rushHTML + (rushRatio ? '<div class="rates-ratio">' + rushRatio + '</div>' : '') + '</div>' +
-      '<div class="rates-group"><div class="rates-group-title">School day vs. no school ' +
-      '<span class="rates-span-note">(' + span.schoolDayHours.toLocaleString() + ' school hrs · ' + span.nonSchoolWeekdayHours.toLocaleString() + ' no-school hrs)</span></div>' +
-      schoolHTML + (schoolRatio ? '<div class="rates-ratio">' + schoolRatio + '</div>' : '') + '</div>' +
-      '<div class="rates-group"><div class="rates-group-title">Weather breakdown ' +
-      '<span class="rates-span-note">% of incidents with weather data</span></div>' + weatherHTML + '</div>';
+      '<div class="rates-subtitle">Filtered range ' + fmt(d1) + ' – ' + fmt(d2) + ': ' +
+      span.totalDays.toLocaleString() + ' days (' + span.weekdayDays.toLocaleString() + ' weekdays, ' +
+      span.weekendDays.toLocaleString() + ' weekend days). All comparisons below are normalized to that exposure.</div>' +
+      group("Rush hour vs. off-peak",
+        "(" + span.rushHours.toLocaleString() + " rush hrs · " + span.nonRushWeekdayHours.toLocaleString() + " off-peak hrs)",
+        rushHTML,
+        "Incidents per hour of each kind — rush hour is only 5 of 24 weekday hours, so raw counts would understate it.") +
+      group("Weekday vs. weekend", "(per-day averages)", wdHTML,
+        "Averages per calendar day. The range has " + span.weekdayDays + " weekdays but only " + span.weekendDays + " weekend days, so totals alone would exaggerate weekdays.") +
+      group("School day vs. no school",
+        "(" + span.schoolDayHours.toLocaleString() + " school hrs · " + span.nonSchoolWeekdayHours.toLocaleString() + " no-school hrs)",
+        schHTML,
+        "Per-hour rates over weekdays only, using the LPSS calendar heuristic.") +
+      group("Conditions at incident time", "(share of incidents carrying weather data)", weatherHTML,
+        "Descriptive shares, not risk: we don't measure how many hours it rained overall, so a fair rainy-vs-dry rate isn't possible from this data alone.");
   }
 
   /* ═══════════════════════ smart insights ═══════════════════════ */
@@ -3456,7 +3626,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   let lastRefreshMs = Date.now();  // page load counts as the first refresh
 
   function onDataReplaced() {
-    _dataSpanCache = null;
+    _dataSpanCache.clear();
     _catCache.clear();
     buildLocHistory();
     renderStatTiles();
@@ -3466,8 +3636,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     scheduleRender(0);
   }
 
-  function reloadData() {
-    if (refreshBusy || document.visibilityState !== "visible") return;
+  function reloadData(manual, done) {
+    if (refreshBusy) { if (done) done(); return; }
+    if (!manual && document.visibilityState !== "visible") { if (done) done(); return; }
     refreshBusy = true;
     const prevCount = INCIDENTS.length;
     const s = document.createElement("script");
@@ -3478,17 +3649,29 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       lastRefreshMs = Date.now();
       renderStatus();
       const fresh = window.INCIDENTS_DATA || [];
-      if (fresh === INCIDENTS) return;
+      if (fresh === INCIDENTS) {
+        if (manual) toast("Feed is up to date");
+        if (done) done();
+        return;
+      }
       INCIDENTS = fresh;
       OSM_INTERSECTIONS = window.OSM_INTERSECTIONS_DATA || [];
       HOT_SPOTS = window.HOT_SPOTS_DATA || [];
       UNLOCATED_COUNT = window.INCIDENTS_UNLOCATED_COUNT || 0;
       UNLOCATED_LIST = window.INCIDENTS_UNLOCATED_LIST || [];
+      UNMAPPABLE_COUNT = window.INCIDENTS_UNMAPPABLE_COUNT || 0;
       onDataReplaced();
       const delta = INCIDENTS.length - prevCount;
       if (delta > 0) toast(delta + " new incident" + (delta === 1 ? "" : "s") + " loaded");
+      else if (manual) toast("Feed is up to date");
+      if (done) done();
     };
-    s.onerror = function () { refreshBusy = false; s.remove(); };
+    s.onerror = function () {
+      refreshBusy = false;
+      s.remove();
+      if (manual) toast("Refresh failed — will retry automatically");
+      if (done) done();
+    };
     document.body.appendChild(s);
   }
 
@@ -3620,6 +3803,73 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       // since a real drag calls preventDefault and suppresses the click).
       els.sbHandle.addEventListener("click", function () {
         if (window.innerWidth <= 700) setSheetExpanded(!els.sidebar.classList.contains("expanded"));
+      });
+    })();
+
+    // Pull-to-refresh on the Feed tab: drag down from the top of the list to
+    // fetch the latest data file immediately. A tap on ↻ does the same.
+    (function () {
+      const bar = $("ptrBar"), icon = $("ptrIcon"), text = $("ptrText");
+      const ARM_AT = 52, MAX_H = 68;
+      let startY = null, pulling = false, loading = false;
+
+      function setBar(h) { bar.style.height = Math.max(0, Math.min(MAX_H, h)) + "px"; }
+      function finish() {
+        loading = false;
+        bar.classList.remove("loading", "armed", "dragging");
+        icon.textContent = "↓";
+        text.textContent = "Pull to refresh";
+        setBar(0);
+      }
+      function trigger() {
+        if (loading) return;
+        loading = true;
+        bar.classList.add("loading");
+        bar.classList.remove("dragging");
+        icon.textContent = "↻";
+        text.textContent = "Refreshing…";
+        setBar(44);
+        reloadData(true, function () { setTimeout(finish, 350); });
+      }
+
+      els.sbBody.addEventListener("touchstart", function (e) {
+        if (loading) return;
+        if (!els.panelFeed.classList.contains("active")) return;
+        if (els.sbBody.scrollTop > 0) return;
+        startY = e.touches[0].clientY;
+        pulling = false;
+      }, { passive: true });
+
+      els.sbBody.addEventListener("touchmove", function (e) {
+        if (startY == null || loading) return;
+        const dy = e.touches[0].clientY - startY;
+        if (dy <= 0) { if (!pulling) startY = null; return; }
+        pulling = true;
+        bar.classList.add("dragging");
+        const h = dy * 0.45;
+        setBar(h);
+        bar.classList.toggle("armed", h >= ARM_AT);
+        if (e.cancelable) e.preventDefault();
+      }, { passive: false });
+
+      function endPull() {
+        if (startY == null || loading) { startY = null; return; }
+        startY = null;
+        if (!pulling) return;
+        pulling = false;
+        bar.classList.remove("dragging");
+        if (bar.classList.contains("armed")) trigger();
+        else setBar(0);
+      }
+      els.sbBody.addEventListener("touchend", endPull, { passive: true });
+      els.sbBody.addEventListener("touchcancel", endPull, { passive: true });
+
+      els.feedRefreshBtn.addEventListener("click", function () {
+        if (loading) return;
+        els.feedRefreshBtn.classList.add("spin");
+        reloadData(true, function () {
+          setTimeout(function () { els.feedRefreshBtn.classList.remove("spin"); }, 350);
+        });
       });
     })();
 
