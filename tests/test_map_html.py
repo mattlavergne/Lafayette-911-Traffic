@@ -65,7 +65,8 @@ class MapTemplateTests(unittest.TestCase):
                     weather_observed_at TEXT, weather_source TEXT,
                     hour_of_day INTEGER, day_of_week INTEGER, is_school_day INTEGER,
                     nws_flash_flood_warning INTEGER, nws_severe_thunderstorm_warning INTEGER,
-                    nws_tornado_watch INTEGER, road_type TEXT, created_at TEXT
+                    nws_tornado_watch INTEGER, road_type TEXT, created_at TEXT,
+                    geocode_attempts INTEGER
                 )
                 """
             )
@@ -80,6 +81,13 @@ class MapTemplateTests(unittest.TestCase):
                 " latitude, longitude, created_at)"
                 " VALUES ('INC2', 'PENDING RD', 'VEHICLE FIRE', '01/16/2026 9:00 AM', '', NULL, NULL,"
                 " '2026-01-16T09:05:00Z')"
+            )
+            # Retired after 3 failed attempts: "unmappable", not "locating".
+            conn.execute(
+                "INSERT INTO incidents (incident_number, location, cause, reported, assisting,"
+                " latitude, longitude, created_at, geocode_attempts)"
+                " VALUES ('INC3', 'GIVEN UP LN', 'ACCIDENT', '01/17/2026 9:00 AM', '', NULL, NULL,"
+                " '2026-01-17T09:05:00Z', 3)"
             )
             conn.commit()
             conn.close()
@@ -97,6 +105,9 @@ class MapTemplateTests(unittest.TestCase):
             # Pending incidents are exported so the feed can show them.
             self.assertIn("window.INCIDENTS_UNLOCATED_LIST=", datajs)
             self.assertIn("PENDING RD", datajs)
+            # Retired incidents are counted separately and NOT listed as locating.
+            self.assertIn("window.INCIDENTS_UNMAPPABLE_COUNT=1", datajs)
+            self.assertNotIn("GIVEN UP LN", datajs)
 
             with open(map_path, encoding="utf-8") as handle:
                 html = handle.read()

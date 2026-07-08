@@ -10,7 +10,7 @@ import sqlite3
 import tempfile
 import time
 from datetime import datetime
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -67,7 +67,8 @@ def _write_text_if_changed(path: str, text: str) -> bool:
 
 
 def _build_incidents_script(
-    incidents, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None
+    incidents, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None,
+    unmappable_count: int = 0,
 ) -> str:
     s = "window.INCIDENTS_DATA=" + json.dumps(incidents, ensure_ascii=False, separators=(",", ":"))
     s += ";\nwindow.OSM_INTERSECTIONS_DATA=" + json.dumps(
@@ -80,16 +81,19 @@ def _build_incidents_script(
     s += "\nwindow.INCIDENTS_UNLOCATED_LIST=" + json.dumps(
         unlocated_list or [], ensure_ascii=False, separators=(",", ":")
     )
-    s += ";"
+    s += f";\nwindow.INCIDENTS_UNMAPPABLE_COUNT={int(unmappable_count)};"
     return s
 
 
 def _write_jsonjs_if_changed(
-    path: str, incidents, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None
+    path: str, incidents, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None,
+    unmappable_count: int = 0,
 ) -> bool:
     return _write_text_if_changed(
         path,
-        _build_incidents_script(incidents, osm_intersections, hot_spots, unlocated_count, unlocated_list),
+        _build_incidents_script(
+            incidents, osm_intersections, hot_spots, unlocated_count, unlocated_list, unmappable_count
+        ),
     )
 
 
@@ -105,7 +109,8 @@ def _stream_jsonjs_incident(handle, incident, first: bool) -> bool:
 
 
 def _stream_jsonjs_footer(
-    handle, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None
+    handle, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None,
+    unmappable_count: int = 0,
 ) -> None:
     handle.write("];\nwindow.OSM_INTERSECTIONS_DATA=")
     handle.write(json.dumps(osm_intersections, ensure_ascii=False, separators=(",", ":")))
@@ -114,7 +119,7 @@ def _stream_jsonjs_footer(
     handle.write(f";\nwindow.INCIDENTS_UNLOCATED_COUNT={int(unlocated_count)};")
     handle.write("\nwindow.INCIDENTS_UNLOCATED_LIST=")
     handle.write(json.dumps(unlocated_list or [], ensure_ascii=False, separators=(",", ":")))
-    handle.write(";")
+    handle.write(f";\nwindow.INCIDENTS_UNMAPPABLE_COUNT={int(unmappable_count)};")
 
 
 def _ensure_world_readable(path: str) -> None:
@@ -761,6 +766,15 @@ def _safe_text(value) -> str:
     return text
 
 
+def _safe_int(value):
+    try:
+        if value is None or value == "":
+            return None
+        return int(float(value))
+    except Exception:
+        return None
+
+
 def _parse_reported(value):
     if value is None:
         return None
@@ -1073,6 +1087,7 @@ def _write_streaming_datajs(
     center_count = 0
     non_tc_count = 0
     unlocated_count = 0
+    unmappable_count = 0
     unlocated_rows: List[List] = []
 
     map_dir = os.path.dirname(output_datajs) or "."
@@ -1090,7 +1105,7 @@ def _write_streaming_datajs(
 
             cursor = conn.execute(
                 """
-                SELECT location, cause, reported, assisting, incident_number, latitude, longitude,
+                SELECT location, cause, reported, assisting, incident_number, latitude, longitude, geocode_attempts,
                        weather_temp_f, weather_precip_prob, weather_precip_in,
                        weather_wind_speed_mph, weather_wind_gust_mph, weather_visibility_mi,
                        weather_sky_cover_pct, weather_observed_at, weather_source,
@@ -1108,6 +1123,7 @@ def _write_streaming_datajs(
                 incident_number,
                 lat,
                 lon,
+                geocode_attempts,
                 weather_temp_f,
                 weather_precip_prob,
                 weather_precip_in,
@@ -1129,14 +1145,22 @@ def _write_streaming_datajs(
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
                 if lat is None or lon is None:
-                    unlocated_count += 1
-                    unlocated_rows.append([
-                        str(location or "").strip(),
-                        str(cause or "").strip(),
-                        str(reported or "").strip(),
-                        str(assisting or "").strip(),
-                        _safe_text(created_at),
-                    ])
+                    # Split the queue from the give-ups: incidents whose retry
+                    # lifetime is spent (or whose address is blacklisted, which
+                    # retires them at max attempts) are "unmappable" and must
+                    # not inflate the "locating…" indicator forever.
+                    attempts = _safe_int(geocode_attempts) or 0
+                    if attempts >= 3:
+                        unmappable_count += 1
+                    else:
+                        unlocated_count += 1
+                        unlocated_rows.append([
+                            str(location or "").strip(),
+                            str(cause or "").strip(),
+                            str(reported or "").strip(),
+                            str(assisting or "").strip(),
+                            _safe_text(created_at),
+                        ])
                     continue
 
                 cause_str = str(cause or "").strip()
@@ -1295,7 +1319,8 @@ def _write_streaming_datajs(
             # ISO created_at sorts lexicographically. Capped to keep the file small.
             unlocated_rows.sort(key=lambda r: r[4] or "", reverse=True)
             _stream_jsonjs_footer(
-                handle, osm_intersections, hot_spots, unlocated_count, unlocated_rows[:50]
+                handle, osm_intersections, hot_spots, unlocated_count, unlocated_rows[:50],
+                unmappable_count,
             )
     finally:
         conn.close()
@@ -1421,13 +1446,40 @@ def _load_dataframe_from_db(db_path: str) -> pd.DataFrame:
     return df
 
 
-def create_map_from_csv(input_csv: str, output_map: str, output_datajs: str, osm_cache_dir: str) -> None:
+def _load_geocode_attempts_map(db_path: str) -> dict:
+    """{incident_number: geocode_attempts} for coordless rows, from the DB.
+
+    The CSV archive carries no retry state, so the CSV render path borrows it
+    from the working store to tell queued incidents ("locating…") apart from
+    permanently-unresolvable ones. Empty dict when the DB is unavailable —
+    every coordless row then counts as still locating, the safe default.
+    """
+    if not db_path or not os.path.exists(db_path):
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT incident_number, geocode_attempts FROM incidents "
+                "WHERE latitude IS NULL OR longitude IS NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {str(num): (_safe_int(att) or 0) for num, att in rows if num}
+    except Exception:
+        return {}
+
+
+def create_map_from_csv(
+    input_csv: str, output_map: str, output_datajs: str, osm_cache_dir: str, db_path: str = ""
+) -> None:
     if not os.path.exists(input_csv):
         _write_text_if_changed(output_datajs, "window.INCIDENTS_DATA=[];window.OSM_INTERSECTIONS_DATA=[];")
         return
 
     df = _load_dataframe_from_csv(input_csv)
-    _create_map_from_dataframe(df, output_map, output_datajs, osm_cache_dir)
+    attempts_map = _load_geocode_attempts_map(db_path)
+    _create_map_from_dataframe(df, output_map, output_datajs, osm_cache_dir, attempts_map)
 
 
 def create_map_from_db(db_path: str, output_map: str, output_datajs: str, osm_cache_dir: str) -> None:
@@ -1462,7 +1514,10 @@ def backfill_road_types(db_path: str, osm_cache_dir: str) -> int:
         return 0
 
 
-def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs: str, osm_cache_dir: str) -> None:
+def _create_map_from_dataframe(
+    df: pd.DataFrame, output_map: str, output_datajs: str, osm_cache_dir: str,
+    attempts_map: Optional[dict] = None,
+) -> None:
     if df.empty:
         _write_text_if_changed(output_datajs, "window.INCIDENTS_DATA=[];window.OSM_INTERSECTIONS_DATA=[];")
         return
@@ -1495,7 +1550,15 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
     # them on the floor.
     unlocated_mask = df[lat_col].isna() | df[lon_col].isna()
     unlocated_rows: List[List] = []
+    unmappable_count = 0
     for _, r in df[unlocated_mask].iterrows():
+        # Rows whose retry lifetime is spent are "unmappable": they must not
+        # sit in the "locating…" indicator forever. Retry state lives in the
+        # DB (attempts_map); without it, everything counts as still locating.
+        attempts = (attempts_map or {}).get(_safe_text(r.get("incident_number")), 0)
+        if attempts >= 3:
+            unmappable_count += 1
+            continue
         unlocated_rows.append([
             _safe_text(r.get("location")),
             _safe_text(r.get("cause")),
@@ -1511,7 +1574,7 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
 
     df = df.dropna(subset=[lat_col, lon_col]).copy()
     if df.empty:
-        _write_jsonjs_if_changed(output_datajs, [], [], [], unlocated_count, unlocated_rows)
+        _write_jsonjs_if_changed(output_datajs, [], [], [], unlocated_count, unlocated_rows, unmappable_count)
         return
 
     df = _collapse_traffic_control(df, lat_col, lon_col)
@@ -1628,7 +1691,8 @@ def _create_map_from_dataframe(df: pd.DataFrame, output_map: str, output_datajs:
         hot_spots = []
 
     _write_jsonjs_if_changed(
-        output_datajs, incidents, osm_intersections, hot_spots, unlocated_count, unlocated_rows
+        output_datajs, incidents, osm_intersections, hot_spots, unlocated_count, unlocated_rows,
+        unmappable_count,
     )
     _ensure_world_readable(output_datajs)
 
