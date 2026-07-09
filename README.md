@@ -132,6 +132,52 @@ Basemaps are CARTO (light/dark) with an OpenStreetMap fallback; popups link
 out to Google Maps, Street View and Waze via plain URLs. None of the map's
 runtime features consume paid API quota.
 
+## Publish to GitHub Pages (free)
+
+The map is two static files, so it can be hosted for free on GitHub Pages at
+`https://<user>.github.io/<repo>/`. The running service keeps them fresh by
+force-pushing them to a dedicated `gh-pages` branch via
+[`scripts/publish_pages.sh`](scripts/publish_pages.sh) — the source stays on
+`main`, the published site stays a single flat commit, and nothing sensitive
+is ever exposed (the map contains no API keys).
+
+**One-time setup**
+
+1. **Make the repo public** (Pages is free for public repos) — Settings →
+   General → Danger Zone → Change visibility.
+2. **Give the machine push access** to the repo without a password prompt.
+   The simplest is a repo deploy key:
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/laf911_deploy -N ""       # on the Pi
+   cat ~/.ssh/laf911_deploy.pub
+   ```
+   Add that public key under repo Settings → Deploy keys → **Add deploy key**,
+   with **Allow write access** checked. Then point the repo's `origin` at SSH
+   and use the key:
+   ```bash
+   git -C /path/to/Lafayette-911-Traffic remote set-url origin \
+       git@github.com:<user>/<repo>.git
+   echo 'Host github.com
+     IdentityFile ~/.ssh/laf911_deploy
+     IdentitiesOnly yes' >> ~/.ssh/config
+   ```
+3. **Publish once** to create the branch, then enable Pages:
+   ```bash
+   scripts/publish_pages.sh
+   ```
+   Settings → Pages → Build and deployment → **Deploy from a branch** →
+   `gh-pages` / `/ (root)` → Save. Your map appears at
+   `https://<user>.github.io/<repo>/` within a minute.
+
+**Keep it updated** with a cron entry (publishes only when the data actually
+changed, so it's safe to run often):
+
+```cron
+*/5 * * * * cd /path/to/Lafayette-911-Traffic && scripts/publish_pages.sh >> /tmp/laf911_pages.log 2>&1
+```
+
+The public map then trails the live data by at most a few minutes.
+
 ## External services
 
 | Service | Used for | Cost notes |
@@ -140,6 +186,7 @@ runtime features consume paid API quota.
 | Google Geocoding API | Address → coordinates | budgeted; aggressive caching & blacklist |
 | NWS api.weather.gov | Weather snapshots, active alerts, live map weather | free, no key |
 | CARTO / OpenStreetMap tiles | Basemaps | free tiers; attribution kept |
+| GitHub Pages (optional) | Public hosting of the map | free for public repos |
 
 ## Development
 
