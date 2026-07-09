@@ -803,10 +803,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div id="alertBanner" role="status"></div>
 
   <div class="stat-tiles" id="rangeTiles" role="group" aria-label="Filter by time range — each tile shows its count and applies that range">
-    <button class="stat-tile" id="tileToday" data-range="today" type="button"><b>–</b><span>Today</span></button>
+    <button class="stat-tile active" id="tile24h" data-range="24h" type="button"><b>–</b><span>Past 24h</span></button>
     <button class="stat-tile" data-range="7d" type="button"><b id="tileWeekVal">–</b><span>7 days</span></button>
     <button class="stat-tile" data-range="30d" type="button"><b id="tileMonthVal">–</b><span>30 days</span></button>
-    <button class="stat-tile active" data-range="" type="button"><b id="tileTotalVal">–</b><span>All time</span></button>
+    <button class="stat-tile" data-range="all" type="button"><b id="tileTotalVal">–</b><span>All time</span></button>
   </div>
 
   <div class="legend-chips" id="legendChips" aria-label="Incident categories (tap to toggle)"></div>
@@ -1431,7 +1431,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     sidebar: $("sidebar"), sbHandle: $("sbHandle"),
     themeBtn: $("themeBtn"),
     statusText: $("statusText"), unlocChip: $("unlocChip"), alertBanner: $("alertBanner"),
-    tileToday: $("tileToday"),
+    tile24h: $("tile24h"),
     tileWeekVal: $("tileWeekVal"), tileMonthVal: $("tileMonthVal"), tileTotalVal: $("tileTotalVal"),
     legendChips: $("legendChips"),
     tabFilters: $("tabFilters"), tabAnalytics: $("tabAnalytics"), tabFeed: $("tabFeed"),
@@ -1770,7 +1770,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* ═══════════════════════ filters ═══════════════════════ */
   const state = {
     cats: new Set(CATEGORIES.map(function (c) { return c.id; })),  // enabled category ids
-    range: ""                                                       // '', today, 24h, 7d, 30d
+    range: "24h"                       // default landing view; "all" = every incident
   };
 
   const CAUSE_GROUPS = [
@@ -1799,7 +1799,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   function matchesRange(row, range, nowMs) {
-    if (!range) return true;
+    if (!range || range === "all") return true;
     if (range === "today") {
       const now = new Date(nowMs);
       const pr = parseReported(row[IDX_REPORTED]);
@@ -2088,7 +2088,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function countActiveFilters(f) {
     let n = 0;
     if (f.roadSearch) n++;
-    if (f.range) n++;
     if (f.cause !== "__ALL__") n++;
     if (f.causeGroup !== "__ALL__") n++;
     if (f.mm || f.dd || f.yy) n++;
@@ -2180,7 +2179,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     for (const spec of HASH_CHECKS) {
       if ($(spec[1]).checked) p.set(spec[0], "1");
     }
-    if (state.range) p.set("range", state.range);
+    if (state.range && state.range !== "24h") p.set("range", state.range);
     if (state.cats.size < CATEGORIES.length) {
       p.set("cats", Array.from(state.cats).join("."));
     }
@@ -2232,17 +2231,17 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function renderStatTiles() {
     const now = new Date();
     const nowMs = now.getTime();
-    let today = 0, week = 0, month = 0;
+    let last24h = 0, week = 0, month = 0;
     for (const row of INCIDENTS) {
       const dt = bestRowDate(row);
       if (!dt) continue;
       const age = nowMs - dt.getTime();
-      if (dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth() && dt.getDate() === now.getDate()) today++;
+      if (age <= 86400000) last24h++;
       if (age <= 7 * 86400000) week++;
       if (age <= 30 * 86400000) month++;
     }
-    countUp(els.tileToday.querySelector("b"), today);
-    els.tileToday.classList.toggle("hot", today > 0);
+    countUp(els.tile24h.querySelector("b"), last24h);
+    els.tile24h.classList.toggle("hot", last24h > 0);
     countUp(els.tileWeekVal, week);
     countUp(els.tileMonthVal, month);
     countUp(els.tileTotalVal, INCIDENTS.length);
@@ -3662,7 +3661,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.precIntersections.value = "3";
     els.precMicro.value = "4";
     state.cats = new Set(CATEGORIES.map(function (c) { return c.id; }));
-    setRange("", true);
+    setRange("24h", true);
     renderLegend();
   }
 
