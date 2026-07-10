@@ -437,8 +437,30 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .row-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .row-note { font-size: 11px; color: var(--text-3); margin: 2px 0 8px 0; line-height: 1.4; }
 
-  label.field { display: block; font-size: 11.5px; color: var(--text-2); font-weight: 600; min-width: 0; }
+  label.field, .field { display: block; font-size: 11.5px; color: var(--text-2); font-weight: 600; min-width: 0; }
   label.field select { margin-top: 4px; }
+  .field-label { display: block; }
+  .agency-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .agency-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px; font-weight: 600; padding: 5px 11px 5px 9px; border-radius: 999px;
+    border: 1px solid var(--panel-border); background: var(--chip); color: var(--text-2);
+    cursor: pointer; user-select: none; box-shadow: var(--edge);
+    transition: background 0.13s ease, border-color 0.13s ease, color 0.13s ease, transform 0.12s ease;
+  }
+  .agency-chip .tick {
+    width: 14px; height: 14px; border-radius: 5px; flex: none;
+    border: 1.5px solid var(--text-3); position: relative; transition: background 0.13s ease, border-color 0.13s ease;
+  }
+  .agency-chip .n { font-variant-numeric: tabular-nums; color: var(--text-3); font-weight: 500; }
+  .agency-chip:hover { background: var(--chip-hover); transform: translateY(-1px); }
+  .agency-chip.on { border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--text); }
+  .agency-chip.on .tick { background: var(--accent); border-color: var(--accent); }
+  .agency-chip.on .tick::after {
+    content: ""; position: absolute; left: 4px; top: 1px; width: 3px; height: 7px;
+    border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+  .agency-chip.on .n { color: color-mix(in srgb, var(--text) 65%, transparent); }
   select {
     font-family: var(--font); font-size: 12.5px; color: var(--text);
     padding: 7px 26px 7px 9px; border-radius: 9px; width: 100%;
@@ -745,6 +767,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     .acc .acc-head { padding: 14px 2px; }
     select, .check { min-height: 42px; font-size: 14px; }
     .check input { width: 19px; height: 19px; }
+    .agency-chip { min-height: 38px; font-size: 13px; padding: 7px 14px 7px 11px; }
+    .agency-chip .tick { width: 17px; height: 17px; }
+    .agency-chip.on .tick::after { left: 5px; top: 2px; width: 4px; height: 8px; }
     #roadSearch { font-size: 16px; min-height: 44px; }
     .range-chip { padding: 8px 14px; font-size: 13px; }
     .tab { padding: 10px 4px; font-size: 13.5px; }
@@ -803,10 +828,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div id="alertBanner" role="status"></div>
 
   <div class="stat-tiles" id="rangeTiles" role="group" aria-label="Filter by time range — each tile shows its count and applies that range">
-    <button class="stat-tile" id="tileToday" data-range="today" type="button"><b>–</b><span>Today</span></button>
+    <button class="stat-tile active" id="tile24h" data-range="24h" type="button"><b>–</b><span>Past 24h</span></button>
     <button class="stat-tile" data-range="7d" type="button"><b id="tileWeekVal">–</b><span>7 days</span></button>
     <button class="stat-tile" data-range="30d" type="button"><b id="tileMonthVal">–</b><span>30 days</span></button>
-    <button class="stat-tile active" data-range="" type="button"><b id="tileTotalVal">–</b><span>All time</span></button>
+    <button class="stat-tile" data-range="all" type="button"><b id="tileTotalVal">–</b><span>All time</span></button>
   </div>
 
   <div class="legend-chips" id="legendChips" aria-label="Incident categories (tap to toggle)"></div>
@@ -849,9 +874,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
             </label>
           </div>
           <div class="row">
-            <label class="field" style="flex:1">Responding agency
-              <select id="assistSelect"><option value="__ALL__">Any agency</option></select>
-            </label>
+            <div class="field" style="flex:1">
+              <span class="field-label">Responding agency</span>
+              <div id="agencyChecklist" class="agency-chips" role="group" aria-label="Filter by responding agency — select any to narrow"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1431,7 +1457,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     sidebar: $("sidebar"), sbHandle: $("sbHandle"),
     themeBtn: $("themeBtn"),
     statusText: $("statusText"), unlocChip: $("unlocChip"), alertBanner: $("alertBanner"),
-    tileToday: $("tileToday"),
+    tile24h: $("tile24h"),
     tileWeekVal: $("tileWeekVal"), tileMonthVal: $("tileMonthVal"), tileTotalVal: $("tileTotalVal"),
     legendChips: $("legendChips"),
     tabFilters: $("tabFilters"), tabAnalytics: $("tabAnalytics"), tabFeed: $("tabFeed"),
@@ -1439,7 +1465,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     filterBadge: $("filterBadge"),
     roadSearch: $("roadSearch"), roadSearchClear: $("roadSearchClear"),
     rangeTiles: $("rangeTiles"),
-    assistSelect: $("assistSelect"), chkHoliday: $("chkHoliday"), lightSelect: $("lightSelect"),
+    agencyChecklist: $("agencyChecklist"), chkHoliday: $("chkHoliday"), lightSelect: $("lightSelect"),
     causeGroupSelect: $("causeGroupSelect"), causeSelect: $("causeSelect"),
     monthSelect: $("monthSelect"), daySelect: $("daySelect"), yearSelect: $("yearSelect"),
     dowSelect: $("dowSelect"), dayTypeSelect: $("dayTypeSelect"), timeBlockSelect: $("timeBlockSelect"),
@@ -1768,10 +1794,45 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   /* ═══════════════════════ filters ═══════════════════════ */
+  // The feed's free-text "assisting" field names one or more responding
+  // agencies, but the source never formats it consistently: order varies
+  // ("POLICE FIRE" vs "FIRE POLICE"), words get glued ("SHERIFFFIRE"), and
+  // abbreviations appear (LPD/LPSO/LFD). Rather than list every raw string,
+  // we reduce each incident to the canonical agencies it mentions by matching
+  // these patterns (case-insensitive, no global flag so .test is stateless).
+  // Each agency owns a bit so an incident's agencies fit in one integer mask.
+  const AGENCIES = [
+    { id: "police",  label: "Police",  re: /POLICE|\bLPD\b/ },
+    { id: "sheriff", label: "Sheriff", re: /SHERIFF|\bLPSO\b/ },
+    { id: "fire",    label: "Fire",    re: /FIRE|\bLFD\b/ },
+    { id: "ems",     label: "EMS",     re: /\bEMS\b|AMBULANCE|ACADIAN|\bMEDIC/ }
+  ];
+  const AGENCY_BY_ID = {};
+  AGENCIES.forEach(function (a, i) { a.bit = 1 << i; AGENCY_BY_ID[a.id] = a; });
+
   const state = {
     cats: new Set(CATEGORIES.map(function (c) { return c.id; })),  // enabled category ids
-    range: ""                                                       // '', today, 24h, 7d, 30d
+    range: "24h",                      // default landing view; "all" = every incident
+    agencies: new Set()                // selected agency ids; empty = any (no filter)
   };
+
+  // Bitmask of the agencies mentioned in a row's assisting text (cached on the
+  // row object the first time it's needed, since INCIDENTS is large).
+  function agencyMaskOf(row) {
+    if (row.__agmask !== undefined) return row.__agmask;
+    const s = String(row[IDX_ASSIST] || "").toUpperCase();
+    let m = 0;
+    for (const a of AGENCIES) { if (a.re.test(s)) m |= a.bit; }
+    row.__agmask = m;
+    return m;
+  }
+
+  // Combined bitmask of the currently selected agencies (0 = filter inactive).
+  function selectedAgencyMask() {
+    let m = 0;
+    state.agencies.forEach(function (id) { if (AGENCY_BY_ID[id]) m |= AGENCY_BY_ID[id].bit; });
+    return m;
+  }
 
   const CAUSE_GROUPS = [
     { id: "fire", label: "Fire", keywords: ["FIRE"] },
@@ -1799,7 +1860,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   function matchesRange(row, range, nowMs) {
-    if (!range) return true;
+    if (!range || range === "all") return true;
     if (range === "today") {
       const now = new Date(nowMs);
       const pr = parseReported(row[IDX_REPORTED]);
@@ -2002,10 +2063,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return true;
   }
 
-  function matchesAssist(row, selected) {
-    if (!selected || selected === "__ALL__") return true;
-    // assisting is free text and may list several agencies; substring match.
-    return String(row[IDX_ASSIST] || "").toUpperCase().indexOf(selected.toUpperCase()) !== -1;
+  function matchesAgency(row, mask) {
+    if (!mask) return true;                    // no agency selected → no filter
+    return (agencyMaskOf(row) & mask) !== 0;   // row mentions any selected agency
   }
 
   function matchesHoliday(row, checked) {
@@ -2078,7 +2138,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       chkFlood: !!els.chkFloodWarning.checked,
       chkStorm: !!els.chkThunderstormWarning.checked,
       chkTornado: !!els.chkTornadoWatch.checked,
-      assist: (els.assistSelect.value || "__ALL__").trim(),
+      agencyMask: selectedAgencyMask(),
       holiday: !!els.chkHoliday.checked,
       light: (els.lightSelect.value || "any").trim(),
       range: state.range
@@ -2088,7 +2148,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function countActiveFilters(f) {
     let n = 0;
     if (f.roadSearch) n++;
-    if (f.range) n++;
     if (f.cause !== "__ALL__") n++;
     if (f.causeGroup !== "__ALL__") n++;
     if (f.mm || f.dd || f.yy) n++;
@@ -2106,7 +2165,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (f.visBand !== "any") n++;
     if (f.cloudBand !== "any") n++;
     if (f.chkFlood || f.chkStorm || f.chkTornado) n++;
-    if (f.assist !== "__ALL__") n++;
+    if (f.agencyMask) n++;
     if (f.holiday) n++;
     if (f.light !== "any") n++;
     if (state.cats.size < CATEGORIES.length) n++;
@@ -2132,7 +2191,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (!matchesRoadType(row, f.roadType)) continue;
       if (!matchesRoadSearch(row, f.roadSearch)) continue;
       if (!matchesNwsAlerts(row, f)) continue;
-      if (!matchesAssist(row, f.assist)) continue;
+      if (!matchesAgency(row, f.agencyMask)) continue;
       if (!matchesHoliday(row, f.holiday)) continue;
       if (!matchesLight(row, f.light)) continue;
       if (bounds && !bounds.contains(L.latLng(row[IDX_LAT], row[IDX_LNG]))) continue;
@@ -2159,7 +2218,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     ["rt", "roadTypeSelect", "any"],
     ["tmp", "tempBand", "any"], ["pp", "precipBand", "any"], ["pa", "precipAmountBand", "any"],
     ["wnd", "windBand", "any"], ["vis", "visBand", "any"], ["cld", "cloudBand", "any"],
-    ["ag", "assistSelect", "__ALL__"], ["lt", "lightSelect", "any"]
+    ["lt", "lightSelect", "any"]
   ];
   const HASH_CHECKS = [
     ["rush", "chkRushHour"], ["school", "chkSchoolDay"], ["wo", "chkWeatherOnly"],
@@ -2180,10 +2239,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     for (const spec of HASH_CHECKS) {
       if ($(spec[1]).checked) p.set(spec[0], "1");
     }
-    if (state.range) p.set("range", state.range);
+    if (state.range && state.range !== "24h") p.set("range", state.range);
     if (state.cats.size < CATEGORIES.length) {
       p.set("cats", Array.from(state.cats).join("."));
     }
+    if (state.agencies.size) p.set("ag", Array.from(state.agencies).join("."));
     const str = p.toString();
     try {
       history.replaceState(null, "", str ? ("#" + str) : (location.pathname + location.search));
@@ -2206,6 +2266,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (p.has("cats")) {
       const ids = p.get("cats").split(".").filter(function (id) { return CAT_BY_ID[id]; });
       if (ids.length) state.cats = new Set(ids);
+    }
+    if (p.has("ag")) {
+      const ids = p.get("ag").split(".").filter(function (id) { return AGENCY_BY_ID[id]; });
+      state.agencies = new Set(ids);
     }
     if (els.roadSearch.value) els.roadSearchClear.classList.add("show");
     hashApplying = false;
@@ -2232,17 +2296,17 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function renderStatTiles() {
     const now = new Date();
     const nowMs = now.getTime();
-    let today = 0, week = 0, month = 0;
+    let last24h = 0, week = 0, month = 0;
     for (const row of INCIDENTS) {
       const dt = bestRowDate(row);
       if (!dt) continue;
       const age = nowMs - dt.getTime();
-      if (dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth() && dt.getDate() === now.getDate()) today++;
+      if (age <= 86400000) last24h++;
       if (age <= 7 * 86400000) week++;
       if (age <= 30 * 86400000) month++;
     }
-    countUp(els.tileToday.querySelector("b"), today);
-    els.tileToday.classList.toggle("hot", today > 0);
+    countUp(els.tile24h.querySelector("b"), last24h);
+    els.tile24h.classList.toggle("hot", last24h > 0);
     countUp(els.tileWeekVal, week);
     countUp(els.tileMonthVal, month);
     countUp(els.tileTotalVal, INCIDENTS.length);
@@ -3507,6 +3571,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       let n = 0;
       acc.querySelectorAll(".acc-body select").forEach(function (s) { if (s.selectedIndex > 0) n++; });
       acc.querySelectorAll(".acc-body input[type=checkbox]").forEach(function (c) { if (c.checked) n++; });
+      // The agency checklist is chips, not a <select>/checkbox — count it once
+      // if any agency is selected.
+      if (acc.querySelector("#agencyChecklist") && state.agencies.size) n++;
       badge.textContent = String(n);
       badge.classList.toggle("show", n > 0);
     });
@@ -3584,32 +3651,54 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (prev && causes.indexOf(prev) !== -1) els.causeSelect.value = prev;
   }
 
-  // Populate the responding-agency dropdown from distinct agency tokens seen
-  // in the data (the feed's "assisting" field, e.g. "LPD", "LFD / LPSO").
-  function buildAssistDropdown() {
-    const counts = new Map();
+  // Count how many incidents mention each canonical agency (collapsing every
+  // spelling/order/glued variation of the "assisting" field, see AGENCIES).
+  let agencyCounts = {};
+  function computeAgencyCounts() {
+    agencyCounts = {};
+    for (const a of AGENCIES) agencyCounts[a.id] = 0;
     for (const r of INCIDENTS) {
-      const raw = String(r[IDX_ASSIST] || "").trim();
-      if (!raw) continue;
-      raw.split(/[,/&]|\s{2,}/).forEach(function (tok) {
-        const t = tok.trim().toUpperCase();
-        if (t && t.length <= 24) counts.set(t, (counts.get(t) || 0) + 1);
+      const m = agencyMaskOf(r);
+      for (const a of AGENCIES) { if (m & a.bit) agencyCounts[a.id]++; }
+    }
+  }
+
+  // Render the responding-agency checklist. Only agencies that actually appear
+  // in the data get a chip, so absent responders never clutter the filter.
+  function renderAgencyChecklist() {
+    els.agencyChecklist.innerHTML = "";
+    let shown = 0;
+    for (const a of AGENCIES) {
+      const n = agencyCounts[a.id] || 0;
+      if (!n) continue;
+      shown++;
+      const on = state.agencies.has(a.id);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "agency-chip" + (on ? " on" : "");
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.innerHTML = "<span class='tick'></span>" + esc(a.label) +
+        " <span class='n'>" + n.toLocaleString() + "</span>";
+      btn.addEventListener("click", function () {
+        if (state.agencies.has(a.id)) state.agencies.delete(a.id);
+        else state.agencies.add(a.id);
+        renderAgencyChecklist();
+        scheduleRender(0);
       });
+      els.agencyChecklist.appendChild(btn);
     }
-    const prev = els.assistSelect.value;
-    const items = Array.from(counts.entries())
-      .filter(function (e) { return e[1] >= 2; })   // ignore one-off noise
-      .sort(function (a, b) { return b[1] - a[1] || a[0].localeCompare(b[0]); });
-    while (els.assistSelect.options.length > 1) els.assistSelect.remove(1);
-    for (const [tok, n] of items) {
-      const opt = document.createElement("option");
-      opt.value = tok;
-      opt.textContent = tok + " (" + n.toLocaleString() + ")";
-      els.assistSelect.appendChild(opt);
+    if (!shown) {
+      els.agencyChecklist.innerHTML = "<span class='n' style='color:var(--text-3)'>No agency data</span>";
     }
-    if (prev && els.assistSelect.querySelector('option[value="' + prev.replace(/"/g, "") + '"]')) {
-      els.assistSelect.value = prev;
-    }
+  }
+
+  function buildAgencyChecklist() {
+    computeAgencyCounts();
+    // Drop any selected agency that isn't present in the current data.
+    state.agencies.forEach(function (id) {
+      if (!agencyCounts[id]) state.agencies.delete(id);
+    });
+    renderAgencyChecklist();
   }
 
   function buildCauseGroupDropdown() {
@@ -3648,7 +3737,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.chkFloodWarning.checked = false;
     els.chkThunderstormWarning.checked = false;
     els.chkTornadoWatch.checked = false;
-    els.assistSelect.value = "__ALL__";
+    state.agencies.clear();
+    renderAgencyChecklist();
     els.chkHoliday.checked = false;
     els.lightSelect.value = "any";
     els.chkPoints.checked = true;
@@ -3662,7 +3752,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.precIntersections.value = "3";
     els.precMicro.value = "4";
     state.cats = new Set(CATEGORIES.map(function (c) { return c.id; }));
-    setRange("", true);
+    setRange("24h", true);
     renderLegend();
   }
 
@@ -3815,7 +3905,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     renderStatus();
     renderLegend();
     buildCauseDropdown();
-    buildAssistDropdown();
+    buildAgencyChecklist();
     scheduleRender(0);
   }
 
@@ -3897,7 +3987,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       "dayTypeSelect", "timeBlockSelect",
       "chkRushHour", "chkSchoolDay", "dowSelect", "roadTypeSelect",
       "chkFloodWarning", "chkThunderstormWarning", "chkTornadoWatch",
-      "assistSelect", "chkHoliday", "lightSelect",
+      "chkHoliday", "lightSelect",
       "chkWeatherOnly", "tempBand", "precipBand", "precipAmountBand", "windBand", "visBand", "cloudBand",
       "chkPoints", "chkHeat", "chkIntersections", "chkOsmIntersections", "chkMicro", "chkRings", "chkHotSpots",
       "topNSelect", "precIntersections", "precMicro"
@@ -4181,10 +4271,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   applyTheme();
   buildLocHistory();
   buildCauseDropdown();
-  buildAssistDropdown();
+  buildAgencyChecklist();
   buildCauseGroupDropdown();
   applyHash();
   renderLegend();
+  renderAgencyChecklist();   // reflect any agencies restored from the URL hash
   renderStatTiles();
   renderStatus();
   wireUI();

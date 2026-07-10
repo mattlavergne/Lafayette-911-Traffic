@@ -173,10 +173,15 @@ is ever exposed (the map contains no API keys).
 changed, so it's safe to run often):
 
 ```cron
-*/5 * * * * cd /path/to/Lafayette-911-Traffic && scripts/publish_pages.sh >> /tmp/laf911_pages.log 2>&1
+*/15 * * * * cd /path/to/Lafayette-911-Traffic && scripts/publish_pages.sh >> /tmp/laf911_pages.log 2>&1
 ```
 
-The public map then trails the live data by at most a few minutes.
+The public map then trails the live data by at most ~15 minutes. Every
+publish records a deployment under the repo's `github-pages` environment, so
+a shorter interval means more of those history entries; 15 minutes keeps the
+public map fresh while holding the deployment count to a handful per hour.
+(The entries are harmless — only the latest deployment is ever live — so pick
+whatever interval you prefer.)
 
 ## External services
 
