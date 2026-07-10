@@ -14,8 +14,48 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
+from lafayette911.corridors import corridor_ids
 from lafayette911.map_template import render_map_html
 from lafayette911.utils import atomic_write_text
+
+# Version of the exported traffic_data.js row layout. Bump when a row gains
+# fields so the page (and traffic_meta.json consumers) can tell schemas apart.
+DATA_SCHEMA_VERSION = 2
+
+
+def _write_meta_file(output_datajs: str, incident_count: int) -> None:
+    """Write traffic_meta.json alongside the data file.
+
+    The web page polls this tiny file before downloading the full incident
+    data; the browser only re-fetches the big file when ``data_version``
+    (a hash of the data file) changes.  ``generated_at`` is preserved from
+    the existing meta when the data is unchanged, so an idle render cycle
+    doesn't dirty the file (which would force a pointless Pages publish).
+    """
+    meta_path = os.path.join(os.path.dirname(output_datajs) or ".", "traffic_meta.json")
+    try:
+        with open(output_datajs, "rb") as handle:
+            data_version = hashlib.sha1(handle.read()).hexdigest()[:16]
+    except OSError:
+        return
+    try:
+        with open(meta_path, encoding="utf-8") as handle:
+            existing = json.load(handle)
+        if existing.get("data_version") == data_version:
+            return  # data unchanged; keep the existing meta byte-for-byte
+    except Exception:
+        pass
+    meta = {
+        "schema_version": DATA_SCHEMA_VERSION,
+        "data_version": data_version,
+        "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "incident_count": int(incident_count),
+    }
+    try:
+        atomic_write_text(meta_path, json.dumps(meta, separators=(",", ":")) + "\n")
+        _ensure_world_readable(meta_path)
+    except Exception:
+        pass
 
 
 LAF_LAT_MIN = 29.50
@@ -1243,6 +1283,9 @@ def _write_streaming_datajs(
                     _safe_text(created_at),
                     # holiday flag (index 25)
                     _safe_int(is_holiday),
+                    # canonical corridor ids (index 26) — an intersection
+                    # legitimately lists both roads
+                    corridor_ids(loc),
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
@@ -1300,6 +1343,7 @@ def _write_streaming_datajs(
                     None,   # highway_type
                     "",     # created_at
                     None,   # is_holiday
+                    corridor_ids(str(entry.get("location") or "")),  # index 26
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 tc_count += 1
@@ -1331,6 +1375,7 @@ def _write_streaming_datajs(
 
     os.replace(tmp_path, output_datajs)
     _ensure_world_readable(output_datajs)
+    _write_meta_file(output_datajs, non_tc_count + tc_count)
 
     if center_count == 0:
         return (30.2241, -92.0198, [])
@@ -1352,6 +1397,13 @@ def _write_map_html(center_lat: float, center_lng: float, output_map: str, outpu
                 datajs_text = handle.read()
             _write_text_if_changed(map_datajs_path, datajs_text)
             _ensure_world_readable(map_datajs_path)
+        except Exception:
+            pass
+        # The page polls traffic_meta.json from the map's directory too.
+        meta_src = os.path.join(datajs_dir, "traffic_meta.json")
+        try:
+            with open(meta_src, encoding="utf-8") as handle:
+                _write_text_if_changed(os.path.join(map_dir, "traffic_meta.json"), handle.read())
         except Exception:
             pass
 
@@ -1659,6 +1711,7 @@ def _create_map_from_dataframe(
                 _safe_text(r.get("road_type")) or _infer_road_type(loc) or None,
                 "",  # created_at (index 24): not tracked in the CSV
                 _safe_int(r.get("is_holiday")),  # index 25
+                corridor_ids(loc),  # canonical corridor ids (index 26)
             ]
         )
         incidents_latlng.append((lat, lng))
@@ -1711,6 +1764,7 @@ def _create_map_from_dataframe(
         unmappable_count,
     )
     _ensure_world_readable(output_datajs)
+    _write_meta_file(output_datajs, len(incidents))
 
     map_dir = os.path.dirname(output_map) or "."
     datajs_dir = os.path.dirname(output_datajs) or "."

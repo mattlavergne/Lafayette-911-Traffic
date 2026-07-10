@@ -417,6 +417,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .sb-footer .counts { flex: 1; display: flex; gap: 10px; font-variant-numeric: tabular-nums; }
   .sb-footer .counts b { color: var(--text); font-weight: 700; }
   .sb-footer label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+  .sb-footer { flex-wrap: wrap; }
+  #fitBtn,
   #clearBtn {
     border: none; background: var(--chip); color: var(--text-2); font-family: var(--font);
     font-size: 11.5px; font-weight: 600; padding: 5px 10px; border-radius: 8px; cursor: pointer;
@@ -461,6 +463,65 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
   }
   .agency-chip.on .n { color: color-mix(in srgb, var(--text) 65%, transparent); }
+  .facet-note { font-size: 10px; color: var(--text-3); margin-top: 5px; line-height: 1.35; }
+  .mini-clear {
+    display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 600;
+    padding: 3px 9px; border-radius: 999px; border: 1px solid var(--panel-border);
+    background: var(--chip); color: var(--text-2); cursor: pointer; box-shadow: var(--edge);
+    transition: background 0.13s ease, color 0.13s ease;
+  }
+  .mini-clear:hover { background: var(--chip-hover); color: var(--text); }
+
+  /* active-filter chips: every live filter, each removable on its own */
+  .active-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 14px 8px 14px; }
+  .active-chips:empty { display: none; }
+  .af-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10.5px; font-weight: 600; padding: 3px 4px 3px 9px; border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+    background: var(--chip); color: var(--text); box-shadow: var(--edge);
+    max-width: 100%;
+  }
+  .af-chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+  .af-chip .x {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%; border: none; flex: none;
+    background: transparent; color: var(--text-3); font-size: 12px; line-height: 1;
+    cursor: pointer; padding: 0;
+  }
+  .af-chip .x:hover, .af-chip .x:focus-visible { background: var(--chip-hover); color: var(--text); }
+
+  /* About / disclaimers modal (liquid glass) */
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 3000; display: none;
+    align-items: center; justify-content: center; padding: 18px;
+    background: color-mix(in srgb, var(--bg, #000) 40%, transparent);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-card {
+    width: min(560px, 100%); max-height: min(78dvh, 640px); overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: var(--radius); box-shadow: var(--shadow), var(--edge);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    padding: 18px 20px 20px 20px; font-size: 12.5px; color: var(--text-2); line-height: 1.5;
+  }
+  .modal-card h2 { font-size: 15px; color: var(--text); margin: 0 0 4px 0; display: flex; align-items: center; justify-content: space-between; }
+  .modal-card h3 { font-size: 12px; color: var(--text); margin: 14px 0 4px 0; text-transform: uppercase; letter-spacing: 0.04em; }
+  .modal-card p { margin: 5px 0; }
+  .modal-card ul { margin: 5px 0; padding-left: 18px; }
+  .modal-card a { color: var(--accent); }
+  .modal-card .warn-box {
+    border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+    background: color-mix(in srgb, var(--bad) 9%, transparent);
+    border-radius: 10px; padding: 8px 12px; margin: 8px 0; color: var(--text);
+  }
+  .modal-close {
+    width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--panel-border);
+    background: var(--chip); color: var(--text-2); cursor: pointer; font-size: 13px;
+    line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  }
+  .modal-close:hover { background: var(--chip-hover); color: var(--text); }
   select {
     font-family: var(--font); font-size: 12.5px; color: var(--text);
     padding: 7px 26px 7px 9px; border-radius: 9px; width: 100%;
@@ -524,6 +585,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .chart-svg .bar { fill: color-mix(in srgb, var(--accent) 38%, transparent); transition: fill 0.15s ease; }
   .chart-svg .bar:hover { fill: var(--accent); }
   .chart-svg .bar.peak { fill: var(--accent); }
+  .chart-svg .bar.sel, .chart-svg .hm-cell.sel { fill: var(--warn); stroke: var(--warn); stroke-width: 1; }
+  .chart-svg .bar:focus-visible, .chart-svg .hm-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .chart-svg .axis-label { font-size: 8.5px; fill: var(--text-3); font-family: var(--font); }
   .chart-svg .trend-line { stroke: var(--accent); stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
   .chart-svg .trend-fill { fill: var(--accent); opacity: 0.12; }
@@ -554,7 +617,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   .cor-row:hover { background: var(--chip); }
   .cor-rank { flex: 0 0 16px; font-size: 10px; font-weight: 700; color: var(--text-3); font-variant-numeric: tabular-nums; }
-  .cor-name { flex: 0 0 108px; font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cor-name { flex: 1 1 108px; min-width: 88px; font-size: 11px; font-weight: 600; color: var(--text); line-height: 1.25; overflow-wrap: break-word; }
+  .cor-row.on { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 8px; }
+  .cor-row.on .cor-name { color: var(--accent); }
+  .cor-pct { flex: 0 0 auto; font-size: 10px; color: var(--text-3); font-variant-numeric: tabular-nums; }
   .cor-bar-wrap { flex: 1; background: var(--bar-track); border-radius: 3px; height: 7px; overflow: hidden; min-width: 0; }
   .cor-bar { height: 7px; border-radius: 3px; background: var(--accent); transition: width 0.35s ease; min-width: 2px; }
   .cor-n { flex: 0 0 auto; font-size: 10.5px; color: var(--text-2); font-variant-numeric: tabular-nums; min-width: 26px; text-align: right; }
@@ -816,6 +882,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
           <path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
         </svg>
       </button>
+      <button class="icon-btn" id="aboutBtn" type="button" title="About, disclaimers &amp; privacy" aria-label="About this project, disclaimers and privacy" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 11v5"/>
+          <circle cx="12" cy="8" r="0.4" fill="currentColor"/>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -841,6 +914,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="tab" id="tabAnalytics" role="tab" aria-selected="false" type="button">Analytics</button>
     <button class="tab" id="tabFeed" role="tab" aria-selected="false" type="button">Feed</button>
   </div>
+
+  <div class="active-chips" id="activeChips" aria-label="Active filters"></div>
 
   <div class="sb-body">
 
@@ -877,6 +952,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div class="field" style="flex:1">
               <span class="field-label">Responding agency</span>
               <div id="agencyChecklist" class="agency-chips" role="group" aria-label="Filter by responding agency — select any to narrow"></div>
+              <div class="facet-note">Counts reflect your other filters. One incident can involve several
+              agencies, so percentages can total more than 100%.</div>
             </div>
           </div>
         </div>
@@ -1081,6 +1158,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     <!-- ═══ ANALYTICS ═══ -->
     <div class="panel" id="panelAnalytics">
       <div class="an-summary" id="analyticsSummary"></div>
+      <div id="anClearRow" style="display:none;margin:0 0 8px 0">
+        <button id="anClearBtn" type="button" class="mini-clear">Clear analytics selections</button>
+      </div>
 
       <div class="chart-block">
         <div class="chart-title">By hour of day <span class="sub" id="chartHourSub"></span></div>
@@ -1098,7 +1178,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
 
       <div class="chart-block">
-        <div class="chart-title">12-week trend <span class="sub" id="chartTrendSub"></span></div>
+        <div class="chart-title"><span id="chartTrendTitle">Trend</span> <span class="sub" id="chartTrendSub"></span></div>
         <div id="chartTrend"></div>
       </div>
 
@@ -1115,6 +1195,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="chart-block">
         <div class="chart-title">Top corridors <span class="sub">tap to filter the map</span></div>
         <div id="corridorList"></div>
+        <div class="facet-note">Corridors are normalized from raw locations (house numbers, suffixes and
+        direction tags collapse). An incident at an intersection counts toward both roads.</div>
       </div>
 
       <div class="section">
@@ -1141,12 +1223,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 
   <div class="sb-footer">
-    <div class="counts">
-      <span>Total <b id="countTotal">0</b></span>
-      <span>Filtered <b id="countFiltered">0</b></span>
-      <span>In view <b id="countInView">0</b></span>
+    <div class="counts" aria-live="polite">
+      <span title="Every incident in the archive">Archive <b id="countTotal">0</b></span>
+      <span title="Incidents matching the current filters">Matching <b id="countFiltered">0</b></span>
+      <span title="Matching incidents inside the current map view">Visible <b id="countInView">0</b></span>
     </div>
-    <label><input type="checkbox" id="chkInViewOnly" style="accent-color:var(--accent);"> In view</label>
+    <label title="Only incidents in current map view"><input type="checkbox" id="chkInViewOnly" style="accent-color:var(--accent);"> Only incidents in current map view</label>
+    <button id="fitBtn" type="button" title="Fit the map to the matching incidents">Fit results</button>
     <button id="clearBtn" type="button">Reset</button>
   </div>
 </div>
@@ -1158,6 +1241,43 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div id="weatherPanel" aria-live="polite">
   <div class="wp-title">Current conditions</div>
   <div id="weatherPanelBody">Loading latest observation…</div>
+</div>
+
+<div class="modal-overlay" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutTitle" aria-hidden="true">
+  <div class="modal-card">
+    <h2 id="aboutTitle">About this map <button class="modal-close" id="aboutClose" type="button" aria-label="Close">×</button></h2>
+    <p>An <strong>independent, unofficial</strong> hobby project that visualizes publicly posted
+    911 traffic incident reports for Lafayette Parish, Louisiana. It is <strong>not affiliated with or
+    endorsed by</strong> Lafayette 911, Lafayette Parish government, LPD/LPSO/LFD, NOAA, the National
+    Weather Service, or any other agency, and it is <strong>not an official dispatch service</strong>.</p>
+    <div class="warn-box"><strong>Do not use this map for emergency response, navigation, routing, or
+    safety decisions.</strong> Incident, map, weather, and alert information can be delayed, incomplete,
+    approximate, unavailable, or plain wrong. <strong>In an emergency, call 911.</strong> For authoritative
+    information use official local sources and <a href="https://www.weather.gov/lch/" target="_blank" rel="noopener noreferrer">weather.gov</a>.</div>
+    <h3>Data sources</h3>
+    <ul>
+      <li>Incident reports: the public lafayette911.org feed, polled every few minutes. Locations are
+      approximate (geocoded from street descriptions).</li>
+      <li>Weather &amp; alerts: <a href="https://www.weather.gov/documentation/services-web-api" target="_blank" rel="noopener noreferrer">National Weather Service API</a> (live, no key).</li>
+      <li>Basemaps: <a href="https://carto.com/attribution/" target="_blank" rel="noopener noreferrer">CARTO</a> &amp; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors.</li>
+    </ul>
+    <p id="aboutGenerated" class="facet-note"></p>
+    <h3>Privacy</h3>
+    <p>This page has <strong>no accounts, no advertising, no behavioral tracking, no fingerprinting, and
+    no analytics</strong>. It stores only a theme preference in your browser's local storage. Your browser
+    does contact external services to work — map tiles (CARTO/OpenStreetMap), the Leaflet library CDN
+    (unpkg), weather/alerts (api.weather.gov), and the site host (GitHub Pages) — and those providers,
+    like any web host, may keep standard technical access logs. Links out to Google Maps, Street View,
+    and Waze open only when you tap them.</p>
+    <h3>Licenses</h3>
+    <p>Original code is MIT-licensed
+    (<a href="https://github.com/mattlavergne/Lafayette-911-Traffic" target="_blank" rel="noopener noreferrer">source on GitHub</a>).
+    Incident data, map data/tiles, and weather data belong to their providers — map data
+    © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>
+    contributors, tiles by <a href="https://carto.com/attribution/" target="_blank" rel="noopener noreferrer">CARTO</a>,
+    mapping by <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>,
+    weather by <a href="https://www.weather.gov/" target="_blank" rel="noopener noreferrer">NWS/NOAA</a>.</p>
+  </div>
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
@@ -1183,7 +1303,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         IDX_PRECIP_IN = 10, IDX_WIND_SPEED = 11, IDX_WIND_GUST = 12, IDX_VISIBILITY = 13,
         IDX_SKY_COVER = 14, IDX_WEATHER_AT = 15, IDX_WEATHER_SOURCE = 16, IDX_HOUR = 17,
         IDX_DOW = 18, IDX_SCHOOL_DAY = 19, IDX_NWS_FLOOD = 20, IDX_NWS_STORM = 21,
-        IDX_NWS_TORNADO = 22, IDX_HIGHWAY = 23, IDX_CREATED_AT = 24, IDX_HOLIDAY = 25;
+        IDX_NWS_TORNADO = 22, IDX_HIGHWAY = 23, IDX_CREATED_AT = 24, IDX_HOLIDAY = 25,
+        IDX_CORRIDORS = 26;  // canonical corridor ids (array), absent in old data
 
   const DATAJS_SRC = "__DATAJS_SRC__";
   const REDUCED_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1382,7 +1503,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     locHistory = new Map();
     for (const row of INCIDENTS) {
       const key = locHistoryKey(row);
-      const n = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? (parseInt(row[IDX_COUNT], 10) || 1) : 1;
+      const n = incidentCount(row);
       let entry = locHistory.get(key);
       if (!entry) {
         entry = { count: 0, firstMs: null };
@@ -1480,7 +1601,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     chkMicro: $("chkMicro"), chkRings: $("chkRings"),
     topNSelect: $("topNSelect"), precIntersections: $("precIntersections"), precMicro: $("precMicro"),
     countTotal: $("countTotal"), countFiltered: $("countFiltered"), countInView: $("countInView"),
-    chkInViewOnly: $("chkInViewOnly"), clearBtn: $("clearBtn"),
+    chkInViewOnly: $("chkInViewOnly"), clearBtn: $("clearBtn"), fitBtn: $("fitBtn"),
+    activeChips: $("activeChips"), anClearRow: $("anClearRow"), anClearBtn: $("anClearBtn"),
+    chartTrendTitle: $("chartTrendTitle"),
+    aboutBtn: $("aboutBtn"), aboutModal: $("aboutModal"), aboutClose: $("aboutClose"),
+    aboutGenerated: $("aboutGenerated"),
     analyticsSummary: $("analyticsSummary"),
     chartHour: $("chartHour"), chartHourSub: $("chartHourSub"),
     chartDow: $("chartDow"), chartDowSub: $("chartDowSub"),
@@ -1597,21 +1722,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     L.control.attribution({ position: "bottomright", prefix: false }).addTo(map);
     L.control.scale({ position: "bottomleft", imperial: true, metric: false }).addTo(map);
 
-    // Fit to data when there is enough of it.
-    if (INCIDENTS.length > 5) {
-      let latMin = Infinity, latMax = -Infinity, lngMin = Infinity, lngMax = -Infinity;
-      for (const r of INCIDENTS) {
-        if (r[IDX_LAT] < latMin) latMin = r[IDX_LAT];
-        if (r[IDX_LAT] > latMax) latMax = r[IDX_LAT];
-        if (r[IDX_LNG] < lngMin) lngMin = r[IDX_LNG];
-        if (r[IDX_LNG] > lngMax) lngMax = r[IDX_LNG];
-      }
-      if (isFinite(latMin)) {
-        try {
-          map.fitBounds([[latMin, lngMin], [latMax, lngMax]], { padding: [40, 40], maxZoom: 13 });
-        } catch (e) {}
-      }
-    }
+    // The first renderAll() call fits the view to the DEFAULT FILTERED
+    // incidents (see fitToResults), not the whole archive.
   } else {
     document.body.classList.add("no-map");
   }
@@ -1621,6 +1733,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (!row || row.length <= idx) return null;
     const val = parseFloat(row[idx]);
     return Number.isFinite(val) ? val : null;
+  }
+
+  // Occurrence count carried by aggregated rows (e.g. TRAFFIC CONTROL
+  // groups); plain rows count as 1. The ONE way to read IDX_COUNT, so older
+  // data files without the field stay compatible.
+  function incidentCount(row) {
+    if (row.length > IDX_COUNT && row[IDX_COUNT] != null) {
+      return Math.max(1, parseInt(row[IDX_COUNT], 10) || 1);
+    }
+    return 1;
   }
 
   function hasWeatherData(row) {
@@ -1634,7 +1756,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function popupHtml(row) {
     const cat = categoryOf(row[IDX_CAUSE]);
     const dt = bestRowDate(row);
-    const occurrences = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? parseInt(row[IDX_COUNT], 10) : 1;
+    const occurrences = incidentCount(row);
     // Show the exact incident type from the source feed; the badge colour still
     // encodes the broad category. Fall back to the category label if the feed
     // gave us no cause string.
@@ -1807,13 +1929,19 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     { id: "fire",    label: "Fire",    re: /FIRE|\bLFD\b/ },
     { id: "ems",     label: "EMS",     re: /\bEMS\b|AMBULANCE|ACADIAN|\bMEDIC/ }
   ];
+  // "No agency listed": the assisting field named none of the known
+  // agencies (usually it's blank). Its own bit makes it filterable.
+  const AGENCY_NONE = { id: "none", label: "No agency listed" };
+  const AGENCY_ALL = AGENCIES.concat([AGENCY_NONE]);
   const AGENCY_BY_ID = {};
-  AGENCIES.forEach(function (a, i) { a.bit = 1 << i; AGENCY_BY_ID[a.id] = a; });
+  AGENCY_ALL.forEach(function (a, i) { a.bit = 1 << i; AGENCY_BY_ID[a.id] = a; });
 
   const state = {
     cats: new Set(CATEGORIES.map(function (c) { return c.id; })),  // enabled category ids
     range: "24h",                      // default landing view; "all" = every incident
-    agencies: new Set()                // selected agency ids; empty = any (no filter)
+    agencies: new Set(),               // selected agency ids; empty = any (no filter)
+    exactHour: null,                   // 0-23 from the hour chart / heatmap; null = off
+    corridorId: null                   // canonical corridor id from the leaderboard; null = off
   };
 
   // Bitmask of the agencies mentioned in a row's assisting text (cached on the
@@ -1823,6 +1951,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const s = String(row[IDX_ASSIST] || "").toUpperCase();
     let m = 0;
     for (const a of AGENCIES) { if (a.re.test(s)) m |= a.bit; }
+    if (!m) m = AGENCY_NONE.bit;
     row.__agmask = m;
     return m;
   }
@@ -1834,9 +1963,60 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return m;
   }
 
+  // Canonical corridors for a row. The backend exports them at IDX_CORRIDORS;
+  // older data files won't have the field, so fall back to a rough in-browser
+  // normalizer (split intersections, strip house numbers and NB/SB tags).
+  function corridorsOfJS(location) {
+    const raw = String(location || "").trim().toUpperCase();
+    if (!raw) return [];
+    const out = [];
+    raw.split(/\s+(?:AT|&+|\/|@|NEAR|AND)\s+|\s*[&\/]\s*/).forEach(function (part) {
+      let s = part.replace(/[.,;:()"']/g, " ").replace(/\s+/g, " ").trim();
+      s = s.replace(/^\d+[A-Z]?(\s*-\s*\d+[A-Z]?)?\s+(BLK\s+(OF\s+)?|BLOCK\s+(OF\s+)?)?/, "");
+      s = s.replace(/(NB|SB|EB|WB|NBD|SBD|EBD|WBD)/g, " ").replace(/\s+/g, " ").trim();
+      if (!s || /^\d+[A-Z]?(\s*-\s*\d+[A-Z]?)?$/.test(s)) return;
+      if (out.indexOf(s) === -1) out.push(s);
+    });
+    return out;
+  }
+
+  function corridorsOf(row) {
+    if (row.__cors !== undefined) return row.__cors;
+    const c = (row.length > IDX_CORRIDORS && Array.isArray(row[IDX_CORRIDORS]))
+      ? row[IDX_CORRIDORS]
+      : corridorsOfJS(row[IDX_LOCATION]);
+    row.__cors = c;
+    return c;
+  }
+
+  function matchesCorridor(row, cid) {
+    if (!cid) return true;
+    return corridorsOf(row).indexOf(cid) !== -1;
+  }
+
+  // Local hour of a row: prefer the stored enrichment hour, fall back to the
+  // reported text. Used by the exact-hour filter and the hour charts alike so
+  // a bar's count always equals what clicking it selects.
+  function rowHourOf(row) {
+    const h = (row.length > IDX_HOUR && row[IDX_HOUR] != null) ? parseInt(row[IDX_HOUR], 10) : NaN;
+    if (!isNaN(h) && h >= 0 && h < 24) return h;
+    const pr = parseReported(row[IDX_REPORTED]);
+    return (pr && Number.isInteger(pr.hh) && pr.hh >= 0 && pr.hh < 24) ? pr.hh : null;
+  }
+
+  function matchesExactHour(row, h) {
+    if (h == null) return true;
+    return rowHourOf(row) === h;
+  }
+
   const CAUSE_GROUPS = [
-    { id: "fire", label: "Fire", keywords: ["FIRE"] },
-    { id: "accident", label: "Accident", keywords: ["ACCIDENT", "CRASH", "COLLISION", "WRECK", "MVA", "MVC"] }
+    { id: "accident", label: "Accidents", keywords: ["ACCIDENT", "CRASH", "COLLISION", "WRECK", "MVA", "MVC"] },
+    { id: "fire", label: "Fire", keywords: ["FIRE", "SMOKE"] },
+    { id: "hazard", label: "Hazards", keywords: ["HAZARD", "SPILL", "DEBRIS", "OBSTRUCT", "FLOOD", "TREE", "POWER LINE", "LINE DOWN", "ANIMAL"] },
+    { id: "signal", label: "Signals & traffic control", keywords: ["SIGNAL", "TRAFFIC CONTROL", "TRAFFIC LIGHT", "MALFUNCTION"] },
+    { id: "stalled", label: "Stalled / disabled", keywords: ["STALL", "DISABLED", "STUCK", "ABANDONED"] },
+    { id: "medical", label: "Medical / rescue", keywords: ["MEDICAL", "RESCUE", "INJURY", "AMBULANCE", "OVERDOSE"] },
+    { id: "other", label: "Other", keywords: [] }
   ];
 
   function normalizeCause(cause) { return String(cause || "").trim().toUpperCase(); }
@@ -1851,6 +2031,12 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const causeNorm = normalizeCause(row[IDX_CAUSE]);
     const group = CAUSE_GROUPS.find(function (g) { return g.id === selectedGroup; });
     if (!group) return true;
+    if (group.id === "other") {
+      // "Other" = matches none of the named groups.
+      return !CAUSE_GROUPS.some(function (g) {
+        return g.keywords.some(function (kw) { return causeNorm.indexOf(kw) !== -1; });
+      });
+    }
     return group.keywords.some(function (kw) { return causeNorm.indexOf(kw) !== -1; });
   }
 
@@ -2139,6 +2325,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       chkStorm: !!els.chkThunderstormWarning.checked,
       chkTornado: !!els.chkTornadoWatch.checked,
       agencyMask: selectedAgencyMask(),
+      exactHour: state.exactHour,
+      corridorId: state.corridorId,
       holiday: !!els.chkHoliday.checked,
       light: (els.lightSelect.value || "any").trim(),
       range: state.range
@@ -2166,32 +2354,42 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (f.cloudBand !== "any") n++;
     if (f.chkFlood || f.chkStorm || f.chkTornado) n++;
     if (f.agencyMask) n++;
+    if (f.exactHour != null) n++;
+    if (f.corridorId) n++;
     if (f.holiday) n++;
     if (f.light !== "any") n++;
     if (state.cats.size < CATEGORIES.length) n++;
     return n;
   }
 
-  function filteredIncidents(f, mapObj) {
+  // The one incident-filtering function. `excl` (optional) names dimensions
+  // to SKIP so a control can count its own alternatives without filtering
+  // them away — e.g. the agency chips count with {agency:1}, the hour chart
+  // with {hour:1}. Skippable: cats, range, hour (exact hour AND broad time
+  // block), dow, agency, corridor, bounds.
+  function filteredIncidents(f, mapObj, excl) {
     const out = [];
-    const bounds = (f.inViewOnly && mapObj) ? mapObj.getBounds() : null;
+    const x = excl || null;
+    const bounds = (f.inViewOnly && mapObj && !(x && x.bounds)) ? mapObj.getBounds() : null;
     const nowMs = Date.now();
     for (const row of INCIDENTS) {
-      if (!matchesCats(row)) continue;
+      if (!(x && x.cats) && !matchesCats(row)) continue;
       if (!matchesCauseGroup(row, f.causeGroup)) continue;
       if (!matchesCause(row, f.cause)) continue;
-      if (!matchesRange(row, f.range, nowMs)) continue;
+      if (!(x && x.range) && !matchesRange(row, f.range, nowMs)) continue;
       if (!matchesDateFilter(row, f)) continue;
       if (!matchesDayType(row, f.dayType)) continue;
-      if (!matchesTimeBlock(row, f.timeBlock)) continue;
+      if (!(x && x.hour) && !matchesExactHour(row, f.exactHour)) continue;
+      if (!(x && x.hour) && !matchesTimeBlock(row, f.timeBlock)) continue;
       if (!matchesWeather(row, f)) continue;
       if (!matchesRushHour(row, f.rushHour)) continue;
       if (!matchesSchoolDay(row, f.schoolDay)) continue;
-      if (!matchesDow(row, f.dowValue)) continue;
+      if (!(x && x.dow) && !matchesDow(row, f.dowValue)) continue;
       if (!matchesRoadType(row, f.roadType)) continue;
       if (!matchesRoadSearch(row, f.roadSearch)) continue;
+      if (!(x && x.corridor) && !matchesCorridor(row, f.corridorId)) continue;
       if (!matchesNwsAlerts(row, f)) continue;
-      if (!matchesAgency(row, f.agencyMask)) continue;
+      if (!(x && x.agency) && !matchesAgency(row, f.agencyMask)) continue;
       if (!matchesHoliday(row, f.holiday)) continue;
       if (!matchesLight(row, f.light)) continue;
       if (bounds && !bounds.contains(L.latLng(row[IDX_LAT], row[IDX_LNG]))) continue;
@@ -2244,6 +2442,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       p.set("cats", Array.from(state.cats).join("."));
     }
     if (state.agencies.size) p.set("ag", Array.from(state.agencies).join("."));
+    if (state.exactHour != null) p.set("h", String(state.exactHour));
+    if (state.corridorId) p.set("cid", state.corridorId);
     const str = p.toString();
     try {
       history.replaceState(null, "", str ? ("#" + str) : (location.pathname + location.search));
@@ -2270,9 +2470,44 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (p.has("ag")) {
       const ids = p.get("ag").split(".").filter(function (id) { return AGENCY_BY_ID[id]; });
       state.agencies = new Set(ids);
+    } else {
+      state.agencies = new Set();
     }
+    if (p.has("h")) {
+      const hv = parseInt(p.get("h"), 10);
+      state.exactHour = (hv >= 0 && hv <= 23) ? hv : null;
+      if (state.exactHour != null) els.timeBlockSelect.value = "all";
+    } else {
+      state.exactHour = null;
+    }
+    state.corridorId = p.has("cid") ? (p.get("cid") || null) : null;
     if (els.roadSearch.value) els.roadSearchClear.classList.add("show");
     hashApplying = false;
+  }
+
+  // Chart clicks push one history entry BEFORE changing state, so the
+  // browser's Back button returns to the previous view (renderAll then
+  // rewrites the new state onto the new entry via replaceState).
+  function pushHashEntry() {
+    if (hashApplying) return;
+    try { history.pushState(null, "", location.pathname + location.search + location.hash); } catch (e) {}
+  }
+
+  function setExactHour(h) {
+    pushHashEntry();
+    state.exactHour = (state.exactHour === h) ? null : h;
+    if (state.exactHour != null) els.timeBlockSelect.value = "all";
+    toast(state.exactHour != null
+      ? "Hour: " + fmtHour(h) + "\u2013" + fmtHour((h + 1) % 24)
+      : "Hour filter cleared");
+    scheduleRender(0);
+  }
+
+  function setCorridor(cid) {
+    pushHashEntry();
+    state.corridorId = (state.corridorId === cid) ? null : cid;
+    toast(state.corridorId ? ("Corridor: " + titleCase(cid)) : "Corridor filter cleared");
+    scheduleRender(0);
   }
 
   /* ═══════════════════════ stat tiles / status ═══════════════════════ */
@@ -2294,13 +2529,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   function renderStatTiles() {
-    const now = new Date();
-    const nowMs = now.getTime();
+    // Facet-aware: each tile counts incidents matching every OTHER filter,
+    // so picking one range never zeroes out its alternatives.
+    const base = filteredIncidents(currentFilterObj(), map, { range: 1 });
+    const nowMs = Date.now();
     let last24h = 0, week = 0, month = 0;
-    for (const row of INCIDENTS) {
+    for (const row of base) {
       const dt = bestRowDate(row);
       if (!dt) continue;
       const age = nowMs - dt.getTime();
+      if (age < 0) continue;
       if (age <= 86400000) last24h++;
       if (age <= 7 * 86400000) week++;
       if (age <= 30 * 86400000) month++;
@@ -2309,7 +2547,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.tile24h.classList.toggle("hot", last24h > 0);
     countUp(els.tileWeekVal, week);
     countUp(els.tileMonthVal, month);
-    countUp(els.tileTotalVal, INCIDENTS.length);
+    countUp(els.tileTotalVal, base.length);
   }
 
   function newestDataDate() {
@@ -2340,9 +2578,34 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return "refreshed " + Math.floor(m / 60) + " h ago";
   }
 
+  let dataMeta = null;  // parsed traffic_meta.json, when the host provides it
+  const PAGE_GENERATED_AT = (function () {
+    const m = document.querySelector('meta[name="generated-at"]');
+    return m ? m.getAttribute("content") : "";
+  })();
+
+  function agoShort(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 10) return "just now";
+    if (s < 60) return s + " s ago";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + " min ago";
+    const h = Math.floor(m / 60);
+    if (h < 48) return h + " h ago";
+    return Math.floor(h / 24) + " d ago";
+  }
+
   function renderStatus() {
     const newest = newestDataDate();
-    const refreshed = " · " + refreshedAgoText();
+    // "Data generated" (backend render time) is a different fact from
+    // "browser last checked" — show both when known.
+    let gen = "";
+    const genIso = (dataMeta && dataMeta.generated_at) || PAGE_GENERATED_AT;
+    if (genIso) {
+      const g = new Date(genIso);
+      if (!isNaN(g.getTime())) gen = " · data " + agoShort(Date.now() - g.getTime());
+    }
+    const refreshed = gen + " · checked " + agoShort(Date.now() - lastRefreshMs);
     if (!INCIDENTS.length) {
       els.statusText.textContent = "No incident data loaded yet." + refreshed;
     } else if (newest) {
@@ -2365,21 +2628,29 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ═══════════════════════ legend chips ═══════════════════════ */
   function renderLegend() {
-    const counts = {};
+    // Presence comes from the whole archive (a category never disappears
+    // just because current filters exclude it); displayed counts are
+    // facet-aware — every filter applies EXCEPT the category toggles.
+    const allTime = {};
     for (const row of INCIDENTS) {
       const id = categoryOf(row[IDX_CAUSE]).id;
-      counts[id] = (counts[id] || 0) + 1;
+      allTime[id] = (allTime[id] || 0) + 1;
+    }
+    const facet = {};
+    for (const row of filteredIncidents(currentFilterObj(), map, { cats: 1 })) {
+      const id = categoryOf(row[IDX_CAUSE]).id;
+      facet[id] = (facet[id] || 0) + 1;
     }
     els.legendChips.innerHTML = "";
     for (const cat of CATEGORIES) {
-      if (!counts[cat.id]) continue;
+      if (!allTime[cat.id]) continue;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "legend-chip " + (state.cats.has(cat.id) ? "on" : "off");
       btn.style.setProperty("--cat", cat.color);
       btn.setAttribute("aria-pressed", state.cats.has(cat.id) ? "true" : "false");
       btn.title = "Toggle " + cat.label.toLowerCase() + " (long-press / double-click to isolate)";
-      btn.innerHTML = "<span class='dot'></span>" + esc(cat.label) + " <span class='n'>" + counts[cat.id].toLocaleString() + "</span>";
+      btn.innerHTML = "<span class='dot'></span>" + esc(cat.label) + " <span class='n'>" + (facet[cat.id] || 0).toLocaleString() + "</span>";
       btn.addEventListener("click", function () {
         if (state.cats.has(cat.id) && state.cats.size === 1) {
           state.cats = new Set(CATEGORIES.map(function (c) { return c.id; }));  // un-isolate
@@ -2503,24 +2774,44 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     };
   }
 
-  function renderCharts(rows) {
+  function renderCharts(rows, f) {
+    f = f || currentFilterObj();
+    // Facet-aware sources: each chart is computed WITHOUT its own
+    // dimension's filter, so all 24 bars / 7 days / 168 cells stay visible
+    // while every other filter still applies. When no time selection is
+    // active these are the same rows, so skip the extra passes.
+    const hourRows = (f.exactHour != null || f.timeBlock !== "all")
+      ? filteredIncidents(f, map, { hour: 1 }) : rows;
+    const dowRows = (f.dowValue !== "all")
+      ? filteredIncidents(f, map, { dow: 1 }) : rows;
+    const hmRows = (f.exactHour != null || f.timeBlock !== "all" || f.dowValue !== "all")
+      ? filteredIncidents(f, map, { hour: 1, dow: 1 }) : rows;
+
     const byHour = new Array(24).fill(0);
     const byDow = new Array(7).fill(0);
     const byMonth = new Array(12).fill(0);
     const matrix = [];
     for (let r = 0; r < 7; r++) matrix.push(new Array(24).fill(0));
     let datedCount = 0;
+    for (const row of hourRows) {
+      const h = rowHourOf(row);
+      if (h != null) byHour[h]++;
+    }
+    for (const row of dowRows) {
+      const pr = parseReported(row[IDX_REPORTED]);
+      if (pr && pr.dt) byDow[pr.dt.getDay()]++;
+    }
+    for (const row of hmRows) {
+      const pr = parseReported(row[IDX_REPORTED]);
+      if (pr && pr.dt && Number.isInteger(pr.hh) && pr.hh >= 0 && pr.hh < 24) {
+        matrix[pr.dt.getDay()][pr.hh]++;
+      }
+    }
     for (const row of rows) {
       const pr = parseReported(row[IDX_REPORTED]);
       if (pr && pr.dt) {
         datedCount++;
-        const jsDow = pr.dt.getDay();
-        byDow[jsDow]++;
         byMonth[pr.dt.getMonth()]++;
-        if (Number.isInteger(pr.hh) && pr.hh >= 0 && pr.hh < 24) {
-          byHour[pr.hh]++;
-          matrix[jsDow][pr.hh]++;
-        }
       }
     }
 
@@ -2531,17 +2822,20 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       (datedCount < rows.length ? " (" + datedCount.toLocaleString() + " with timestamps)" : "") +
       ". Tap any bar, cell, or category to filter the map.";
 
-    const TIMEBLOCK_OF_HOUR = function (h) {
-      if (h >= 6 && h < 10) return ["morning", "Morning (6–10 am)"];
-      if (h >= 10 && h < 15) return ["midday", "Midday (10 am–3 pm)"];
-      if (h >= 15 && h < 19) return ["evening", "Evening (3–7 pm)"];
-      if (h >= 19) return ["night", "Night (7 pm–12 am)"];
-      return ["latenight", "Late night (12–6 am)"];
-    };
-    function wireBarClicks(container, fn) {
+    // Clickable AND keyboard-operable bars (Enter/Space); `selIdx`
+    // highlights the active selection and drives aria-pressed.
+    function makeBarsInteractive(container, onPick, selIdx, labelFn) {
       container.querySelectorAll(".bar").forEach(function (rect) {
-        rect.addEventListener("click", function () {
-          fn(parseInt(rect.getAttribute("data-i"), 10));
+        const i = parseInt(rect.getAttribute("data-i"), 10);
+        rect.setAttribute("tabindex", "0");
+        rect.setAttribute("role", "button");
+        rect.setAttribute("aria-pressed", i === selIdx ? "true" : "false");
+        if (labelFn) rect.setAttribute("aria-label", labelFn(i));
+        if (i === selIdx) rect.classList.add("sel");
+        function pick() { onPick(i); }
+        rect.addEventListener("click", pick);
+        rect.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
         });
       });
     }
@@ -2553,12 +2847,18 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       titles: hourTitles, aria: "Incidents by hour of day"
     });
     const peakH = byHour.indexOf(Math.max.apply(null, byHour));
-    els.chartHourSub.textContent = byHour[peakH] > 0 ? ("peak " + fmtHour(peakH) + " · " + byHour[peakH]) : "";
-    wireBarClicks(els.chartHour, function (h) {
-      const tb = TIMEBLOCK_OF_HOUR(h);
-      els.timeBlockSelect.value = tb[0];
-      toast("Filtered to " + tb[1]);
-      scheduleRender(0);
+    if (f.exactHour != null) {
+      els.chartHourSub.innerHTML = "filtering " + esc(fmtHour(f.exactHour)) + "\u2013" +
+        esc(fmtHour((f.exactHour + 1) % 24)) +
+        " <button type='button' class='mini-clear' id='hourClearBtn'>Clear</button>";
+      const hcb = document.getElementById("hourClearBtn");
+      if (hcb) hcb.addEventListener("click", function () { setExactHour(f.exactHour); });
+    } else {
+      els.chartHourSub.textContent = byHour[peakH] > 0 ? ("peak " + fmtHour(peakH) + " · " + byHour[peakH]) : "";
+    }
+    makeBarsInteractive(els.chartHour, setExactHour, f.exactHour, function (i) {
+      return fmtHour(i) + " to " + fmtHour((i + 1) % 24) + ", " + byHour[i] +
+        " incidents" + (i === f.exactHour ? ", selected" : "");
     });
 
     // Day-of-week chart — normalized to the number of times each weekday
@@ -2579,47 +2879,90 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }) + "<div class='chart-note'>Average per day — normalized so each weekday counts once no matter how many occurred in the range.</div>";
     const peakD = dowRates.indexOf(Math.max.apply(null, dowRates));
     els.chartDowSub.textContent = dowRates[peakD] > 0 ? ("peak " + dowNames[peakD] + " · " + dowRates[peakD].toFixed(1) + "/day") : "";
-    wireBarClicks(els.chartDow, function (i) {
-      els.dowSelect.value = String(i);
-      toast("Filtered to " + ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"][i]);
+    const selDow = f.dowValue !== "all" ? parseInt(f.dowValue, 10) : null;
+    makeBarsInteractive(els.chartDow, function (i) {
+      pushHashEntry();
+      els.dowSelect.value = (String(i) === els.dowSelect.value) ? "all" : String(i);
+      toast(els.dowSelect.value === "all" ? "Day filter cleared"
+        : "Filtered to " + ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"][i]);
       scheduleRender(0);
+    }, selDow, function (i) {
+      return dowNames[i] + ", " + dowRates[i].toFixed(1) + " per day" + (i === selDow ? ", selected" : "");
     });
 
-    // 12-week trend
-    const WEEKS = 12;
-    const weekMs = 7 * 86400000;
+    // Trend, binned to match the selected range: hourly for a day, daily
+    // for a week or month, weekly beyond that.
     const nowMs = Date.now();
-    const weekly = new Array(WEEKS).fill(0);
+    let bins, binMs, binName, trendTitle, firstLbl;
+    if (f.range === "24h") { bins = 24; binMs = 3600000; binName = "hour"; trendTitle = "24-hour trend"; firstLbl = "24 hrs ago"; }
+    else if (f.range === "7d") { bins = 7; binMs = 86400000; binName = "day"; trendTitle = "7-day trend"; firstLbl = "7 days ago"; }
+    else if (f.range === "30d") { bins = 30; binMs = 86400000; binName = "day"; trendTitle = "30-day trend"; firstLbl = "30 days ago"; }
+    else { bins = 12; binMs = 7 * 86400000; binName = "week"; trendTitle = "12-week trend"; firstLbl = "12 wks ago"; }
+    els.chartTrendTitle.textContent = trendTitle;
+    const series = new Array(bins).fill(0);
     for (const row of rows) {
       const dt = bestRowDate(row);
       if (!dt) continue;
       const age = nowMs - dt.getTime();
-      if (age < 0 || age >= WEEKS * weekMs) continue;
-      weekly[WEEKS - 1 - Math.floor(age / weekMs)]++;
+      if (age < 0 || age >= bins * binMs) continue;
+      series[bins - 1 - Math.floor(age / binMs)]++;
     }
-    els.chartTrend.innerHTML = trendChartSVG(weekly, [WEEKS + " wks ago", "now"]);
-    const lastW = weekly[WEEKS - 1], prevW = weekly[WEEKS - 2];
+    els.chartTrend.innerHTML = trendChartSVG(series, [firstLbl, "now"]);
+    const lastW = series[bins - 1], prevW = series[bins - 2];
     if (prevW > 0) {
       const pct = ((lastW - prevW) / prevW) * 100;
       const dir = pct >= 0 ? "up" : "down";
-      els.chartTrendSub.innerHTML = "this week <span class='trend-delta " + dir + "'>" + (pct >= 0 ? "▲" : "▼") + " " + Math.abs(pct).toFixed(0) + "%</span>";
+      els.chartTrendSub.innerHTML = "this " + binName + " <span class='trend-delta " + dir + "'>" + (pct >= 0 ? "▲" : "▼") + " " + Math.abs(pct).toFixed(0) + "%</span>";
     } else {
-      els.chartTrendSub.textContent = lastW > 0 ? (lastW + " this week") : "";
+      els.chartTrendSub.textContent = lastW > 0 ? (lastW + " this " + binName) : "";
     }
 
     // Hour × day heatmap
     const hm = heatmapSVG(matrix);
-    els.chartMatrix.innerHTML = hm.svg + "<div class='chart-note'>Every cell covers the same amount of clock time, so raw counts compare fairly here. Tap a cell to filter to that day + time.</div>";
-    els.chartMatrixSub.textContent = hm.peak ? ("hottest " + hm.peak.day + " " + hm.peak.hour + " · " + hm.peak.count) : "";
-    els.chartMatrix.querySelectorAll(".hm-cell").forEach(function (cell) {
-      cell.addEventListener("click", function () {
-        const d = parseInt(cell.getAttribute("data-d"), 10);
-        const h = parseInt(cell.getAttribute("data-h"), 10);
-        const tb = TIMEBLOCK_OF_HOUR(h);
-        els.dowSelect.value = String(d);
-        els.timeBlockSelect.value = tb[0];
-        toast("Filtered to " + ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d] + " · " + tb[1]);
+    els.chartMatrix.innerHTML = hm.svg + "<div class='chart-note'>Every cell covers the same amount of clock time, so raw counts compare fairly here. Tap a cell to filter to that exact day + hour.</div>";
+    const hmSelD = f.dowValue !== "all" ? parseInt(f.dowValue, 10) : null;
+    const hmDayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    if (hmSelD !== null && f.exactHour != null) {
+      els.chartMatrixSub.innerHTML = "filtering " + esc(hmDayNames[hmSelD]) + " " + esc(fmtHour(f.exactHour)) +
+        " <button type='button' class='mini-clear' id='hmClearBtn'>Clear</button>";
+      const mcb = document.getElementById("hmClearBtn");
+      if (mcb) mcb.addEventListener("click", function () {
+        pushHashEntry();
+        els.dowSelect.value = "all";
+        state.exactHour = null;
+        toast("Day + hour filter cleared");
         scheduleRender(0);
+      });
+    } else {
+      els.chartMatrixSub.textContent = hm.peak ? ("hottest " + hm.peak.day + " " + hm.peak.hour + " · " + hm.peak.count) : "";
+    }
+    els.chartMatrix.querySelectorAll(".hm-cell").forEach(function (cell) {
+      const d = parseInt(cell.getAttribute("data-d"), 10);
+      const h = parseInt(cell.getAttribute("data-h"), 10);
+      const isSel = (hmSelD === d && f.exactHour === h);
+      if (isSel) cell.classList.add("sel");
+      cell.setAttribute("tabindex", "0");
+      cell.setAttribute("role", "button");
+      cell.setAttribute("aria-pressed", isSel ? "true" : "false");
+      cell.setAttribute("aria-label", hmDayNames[d] + " " + fmtHour(h) + ", " + matrix[d][h] +
+        " incidents" + (isSel ? ", selected" : ""));
+      function pickCell() {
+        pushHashEntry();
+        if (hmSelD === d && f.exactHour === h) {
+          els.dowSelect.value = "all";
+          state.exactHour = null;
+          toast("Day + hour filter cleared");
+        } else {
+          els.dowSelect.value = String(d);
+          state.exactHour = h;
+          els.timeBlockSelect.value = "all";
+          toast("Filtered to " + hmDayNames[d] + "s " + fmtHour(h) + "\u2013" + fmtHour((h + 1) % 24));
+        }
+        scheduleRender(0);
+      }
+      cell.addEventListener("click", pickCell);
+      cell.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickCell(); }
       });
     });
 
@@ -2682,39 +3025,59 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       });
     });
 
-    // Corridor leaderboard: tap a corridor to filter the map by that road
+    // Corridor leaderboard: CANONICAL corridors (an intersection credits
+    // both roads; every spelling of a road groups once). Facet-aware —
+    // computed without the corridor filter so alternatives stay visible.
+    const corRows = f.corridorId ? filteredIncidents(f, map, { corridor: 1 }) : rows;
     const byCorr = new Map();
-    for (const row of rows) {
-      const corr = inferCorridor(row[IDX_LOCATION]);
-      if (corr === "Unknown location") continue;
-      byCorr.set(corr, (byCorr.get(corr) || 0) + 1);
+    for (const row of corRows) {
+      const cors = corridorsOf(row);
+      for (let ci = 0; ci < cors.length; ci++) {
+        byCorr.set(cors[ci], (byCorr.get(cors[ci]) || 0) + 1);
+      }
     }
     const topCorrs = Array.from(byCorr.entries()).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 8);
+    // The selected corridor stays listed even when it drops out of the top 8.
+    if (f.corridorId && !topCorrs.some(function (e) { return e[0] === f.corridorId; })) {
+      topCorrs.push([f.corridorId, byCorr.get(f.corridorId) || 0]);
+    }
     if (topCorrs.length) {
-      const maxC = topCorrs[0][1];
+      const maxC = topCorrs[0][1] || 1;
       const cfrag = document.createDocumentFragment();
       topCorrs.forEach(function (entry, i) {
+        const isSel = entry[0] === f.corridorId;
+        const pct = corRows.length ? Math.round((entry[1] / corRows.length) * 100) : 0;
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "cor-row";
-        btn.title = "Filter the map to " + titleCase(entry[0]);
+        btn.className = "cor-row" + (isSel ? " on" : "");
+        btn.setAttribute("aria-pressed", isSel ? "true" : "false");
+        btn.title = isSel ? "Clear the corridor filter" : "Filter the map to " + titleCase(entry[0]);
         btn.innerHTML = "<span class='cor-rank'>" + (i + 1) + "</span>" +
           "<span class='cor-name'>" + esc(titleCase(entry[0])) + "</span>" +
           "<span class='cor-bar-wrap'><span class='cor-bar' style='width:" + ((entry[1] / maxC) * 100).toFixed(1) + "%'></span></span>" +
-          "<span class='cor-n'>" + entry[1].toLocaleString() + "</span>";
-        btn.addEventListener("click", function () {
-          els.roadSearch.value = entry[0];
-          els.roadSearchClear.classList.add("show");
-          toast("Filtering: " + titleCase(entry[0]));
-          scheduleRender(0);
-        });
+          "<span class='cor-n'>" + entry[1].toLocaleString() + "</span>" +
+          "<span class='cor-pct'>" + pct + "%</span>";
+        btn.addEventListener("click", function () { setCorridor(entry[0]); });
         cfrag.appendChild(btn);
       });
       els.corridorList.innerHTML = "";
       els.corridorList.appendChild(cfrag);
+      if (f.corridorId) {
+        const clr = document.createElement("button");
+        clr.type = "button";
+        clr.className = "mini-clear";
+        clr.style.marginTop = "4px";
+        clr.textContent = "Clear corridor";
+        clr.addEventListener("click", function () { setCorridor(f.corridorId); });
+        els.corridorList.appendChild(clr);
+      }
     } else {
       els.corridorList.innerHTML = "<span class='rates-no-data'>No corridor data in this selection.</span>";
     }
+
+    // One obvious escape hatch for chart-created selections.
+    els.anClearRow.style.display =
+      (f.exactHour != null || f.dowValue !== "all" || f.corridorId) ? "" : "none";
   }
 
   /* ═══════════════════════ exposure normalization ═══════════════════════
@@ -2735,6 +3098,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (ms > maxMs) maxMs = ms;
     }
     if (!isFinite(minMs)) return null;
+    return computeSpanWindow(minMs, maxMs);
+  }
+
+  // Exposure over an EXPLICIT window — used for the fixed 24h/7d/30d ranges,
+  // where the observation period is the range itself, never the coincidental
+  // span between the first and last matching incident.
+  function computeSpanWindow(minMs, maxMs) {
     const key = minMs + "|" + maxMs;
     if (_dataSpanCache.has(key)) return _dataSpanCache.get(key);
 
@@ -2801,9 +3171,22 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return d === 0 || d === 6;
   }
 
-  function renderRatesPanel(rows) {
+  function renderRatesPanel(rows, f) {
     const el = els.ratesContent;
-    const span = computeSpanFor(rows.length ? rows : INCIDENTS);
+    f = f || currentFilterObj();
+    if (!rows.length) {
+      el.innerHTML = '<span class="rates-no-data">No incidents match the current filters — nothing to normalize. Widen the time range or remove a filter.</span>';
+      return;
+    }
+    // The exposure period is the RANGE, not the matching incidents' own
+    // span: non-time filters shrink the numerator, never the denominator.
+    const nowMsR = Date.now();
+    let span = null, windowNote = "";
+    if (f.range === "24h") { span = computeSpanWindow(nowMsR - 86400000, nowMsR); windowNote = "the past 24 hours"; }
+    else if (f.range === "7d") { span = computeSpanWindow(nowMsR - 7 * 86400000, nowMsR); windowNote = "the past 7 days"; }
+    else if (f.range === "30d") { span = computeSpanWindow(nowMsR - 30 * 86400000, nowMsR); windowNote = "the past 30 days"; }
+    else if (f.mm || f.dd || f.yy) { span = computeSpanFor(rows); windowNote = "the selected dates"; }
+    else { span = computeSpanFor(INCIDENTS); windowNote = "the full collection period"; }
     if (!span || span.totalDays === 0) {
       el.innerHTML = '<span class="rates-no-data">Not enough dated incidents to compute rates.</span>';
       return;
@@ -2930,7 +3313,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const d1 = new Date(span.minMs), d2 = new Date(span.maxMs);
     const fmt = function (d) { return (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear(); };
     el.innerHTML =
-      '<div class="rates-subtitle">Filtered range ' + fmt(d1) + ' – ' + fmt(d2) + ': ' +
+      '<div class="rates-subtitle">Exposure window: ' + windowNote + ' (' + fmt(d1) + ' – ' + fmt(d2) + '), ' +
       span.totalDays.toLocaleString() + ' days (' + span.weekdayDays.toLocaleString() + ' weekdays, ' +
       span.weekendDays.toLocaleString() + ' weekend days). All comparisons below are normalized to that exposure.</div>' +
       group("Rush hour vs. off-peak",
@@ -2948,14 +3331,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   /* ═══════════════════════ smart insights ═══════════════════════ */
-  function inferCorridor(location) {
-    const raw = String(location || "").trim().toUpperCase();
-    if (!raw) return "Unknown location";
-    const primary = raw.split(/\s+(?:AT|&|\/|NEAR|@)\s+/)[0].trim();
-    if (!primary) return "Unknown location";
-    return primary.replace(/\s+/g, " ");
-  }
-
   function renderInsightsPanel(rows) {
     const el = els.insightsContent;
     if (!rows || rows.length === 0) {
@@ -2978,8 +3353,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
       const roadType = String(row[IDX_HIGHWAY] || "unknown").trim().toLowerCase() || "unknown";
       byRoadType.set(roadType, (byRoadType.get(roadType) || 0) + 1);
-      const corridor = inferCorridor(row[IDX_LOCATION]);
-      byCorridor.set(corridor, (byCorridor.get(corridor) || 0) + 1);
+      for (const corridor of corridorsOf(row)) {
+        byCorridor.set(corridor, (byCorridor.get(corridor) || 0) + 1);
+      }
     }
 
     const bestHour = byHour.reduce(function (best, count, hour) { return count > best.count ? { hour: hour, count: count } : best; }, { hour: -1, count: 0 });
@@ -3103,7 +3479,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       item.style.setProperty("--cat", cat.color);
       item.setAttribute("role", "button");
       item.setAttribute("tabindex", "0");
-      const occurrences = (row.length > IDX_COUNT && row[IDX_COUNT] != null) ? parseInt(row[IDX_COUNT], 10) : 1;
+      const occurrences = incidentCount(row);
       item.innerHTML =
         "<span class='feed-dot'></span>" +
         "<span class='feed-body'>" +
@@ -3579,6 +3955,25 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     });
   }
 
+  let didInitialFit = false;
+
+  // Fit the map viewport to a set of incident rows (never automatic after
+  // filter changes — only on first load and via the "Fit results" button).
+  function fitToResults(rows) {
+    if (!map || !rows || !rows.length) return;
+    let latMin = Infinity, latMax = -Infinity, lngMin = Infinity, lngMax = -Infinity;
+    for (const r of rows) {
+      if (r[IDX_LAT] < latMin) latMin = r[IDX_LAT];
+      if (r[IDX_LAT] > latMax) latMax = r[IDX_LAT];
+      if (r[IDX_LNG] < lngMin) lngMin = r[IDX_LNG];
+      if (r[IDX_LNG] > lngMax) lngMax = r[IDX_LNG];
+    }
+    if (!isFinite(latMin)) return;
+    try {
+      map.fitBounds([[latMin, lngMin], [latMax, lngMax]], { padding: [40, 40], maxZoom: 14 });
+    } catch (e) {}
+  }
+
   function renderAll() {
     const f = currentFilterObj();
     const filtered = filteredIncidents(f, map);
@@ -3594,11 +3989,23 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.filterBadge.classList.toggle("show", nActive > 0);
     updateAccordionBadges();
 
+    // Facet-aware companions: every visible count tracks the OTHER filters.
+    renderStatTiles();
+    renderLegend();
+    renderAgencyChecklist();
+    renderActiveChips(f);
+
     drawLayers(filtered);
-    renderCharts(filtered);
-    renderRatesPanel(filtered);
+    renderCharts(filtered, f);
+    renderRatesPanel(filtered, f);
     renderInsightsPanel(filtered);
     renderFeed(filtered);
+
+    // First render: frame the default (Past 24h) results, not the archive.
+    if (!didInitialFit && map) {
+      didInitialFit = true;
+      fitToResults(filtered.length ? filtered : INCIDENTS);
+    }
     updateHash();
   }
 
@@ -3656,29 +4063,38 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   let agencyCounts = {};
   function computeAgencyCounts() {
     agencyCounts = {};
-    for (const a of AGENCIES) agencyCounts[a.id] = 0;
+    for (const a of AGENCY_ALL) agencyCounts[a.id] = 0;
     for (const r of INCIDENTS) {
       const m = agencyMaskOf(r);
-      for (const a of AGENCIES) { if (m & a.bit) agencyCounts[a.id]++; }
+      for (const a of AGENCY_ALL) { if (m & a.bit) agencyCounts[a.id]++; }
     }
   }
 
   // Render the responding-agency checklist. Only agencies that actually appear
   // in the data get a chip, so absent responders never clutter the filter.
   function renderAgencyChecklist() {
+    // Facet-aware: counts reflect every OTHER active filter (never the
+    // agency selection itself), so selecting Fire doesn't zero out Police.
+    const rows = filteredIncidents(currentFilterObj(), map, { agency: 1 });
+    const facet = {};
+    for (const r of rows) {
+      const m = agencyMaskOf(r);
+      for (const a of AGENCY_ALL) { if (m & a.bit) facet[a.id] = (facet[a.id] || 0) + 1; }
+    }
     els.agencyChecklist.innerHTML = "";
     let shown = 0;
-    for (const a of AGENCIES) {
-      const n = agencyCounts[a.id] || 0;
-      if (!n) continue;
+    for (const a of AGENCY_ALL) {
+      if (!agencyCounts[a.id]) continue;  // never appears anywhere in the archive
       shown++;
+      const n = facet[a.id] || 0;
+      const pct = rows.length ? Math.round((n / rows.length) * 100) : 0;
       const on = state.agencies.has(a.id);
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "agency-chip" + (on ? " on" : "");
       btn.setAttribute("aria-pressed", on ? "true" : "false");
       btn.innerHTML = "<span class='tick'></span>" + esc(a.label) +
-        " <span class='n'>" + n.toLocaleString() + "</span>";
+        " <span class='n'>" + n.toLocaleString() + (rows.length ? " · " + pct + "%" : "") + "</span>";
       btn.addEventListener("click", function () {
         if (state.agencies.has(a.id)) state.agencies.delete(a.id);
         else state.agencies.add(a.id);
@@ -3689,6 +4105,19 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     if (!shown) {
       els.agencyChecklist.innerHTML = "<span class='n' style='color:var(--text-3)'>No agency data</span>";
+      return;
+    }
+    if (state.agencies.size) {
+      const clr = document.createElement("button");
+      clr.type = "button";
+      clr.className = "mini-clear";
+      clr.textContent = "Clear agencies";
+      clr.addEventListener("click", function () {
+        state.agencies.clear();
+        renderAgencyChecklist();
+        scheduleRender(0);
+      });
+      els.agencyChecklist.appendChild(clr);
     }
   }
 
@@ -3738,6 +4167,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.chkThunderstormWarning.checked = false;
     els.chkTornadoWatch.checked = false;
     state.agencies.clear();
+    state.exactHour = null;
+    state.corridorId = null;
     renderAgencyChecklist();
     els.chkHoliday.checked = false;
     els.lightSelect.value = "any";
@@ -3906,13 +4337,49 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     renderLegend();
     buildCauseDropdown();
     buildAgencyChecklist();
+    buildYearOptions();
     scheduleRender(0);
+  }
+
+  const META_SRC = DATAJS_SRC.replace(/[^\/]*$/, "traffic_meta.json");
+  let lastDataVersion = null;
+
+  function fetchMeta(cb) {
+    let called = false;
+    function fin(m) { if (!called) { called = true; cb(m); } }
+    try {
+      if (typeof fetch !== "function") { fin(null); return; }
+      fetch(META_SRC + "?v=" + Date.now(), { cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+        .then(function (m) { fin(m && m.data_version ? m : null); })
+        .catch(function () { fin(null); });
+    } catch (e) { fin(null); }
   }
 
   function reloadData(manual, done) {
     if (refreshBusy) { if (done) done(); return; }
     if (!manual && document.visibilityState !== "visible") { if (done) done(); return; }
     refreshBusy = true;
+    // Poll the tiny metadata file first: when the data version is unchanged
+    // the multi-hundred-KB data file isn't downloaded at all. If the meta
+    // file is missing (older deploys, file://), fall back to a full reload.
+    fetchMeta(function (meta) {
+      if (meta) {
+        dataMeta = meta;
+        if (lastDataVersion && meta.data_version === lastDataVersion) {
+          refreshBusy = false;
+          lastRefreshMs = Date.now();
+          renderStatus();
+          if (manual) toast("Feed is up to date");
+          if (done) done();
+          return;
+        }
+      }
+      loadFullData(manual, done, meta);
+    });
+  }
+
+  function loadFullData(manual, done, meta) {
     const prevCount = INCIDENTS.length;
     const s = document.createElement("script");
     s.src = DATAJS_SRC + (DATAJS_SRC.indexOf("?") === -1 ? "?" : "&") + "v=" + Date.now();
@@ -3920,6 +4387,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       refreshBusy = false;
       s.remove();
       lastRefreshMs = Date.now();
+      if (meta) lastDataVersion = meta.data_version;
       renderStatus();
       const fresh = window.INCIDENTS_DATA || [];
       if (fresh === INCIDENTS) {
@@ -3946,6 +4414,120 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (done) done();
     };
     document.body.appendChild(s);
+  }
+
+  /* ═══════════ active-filter chips ═══════════ */
+  // One removable chip per live filter. Each chip's × clears ONLY its own
+  // filter; the full Reset button still lives in the footer.
+  function renderActiveChips(f) {
+    const c = els.activeChips;
+    c.innerHTML = "";
+    function chip(label, remove) {
+      const el = document.createElement("span");
+      el.className = "af-chip";
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = label;
+      el.appendChild(t);
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "x";
+      x.setAttribute("aria-label", "Remove filter: " + label);
+      x.textContent = "\u00d7";
+      x.addEventListener("click", function () { remove(); scheduleRender(0); });
+      el.appendChild(x);
+      c.appendChild(el);
+    }
+    function selText(sel) {
+      return sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : "";
+    }
+    if (state.range && state.range !== "all") {
+      const lbl = state.range === "24h" ? "Past 24h" : state.range === "7d" ? "7 days" : "30 days";
+      chip(lbl, function () { setRange("all", true); });
+    }
+    if (state.exactHour != null) chip("Hour: " + fmtHour(state.exactHour), function () { state.exactHour = null; });
+    if (f.timeBlock !== "all") chip(selText(els.timeBlockSelect), function () { els.timeBlockSelect.value = "all"; });
+    if (f.dowValue !== "all") chip(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parseInt(f.dowValue, 10)] + "s", function () { els.dowSelect.value = "all"; });
+    if (f.dayType !== "all") chip(selText(els.dayTypeSelect), function () { els.dayTypeSelect.value = "all"; });
+    if (f.mm || f.dd || f.yy) {
+      chip("Date: " + (f.mm || "*") + "/" + (f.dd || "*") + "/" + (f.yy || "*"), function () {
+        $("monthSelect").value = ""; $("daySelect").value = ""; $("yearSelect").value = "";
+      });
+    }
+    if (state.cats.size < CATEGORIES.length) {
+      chip("Categories: " + state.cats.size + "/" + CATEGORIES.length, function () {
+        state.cats = new Set(CATEGORIES.map(function (cc) { return cc.id; }));
+        renderLegend();
+      });
+    }
+    if (f.causeGroup !== "__ALL__") chip("Group: " + selText(els.causeGroupSelect), function () { els.causeGroupSelect.value = "__ALL__"; });
+    if (f.cause !== "__ALL__") chip("Type: " + selText(els.causeSelect), function () { els.causeSelect.value = "__ALL__"; });
+    state.agencies.forEach(function (id) {
+      const a = AGENCY_BY_ID[id];
+      if (a) chip(a.label, function () { state.agencies.delete(id); });
+    });
+    if (f.roadSearch) chip("Road: " + f.roadSearch, function () { els.roadSearch.value = ""; els.roadSearchClear.classList.remove("show"); });
+    if (state.corridorId) chip("Corridor: " + titleCase(state.corridorId), function () { state.corridorId = null; });
+    if (f.roadType !== "any") chip("Road type: " + selText(els.roadTypeSelect), function () { els.roadTypeSelect.value = "any"; });
+    if (f.rushHour) chip("Rush hour", function () { els.chkRushHour.checked = false; });
+    if (f.schoolDay) chip("School days", function () { els.chkSchoolDay.checked = false; });
+    if (f.holiday) chip("Holidays", function () { els.chkHoliday.checked = false; });
+    if (f.weatherOnly) chip("Has weather data", function () { els.chkWeatherOnly.checked = false; });
+    [["tempBand", "Temp"], ["precipBand", "Rain chance"], ["precipAmountBand", "Rainfall"],
+     ["windBand", "Wind"], ["visBand", "Visibility"], ["cloudBand", "Sky"]].forEach(function (spec) {
+      const sel = $(spec[0]);
+      if (sel && sel.value !== "any") chip(spec[1] + ": " + selText(sel), function () { sel.value = "any"; });
+    });
+    if (f.chkFlood) chip("Flash flood warning", function () { els.chkFloodWarning.checked = false; });
+    if (f.chkStorm) chip("Severe storm warning", function () { els.chkThunderstormWarning.checked = false; });
+    if (f.chkTornado) chip("Tornado watch", function () { els.chkTornadoWatch.checked = false; });
+    if (f.light !== "any") chip(selText(els.lightSelect), function () { els.lightSelect.value = "any"; });
+    if (f.inViewOnly) chip("Only in map view", function () { els.chkInViewOnly.checked = false; });
+  }
+
+  /* ═══════════ About dialog ═══════════ */
+  let aboutPrevFocus = null;
+  function openAbout() {
+    aboutPrevFocus = document.activeElement;
+    const genIso = (dataMeta && dataMeta.generated_at) || PAGE_GENERATED_AT;
+    if (genIso) {
+      const g = new Date(genIso);
+      els.aboutGenerated.textContent = isNaN(g.getTime()) ? "" :
+        "Data last generated " + agoShort(Date.now() - g.getTime()) + " (" + g.toLocaleString() + "). " +
+        "Archive: " + INCIDENTS.length.toLocaleString() + " mapped incidents.";
+    }
+    els.aboutModal.classList.add("open");
+    els.aboutModal.setAttribute("aria-hidden", "false");
+    els.aboutClose.focus();
+  }
+  function closeAbout() {
+    els.aboutModal.classList.remove("open");
+    els.aboutModal.setAttribute("aria-hidden", "true");
+    if (aboutPrevFocus && aboutPrevFocus.focus) { try { aboutPrevFocus.focus(); } catch (e) {} }
+  }
+
+  /* ═══════════ data-driven year options ═══════════ */
+  // The archive decides which years are offered — not a hardcoded window.
+  function buildYearOptions() {
+    let minY = null;
+    const nowY = new Date().getFullYear();
+    for (const row of INCIDENTS) {
+      const dt = bestRowDate(row);
+      if (!dt) continue;
+      const y = dt.getFullYear();
+      if (y >= 2000 && y <= nowY + 1 && (minY === null || y < minY)) minY = y;
+    }
+    if (minY === null) return;
+    const sel = $("yearSelect");
+    const prev = sel.value;
+    while (sel.options.length > 1) sel.remove(1);
+    for (let y = nowY; y >= minY; y--) {
+      const o = document.createElement("option");
+      o.value = String(y);
+      o.textContent = String(y);
+      sel.appendChild(o);
+    }
+    if (prev) sel.value = prev;
   }
 
   /* ═══════════════════════ tabs + mobile sheet ═══════════════════════ */
@@ -3979,6 +4561,46 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       clearAll();
       scheduleRender(0);
       toast("Filters reset");
+    });
+
+    els.fitBtn.addEventListener("click", function () {
+      fitToResults(lastFiltered && lastFiltered.length ? lastFiltered : INCIDENTS);
+    });
+
+    els.anClearBtn.addEventListener("click", function () {
+      pushHashEntry();
+      state.exactHour = null;
+      state.corridorId = null;
+      els.dowSelect.value = "all";
+      toast("Analytics selections cleared");
+      scheduleRender(0);
+    });
+
+    // A broad time block replaces any exact-hour pick (and vice versa —
+    // the charts reset this dropdown), so they never silently AND together.
+    els.timeBlockSelect.addEventListener("change", function () {
+      if (els.timeBlockSelect.value !== "all" && state.exactHour != null) {
+        state.exactHour = null;
+      }
+    });
+
+    els.aboutBtn.addEventListener("click", openAbout);
+    els.aboutClose.addEventListener("click", closeAbout);
+    els.aboutModal.addEventListener("click", function (e) {
+      if (e.target === els.aboutModal) closeAbout();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && els.aboutModal.classList.contains("open")) closeAbout();
+    });
+
+    // Back/forward (chart selections push history entries) and hand-edited
+    // hashes restore the full filter state.
+    window.addEventListener("hashchange", function () {
+      if (hashApplying) return;
+      applyHash();
+      renderLegend();
+      renderAgencyChecklist();
+      scheduleRender(0);
     });
 
     const changeIds = [
@@ -4273,9 +4895,15 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   buildCauseDropdown();
   buildAgencyChecklist();
   buildCauseGroupDropdown();
+  buildYearOptions();
   applyHash();
   renderLegend();
   renderAgencyChecklist();   // reflect any agencies restored from the URL hash
+  // Learn the live data version so the first background refresh can skip an
+  // unchanged download; also feeds "data …" in the status row.
+  fetchMeta(function (m) {
+    if (m) { dataMeta = m; lastDataVersion = m.data_version; renderStatus(); }
+  });
   renderStatTiles();
   renderStatus();
   wireUI();

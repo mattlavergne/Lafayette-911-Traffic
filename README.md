@@ -1,8 +1,15 @@
 # Lafayette 911 Traffic
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A self-hosted service that collects live 911 traffic incidents for Lafayette
 Parish, Louisiana, stores them permanently without duplicates, and publishes
 an interactive incident-intelligence map.
+
+> **Independent & unofficial.** This project is not affiliated with or
+> endorsed by Lafayette 911, Lafayette Parish, NOAA/NWS, or any government
+> agency. Information may be delayed, incomplete, or incorrect — never use it
+> for emergency response or safety decisions. **Call 911 for emergencies.**
 
 The map is a single static HTML page (plus one data file) that can be served
 by any web server — no application server, no database exposed to the web.
@@ -122,11 +129,17 @@ Less common: `LAF911_FETCH_TIMEOUT`, `LAF911_GEOCODE_SLEEP`,
 
 Dark/light Liquid-Glass UI with category-colored incidents, browsable
 same-location incident stacks, fuzzy road search, quick time ranges, a full
-analytics tab (hour × day heatmap, trends, seasonality, category mix, top
-corridors, normalized rush-hour/school-day rates), a live feed with pending
-"locating…" entries, live NWS weather and alerts, pulse beacons on incidents
-from the last 2 hours, and background data refresh every 5 minutes. Filters
-persist in the URL hash.
+analytics tab (hour × day heatmap with exact day+hour selection, adaptive
+trends, seasonality, category mix, canonical top corridors, normalized
+rush-hour/school-day rates over fixed exposure windows), a live feed with
+pending "locating…" entries, live NWS weather and alerts, pulse beacons on
+incidents from the last 2 hours, and background data refresh. Filters are
+facet-aware (every count reflects the other active filters), surfaced as
+removable chips, and persist in the URL hash — including exact hour (`h=`),
+corridor (`cid=`), and agencies (`ag=`). The page polls a tiny
+`traffic_meta.json` first and only re-downloads the full data file when its
+version hash changes. An About dialog covers disclaimers, data sources,
+privacy, and licenses.
 
 Basemaps are CARTO (light/dark) with an OpenStreetMap fallback; popups link
 out to Google Maps, Street View and Waze via plain URLs. None of the map's
@@ -192,6 +205,14 @@ whatever interval you prefer.)
 | NWS api.weather.gov | Weather snapshots, active alerts, live map weather | free, no key |
 | CARTO / OpenStreetMap tiles | Basemaps | free tiers; attribution kept |
 | GitHub Pages (optional) | Public hosting of the map | free for public repos |
+
+## License
+
+This project's original source code is released under the
+[MIT License](LICENSE). The license covers **only the code** — incident data,
+map data/tiles, weather data, and third-party libraries remain the property of
+their respective owners; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and terms.
 
 ## Development
 
