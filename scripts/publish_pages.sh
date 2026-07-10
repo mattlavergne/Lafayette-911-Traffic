@@ -26,6 +26,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAP_HTML="${LAF911_MAP_PATH:-$REPO_DIR/traffic_map.html}"
 DATA_JS="${LAF911_DATAJS_PATH:-$REPO_DIR/traffic_data.js}"
+META_JSON="${LAF911_META_PATH:-$(dirname "$DATA_JS")/traffic_meta.json}"
 BRANCH="${PAGES_BRANCH:-gh-pages}"
 STAMP="${PAGES_STAMP:-$REPO_DIR/.pages_last_hash}"
 
@@ -55,6 +56,11 @@ trap 'rm -rf "$WORK"' EXIT
 # subpath). .nojekyll tells Pages to serve the files verbatim.
 cp "$MAP_HTML" "$WORK/index.html"
 cp "$DATA_JS"  "$WORK/traffic_data.js"
+# traffic_meta.json lets the page check for new data cheaply before pulling
+# the full data file. Optional: older renders won't have produced it yet.
+if [ -f "$META_JSON" ]; then
+  cp "$META_JSON" "$WORK/traffic_meta.json"
+fi
 touch "$WORK/.nojekyll"
 
 cd "$WORK"

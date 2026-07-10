@@ -222,6 +222,80 @@ class CsvEnrichmentExportTests(unittest.TestCase):
             self.assertEqual(row[25], 1)    # is_holiday
 
 
+class MetaAndCorridorExportTests(unittest.TestCase):
+    def test_meta_file_and_corridor_field(self):
+        """Every render writes traffic_meta.json (version hash, timestamp,
+        count, schema) and appends canonical corridor ids at row index 26."""
+        import json as _json
+        import re
+
+        from lafayette911.map_render import DATA_SCHEMA_VERSION, create_map_from_csv
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            datajs_path = os.path.join(tmpdir, "traffic_data.js")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "location,cause,reported,assisting,incident_number,latitude,longitude\n"
+                )
+                handle.write(
+                    "3500 AMBASSADOR CAFFERY PKWY,ACCIDENT,01/15/2026 8:30 AM,POLICE,I1,30.2241,-92.0198\n"
+                )
+                handle.write(
+                    "AMBASSADOR CAFFERY PKWY AT KALISTE SALOOM RD,ACCIDENT,01/15/2026 9:30 AM,POLICE FIRE,I2,30.21,-92.03\n"
+                )
+
+            create_map_from_csv(csv_path, os.path.join(tmpdir, "m.html"), datajs_path, os.path.join(tmpdir, "osm"))
+
+            # Corridor ids ride at index 26 without disturbing earlier fields.
+            datajs = open(datajs_path, encoding="utf-8").read()
+            arr = _json.loads(re.search(r"window\.INCIDENTS_DATA=(\[.*?\]);", datajs).group(1))
+            by_loc = {row[3]: row for row in arr}
+            self.assertEqual(
+                by_loc["3500 AMBASSADOR CAFFERY PKWY"][26], ["AMBASSADOR CAFFERY PKWY"]
+            )
+            self.assertEqual(
+                sorted(by_loc["AMBASSADOR CAFFERY PKWY AT KALISTE SALOOM RD"][26]),
+                ["AMBASSADOR CAFFERY PKWY", "KALISTE SALOOM RD"],
+            )
+
+            meta_path = os.path.join(tmpdir, "traffic_meta.json")
+            self.assertTrue(os.path.exists(meta_path))
+            meta = _json.load(open(meta_path, encoding="utf-8"))
+            self.assertEqual(meta["schema_version"], DATA_SCHEMA_VERSION)
+            self.assertEqual(meta["incident_count"], 2)
+            self.assertTrue(meta["data_version"])
+            self.assertIn("generated_at", meta)
+
+            # An unchanged re-render must NOT dirty the meta file (that would
+            # force a pointless Pages publish every cycle).
+            before = open(meta_path, encoding="utf-8").read()
+            create_map_from_csv(csv_path, os.path.join(tmpdir, "m.html"), datajs_path, os.path.join(tmpdir, "osm"))
+            self.assertEqual(open(meta_path, encoding="utf-8").read(), before)
+
+
+class PublicReleaseFileTests(unittest.TestCase):
+    def test_license_and_notices_exist(self):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        lic = open(os.path.join(root, "LICENSE"), encoding="utf-8").read()
+        self.assertIn("MIT License", lic)
+        self.assertIn("2026", lic)
+        notices = open(os.path.join(root, "THIRD_PARTY_NOTICES.md"), encoding="utf-8").read()
+        for needle in ("Leaflet", "OpenStreetMap", "CARTO", "National Weather Service", "GitHub Pages"):
+            self.assertIn(needle, notices)
+
+    def test_page_carries_disclaimers_and_attribution(self):
+        html = render_map_html(30.2241, -92.0198, "traffic_data.js")
+        for needle in (
+            "aboutModal",
+            "not affiliated with or",
+            "call 911",
+            "openstreetmap.org/copyright",
+            "carto.com/attribution",
+        ):
+            self.assertIn(needle, html)
+
+
 class ConfigDefaultTests(unittest.TestCase):
     def test_geocode_defaults(self):
         from lafayette911.main import load_config
