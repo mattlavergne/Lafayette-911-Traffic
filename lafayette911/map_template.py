@@ -1352,7 +1352,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         IDX_SKY_COVER = 14, IDX_WEATHER_AT = 15, IDX_WEATHER_SOURCE = 16, IDX_HOUR = 17,
         IDX_DOW = 18, IDX_SCHOOL_DAY = 19, IDX_NWS_FLOOD = 20, IDX_NWS_STORM = 21,
         IDX_NWS_TORNADO = 22, IDX_HIGHWAY = 23, IDX_CREATED_AT = 24, IDX_HOLIDAY = 25,
-        IDX_CORRIDORS = 26;  // canonical corridor ids (array), absent in old data
+        IDX_CORRIDORS = 26,  // canonical corridor ids (array), absent in old data
+        IDX_TC_HISTORY = 27; // aggregated TRAFFIC CONTROL only: [["YYYY-MM-DD", n], ...]
 
   const DATAJS_SRC = "__DATAJS_SRC__";
   const REDUCED_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1794,6 +1795,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return 1;
   }
 
+  // Aggregated routine TRAFFIC CONTROL group (e.g. daily school car-rider
+  // control): recorded and counted, but deliberately second-class on the
+  // map so it can never crowd out or steal taps from real incidents.
+  function isRoutineTC(row) {
+    return incidentCount(row) > 1 &&
+      String(row[IDX_CAUSE] || "").trim().toUpperCase() === "TRAFFIC CONTROL";
+  }
+
   function hasWeatherData(row) {
     return (
       weatherNumber(row, IDX_TEMP_F) != null || weatherNumber(row, IDX_PRECIP_PROB) != null ||
@@ -1816,7 +1825,34 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (reported) rows.push("<div>Reported: <b>" + esc(reported) + "</b></div>");
     const assist = normalizeText(row[IDX_ASSIST]);
     if (assist) rows.push("<div>Assisting: <b>" + esc(assist) + "</b></div>");
-    if (occurrences > 1) rows.push("<div>Occurrences: <b>" + occurrences + "</b></div>");
+    if (occurrences > 1) {
+      rows.push("<div>Occurrences at this spot: <b>" + occurrences.toLocaleString() + "</b></div>");
+      // Recurrence pattern: last 14 calendar days from the exported per-day
+      // history, as a tiny sparkline (routine school traffic control shows
+      // up as a school-day comb).
+      const hist = (row.length > IDX_TC_HISTORY && Array.isArray(row[IDX_TC_HISTORY])) ? row[IDX_TC_HISTORY] : null;
+      if (hist && hist.length) {
+        const byDay = {};
+        let histMax = 1;
+        for (const h of hist) { byDay[h[0]] = h[1]; if (h[1] > histMax) histMax = h[1]; }
+        const BLOCKS = "▁▂▃▄▅▆▇█";
+        let spark = "", activeDays = 0;
+        for (let i = 13; i >= 0; i--) {
+          const d = new Date(Date.now() - i * 86400000);
+          const key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+          const v = byDay[key] || 0;
+          if (v > 0) activeDays++;
+          spark += v > 0 ? BLOCKS[Math.min(7, Math.round((v / histMax) * 7))] : "·";
+        }
+        rows.push("<div>Last 14 days: <b style='font-family:ui-monospace,Menlo,monospace;letter-spacing:1px;color:var(--accent)'>" +
+          spark + "</b> <span style='color:var(--text-3)'>(" + activeDays + " active day" + (activeDays === 1 ? "" : "s") + ")</span></div>");
+      }
+      if (isRoutineTC(row)) {
+        rows.push("<div style='font-size:10.5px;color:var(--text-3);margin-top:2px;'>Routine recurring activity " +
+          "(e.g. daily school traffic control) — every occurrence is archived, but it's grouped into one point " +
+          "so it can't crowd out real incidents.</div>");
+      }
+    }
     const hw = normalizeText(row.length > IDX_HIGHWAY ? row[IDX_HIGHWAY] : "");
     if (hw) rows.push("<div>Road class: <b>" + esc(hw.replace(/_/g, " ")) + "</b></div>");
 
@@ -3835,6 +3871,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       const grouped = usePerfMode
         ? groupByRounded(pointRows, zoom >= 14 ? 4 : 3)
         : groupByExactLocation(pointRows);
+      // Draw routine traffic-control groups FIRST so real incidents render
+      // on top of them, never underneath.
+      grouped.sort(function (a, b) {
+        const ar = a.rows && a.rows.length ? (a.rows.every(isRoutineTC) ? 0 : 1) : 1;
+        const br = b.rows && b.rows.length ? (b.rows.every(isRoutineTC) ? 0 : 1) : 1;
+        return ar - br;
+      });
       const sizing = getPointSizing();
       const mkList = [];
       for (const group of grouped) {
@@ -3851,7 +3894,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
               color: cat.color, weight: isTouch ? 2.4 : 1.8,
               fillColor: cat.fill, fillOpacity: 0.72
             });
-            hitTargets.push({ lat: group.lat, lng: group.lng, rows: group.rows, label: cellLabel(zoom >= 14 ? 4 : 3) });
+            hitTargets.push({ lat: group.lat, lng: group.lng, rows: group.rows, label: cellLabel(zoom >= 14 ? 4 : 3), routine: group.rows.every(isRoutineTC) });
           } else {
             const cat = dominantCategory(group.rows);
             const icon = L.divIcon({
@@ -3870,7 +3913,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
             (function (rows) {
               mk.on("click", function () { openIncidentPopup(anchor, rows); });
             })(group.rows);
-            hitTargets.push({ lat: group.lat, lng: group.lng, rows: group.rows, label: null });
+            hitTargets.push({ lat: group.lat, lng: group.lng, rows: group.rows, label: null, routine: group.rows.every(isRoutineTC) });
           }
         } else {
           const singleRow = usePerfMode ? group.sample : group.rows[0];
@@ -3881,7 +3924,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
             fillColor: cat.fill, fillOpacity: 0.6
           });
           pointMarkers.singles.push(mk);
-          hitTargets.push({ lat: group.lat, lng: group.lng, rows: [singleRow], label: null });
+          hitTargets.push({ lat: group.lat, lng: group.lng, rows: [singleRow], label: null, routine: isRoutineTC(singleRow) });
         }
         mkList.push(mk);
       }
@@ -4955,9 +4998,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
           const p = map.latLngToContainerPoint([t.lat, t.lng]);
           const d = Math.hypot(p.x - e.containerPoint.x, p.y - e.containerPoint.y);
           if (d > TAP_RADIUS) continue;
-          if (d < bestDist - 0.5 || (Math.abs(d - bestDist) <= 0.5 && best && t.rows.length > best.rows.length)) {
+          // Routine traffic-control groups yield to real incidents: they
+          // carry a 12px handicap, so an overlapping accident wins the tap
+          // unless the TC point is decisively closer.
+          const eff = t.routine ? d + 12 : d;
+          if (eff < bestDist - 0.5 || (Math.abs(eff - bestDist) <= 0.5 && best && t.rows.length > best.rows.length)) {
             best = t;
-            bestDist = d;
+            bestDist = eff;
           }
         }
         if (best) {
