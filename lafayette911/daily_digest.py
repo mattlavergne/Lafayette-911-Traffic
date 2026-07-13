@@ -226,6 +226,40 @@ def collect_digest_stats(db_path: str, now: Optional[datetime] = None) -> Dict:
     }
 
 
+# ── host (Raspberry Pi) vitals ─────────────────────────────────────────────
+def collect_system_info() -> Dict:
+    """Best-effort host stats: uptime/boot time (power-outage evidence),
+    CPU temperature, disk headroom, load. Every probe is optional — anything
+    unreadable is simply omitted from the email."""
+    info: Dict = {}
+    try:
+        with open("/proc/uptime") as handle:
+            up = float(handle.read().split()[0])
+        info["uptime_seconds"] = up
+        info["booted_at_epoch"] = time.time() - up
+    except Exception:
+        pass
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as handle:
+            milli = int(handle.read().strip())
+        if 0 < milli < 150000:
+            info["cpu_temp_c"] = milli / 1000.0
+    except Exception:
+        pass
+    try:
+        import shutil
+        usage = shutil.disk_usage("/")
+        info["disk_free_bytes"] = usage.free
+        info["disk_total_bytes"] = usage.total
+    except Exception:
+        pass
+    try:
+        info["load_1m"] = os.getloadavg()[0]
+    except Exception:
+        pass
+    return info
+
+
 # ── rendering ──────────────────────────────────────────────────────────────
 def _fmt_uptime(seconds: float) -> str:
     s = int(max(0, seconds))
@@ -271,7 +305,8 @@ def _stat_cell(value: str, label: str, hint: str = "") -> str:
     ) % (e(hint), e(value), e(label))
 
 
-def render_digest_html(stats: Dict, service_info: Optional[Dict] = None, map_url: str = "") -> str:
+def render_digest_html(stats: Dict, service_info: Optional[Dict] = None, map_url: str = "",
+                       system_info: Optional[Dict] = None) -> str:
     e = _html.escape
     n = stats["new_total"]
     prev = stats["prev_total"]
@@ -329,8 +364,23 @@ def render_digest_html(stats: Dict, service_info: Optional[Dict] = None, map_url
         return ('<tr><td style="padding:4px 8px 4px 0;font-size:13px;white-space:nowrap;">%s %s</td>'
                 '<td style="padding:4px 0;font-size:13px;font-weight:600;text-align:right;">%s</td></tr>'
                 ) % (emoji, e(label), e(str(value)))
+    if system_info and system_info.get("uptime_seconds") is not None:
+        up = system_info["uptime_seconds"]
+        boot_str = time.strftime("%b %-d, %-I:%M %p", time.localtime(system_info["booted_at_epoch"]))
+        health_rows += hrow("🖥️", "Pi uptime", "%s (up since %s)" % (_fmt_uptime(up), boot_str))
+        if up < 86400:
+            # A reboot inside the reporting window usually means a power
+            # outage or an update — call it out loudly.
+            health_rows += ('<tr><td colspan="2" style="padding:4px 0;font-size:12.5px;'
+                            'color:#b45309;font-weight:600;">⚡ The Pi rebooted within the last 24 hours '
+                            '(power outage or update?)</td></tr>')
     if service_info:
-        health_rows += hrow("⏱️", "Service uptime", _fmt_uptime(time.time() - service_info.get("started_at_epoch", time.time())))
+        svc_up = time.time() - service_info.get("started_at_epoch", time.time())
+        health_rows += hrow("⏱️", "Service uptime", _fmt_uptime(svc_up))
+        if svc_up < 86400 and not (system_info and (system_info.get("uptime_seconds") or 0) < 86400):
+            health_rows += ('<tr><td colspan="2" style="padding:4px 0;font-size:12.5px;'
+                            'color:#b45309;font-weight:600;">♻️ The service restarted within the last '
+                            '24 hours (the Pi itself stayed up — likely a code update or crash-restart)</td></tr>')
         health_rows += hrow("🔄", "Cycles this run", "{:,}".format(service_info.get("cycles_completed", 0)))
         health_rows += hrow("⚡", "Last cycle", "%.1f s" % service_info.get("last_cycle_seconds", 0.0))
         errs = service_info.get("errors_24h", 0)
@@ -338,6 +388,17 @@ def render_digest_html(stats: Dict, service_info: Optional[Dict] = None, map_url
         rss = service_info.get("rss_bytes") or 0
         if rss:
             health_rows += hrow("🧠", "Memory (RSS)", "%.0f MB" % (rss / 1048576.0))
+    if system_info:
+        if system_info.get("cpu_temp_c") is not None:
+            t = system_info["cpu_temp_c"]
+            health_rows += hrow("🌡️" if t < 70 else "🥵", "CPU temperature", "%.1f °C" % t)
+        if system_info.get("disk_free_bytes") is not None:
+            free_gb = system_info["disk_free_bytes"] / 1073741824.0
+            pct_free = 100.0 * system_info["disk_free_bytes"] / max(1, system_info.get("disk_total_bytes", 1))
+            health_rows += hrow("💾" if pct_free >= 10 else "🚨", "Disk free",
+                                "%.1f GB (%.0f%%)" % (free_gb, pct_free))
+        if system_info.get("load_1m") is not None:
+            health_rows += hrow("⚖️", "Load average (1 min)", "%.2f" % system_info["load_1m"])
     health_rows += hrow("🗄️", "Archive size", "{:,} incidents ({:,} mapped)".format(
         stats["archive"]["total"], stats["archive"]["located"]))
 
@@ -479,7 +540,8 @@ def maybe_send_daily_digest(config, store, service_info: Dict, logger,
             return False
 
         stats = collect_digest_stats(config.db_path)
-        html = render_digest_html(stats, service_info=service_info, map_url=cfg.map_url)
+        html = render_digest_html(stats, service_info=service_info, map_url=cfg.map_url,
+                                  system_info=collect_system_info())
         send(cfg, html, _subject_for(stats))
         store._meta_set("digest_last_sent_date", today)
         store._meta_set("digest_failed_count", "0")
@@ -511,7 +573,8 @@ if __name__ == "__main__":
     app_cfg = load_config()
     stats = collect_digest_stats(app_cfg.db_path)
     cfg = load_digest_config()
-    html_out = render_digest_html(stats, service_info=None, map_url=cfg.map_url)
+    html_out = render_digest_html(stats, service_info=None, map_url=cfg.map_url,
+                                  system_info=collect_system_info())
 
     if args.preview:
         with open(args.preview, "w", encoding="utf-8") as handle:

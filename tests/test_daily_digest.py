@@ -133,6 +133,42 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("<img", html)
         self.assertNotIn("http-equiv", html)
 
+    def test_render_pi_vitals_and_outage_flags(self):
+        now = datetime.utcnow()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, now)
+            s = collect_digest_stats(db, now=now)
+        # Pi rebooted 2h ago → uptime row + loud outage note.
+        html = render_digest_html(
+            s,
+            service_info={"started_at_epoch": time.time() - 7000, "cycles_completed": 20,
+                          "errors_24h": 0, "last_cycle_seconds": 3.0, "rss_bytes": 0},
+            system_info={"uptime_seconds": 7200, "booted_at_epoch": time.time() - 7200,
+                         "cpu_temp_c": 55.3, "disk_free_bytes": 20 * 1073741824,
+                         "disk_total_bytes": 60 * 1073741824, "load_1m": 0.42},
+        )
+        self.assertIn("Pi uptime", html)
+        self.assertIn("rebooted within the last 24 hours", html)
+        self.assertIn("CPU temperature", html)
+        self.assertIn("55.3", html)
+        self.assertIn("Disk free", html)
+        self.assertIn("Load average", html)
+        # Pi up 10 days but service restarted 1h ago → restart note instead.
+        html2 = render_digest_html(
+            s,
+            service_info={"started_at_epoch": time.time() - 3600, "cycles_completed": 12,
+                          "errors_24h": 0, "last_cycle_seconds": 3.0, "rss_bytes": 0},
+            system_info={"uptime_seconds": 10 * 86400, "booted_at_epoch": time.time() - 10 * 86400},
+        )
+        self.assertNotIn("rebooted within the last 24 hours", html2)
+        self.assertIn("service restarted within the last", html2)
+
+    def test_collect_system_info_never_raises(self):
+        from lafayette911.daily_digest import collect_system_info
+        info = collect_system_info()
+        self.assertIsInstance(info, dict)  # contents are platform-dependent
+
     def test_render_without_service_info(self):
         now = datetime.utcnow()
         with tempfile.TemporaryDirectory() as tmp:

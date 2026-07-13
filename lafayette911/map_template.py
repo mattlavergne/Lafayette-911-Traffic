@@ -2015,6 +2015,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   // Canonical corridors for a row. The backend exports them at IDX_CORRIDORS;
   // older data files won't have the field, so fall back to a rough in-browser
   // normalizer (split intersections, strip house numbers and NB/SB tags).
+  const CITY_STATE_TOKENS = { LAFAYETTE: 1, BROUSSARD: 1, YOUNGSVILLE: 1, SCOTT: 1, CARENCRO: 1, DUSON: 1, MILTON: 1, MAURICE: 1, LA: 1, LOUISIANA: 1, USA: 1, PARISH: 1 };
+
   function corridorsOfJS(location) {
     const raw = String(location || "").trim().toUpperCase();
     if (!raw) return [];
@@ -2022,8 +2024,18 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     raw.split(/\s+(?:AT|&+|\/|@|NEAR|AND)\s+|\s*[&\/]\s*/).forEach(function (part) {
       let s = part.replace(/[.,;:()"']/g, " ").replace(/\s+/g, " ").trim();
       s = s.replace(/^\d+[A-Z]?(\s*-\s*\d+[A-Z]?)?\s+(BLK\s+(OF\s+)?|BLOCK\s+(OF\s+)?)?/, "");
-      s = s.replace(/(NB|SB|EB|WB|NBD|SBD|EBD|WBD)/g, " ").replace(/\s+/g, " ").trim();
-      if (!s || /^\d+[A-Z]?(\s*-\s*\d+[A-Z]?)?$/.test(s)) return;
+      s = s.replace(/\b(NB|SB|EB|WB|NBD|SBD|EBD|WBD)\b/g, " ").replace(/\s+/g, " ").trim();
+      // Trailing municipality/state tags are not roads ("MOSS ST LAFAYETTE
+      // LA" groups as "MOSS ST"); a city-only location yields no corridor.
+      const toks = s.split(" ");
+      while (toks.length && CITY_STATE_TOKENS[toks[toks.length - 1]]) toks.pop();
+      s = toks.join(" ");
+      // Canonicalize highway ids so "I-49 N" / "I 49" / "US HWY 90" group.
+      let hw = s.match(/^(?:I|INT|INTERSTATE)[\s.-]*(\d{1,3})(?:\s+[NSEW])?$/);
+      if (hw) s = "I-" + hw[1];
+      else if ((hw = s.match(/^US[\s.-]*(?:HWY[\s.-]*)?(\d{1,3})(?:\s+[NSEW])?$/))) s = "US " + hw[1];
+      else if ((hw = s.match(/^LA[\s.-]*(?:HWY[\s.-]*)?(\d{1,4})(?:\s+[NSEW])?$/))) s = "LA " + hw[1];
+      if (!s || /^\d+[A-Z]?(\s*-\s*\d+[A-Z]?)?$/.test(s) || /^(N|S|E|W|NE|NW|SE|SW)$/.test(s)) return;
       if (out.indexOf(s) === -1) out.push(s);
     });
     return out;
