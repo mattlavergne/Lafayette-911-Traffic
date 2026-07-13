@@ -292,6 +292,47 @@ class StateStore:
         )
         self.conn.commit()
 
+    def purge_shared_fallback_coordinates(self, min_distinct_locations: int = 8):
+        """One-time repair: re-queue incidents pinned on geocoder-fallback points.
+
+        Before precision validation shipped, Google's locality/route fallbacks
+        pinned MANY different addresses onto identical coordinates — the
+        downtown city centroid, whole-road midpoints. A genuine address never
+        hosts that many distinct location strings, so any exact coordinate
+        shared by ``min_distinct_locations`` different (normalized) locations
+        is treated as a fallback point: those incidents lose their coordinates
+        and rejoin the geocoding queue, where the precision filter either
+        places them properly or retires them honestly.
+
+        Runs once (app_meta-guarded, restart-safe). Returns a list of
+        ``(lat, lng, distinct_locations, incidents_requeued)`` for logging.
+        """
+        if self._meta_get("fallback_coord_purge_v1") == "done":
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT latitude, longitude,
+                   COUNT(DISTINCT LOWER(TRIM(location))) AS distinct_locs,
+                   COUNT(*) AS n
+            FROM incidents
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            GROUP BY latitude, longitude
+            HAVING distinct_locs >= ?
+            """,
+            (int(min_distinct_locations),),
+        ).fetchall()
+        purged = []
+        for lat, lng, distinct_locs, n in rows:
+            self.conn.execute(
+                "UPDATE incidents SET latitude = NULL, longitude = NULL, geocode_attempts = 0"
+                " WHERE latitude = ? AND longitude = ?",
+                (lat, lng),
+            )
+            purged.append((lat, lng, int(distinct_locs), int(n)))
+        self._meta_set("fallback_coord_purge_v1", "done")
+        self.conn.commit()
+        return purged
+
     def seed_negative_cache_from_history(self) -> int:
         """One-time migration: blacklist addresses that already failed 3+ times.
 

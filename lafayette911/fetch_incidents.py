@@ -116,7 +116,17 @@ def geocode_with_google(
         if lat is None or lng is None:
             return None
 
-        return {"lat": float(lat), "lng": float(lng), "address_components": result.get("address_components", [])}
+        return {
+            "lat": float(lat),
+            "lng": float(lng),
+            "address_components": result.get("address_components", []),
+            # Precision metadata: when Google can't resolve an address it
+            # falls back to the LOCALITY centroid (every failure lands on the
+            # same downtown point) or a whole-road midpoint. The collector
+            # uses these fields to reject such fallbacks.
+            "location_type": str(result.get("geometry", {}).get("location_type", "") or ""),
+            "types": list(result.get("types", []) or []),
+        }
     except requests.RequestException:
         return None
     finally:
@@ -227,6 +237,8 @@ def geocode_incidents(
         incident["latitude"] = result["lat"]
         incident["longitude"] = result["lng"]
         incident["address_components"] = result.get("address_components", [])
+        incident["geo_location_type"] = result.get("location_type", "")
+        incident["geo_types"] = result.get("types", [])
 
         # Populate both cache views so later incidents at the same (or a
         # differently formatted) address are free.
