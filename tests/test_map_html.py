@@ -222,6 +222,46 @@ class CsvEnrichmentExportTests(unittest.TestCase):
             self.assertEqual(row[25], 1)    # is_holiday
 
 
+class TrafficControlHistoryTests(unittest.TestCase):
+    def test_tc_groups_carry_daily_history_and_never_hide_accidents(self):
+        """Routine TRAFFIC CONTROL stays collapsed to ONE point per location
+        (so daily school control can't flood the map), but now exports its
+        per-day recurrence history at index 27 — and a real accident at the
+        same location remains its own full row."""
+        import json as _json
+        import re
+
+        from lafayette911.map_render import create_map_from_csv
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "traffic_incidents.csv")
+            datajs_path = os.path.join(tmpdir, "traffic_data.js")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "location,cause,reported,assisting,incident_number,latitude,longitude\n"
+                )
+                # Same school, three TC events across two days.
+                handle.write("100 SCHOOL RD,TRAFFIC CONTROL,01/15/2026 7:30 AM,LPD,T1,30.2241,-92.0198\n")
+                handle.write("100 SCHOOL RD,TRAFFIC CONTROL,01/15/2026 3:00 PM,LPD,T2,30.2241,-92.0198\n")
+                handle.write("100 SCHOOL RD,TRAFFIC CONTROL,01/16/2026 7:30 AM,LPD,T3,30.2241,-92.0198\n")
+                # A real accident at the SAME location.
+                handle.write("100 SCHOOL RD,ACCIDENT,01/16/2026 8:00 AM,LPD,A1,30.2241,-92.0198\n")
+
+            create_map_from_csv(csv_path, os.path.join(tmpdir, "m.html"), datajs_path, os.path.join(tmpdir, "osm"))
+            datajs = open(datajs_path, encoding="utf-8").read()
+            arr = _json.loads(re.search(r"window\.INCIDENTS_DATA=(\[.*?\]);", datajs).group(1))
+
+            tc = [r for r in arr if str(r[4]).upper() == "TRAFFIC CONTROL"]
+            acc = [r for r in arr if str(r[4]).upper() == "ACCIDENT"]
+            self.assertEqual(len(tc), 1)      # collapsed to one point
+            self.assertEqual(len(acc), 1)     # the accident is NOT swallowed
+            self.assertEqual(tc[0][7], 3)     # occurrence count preserved
+            # Per-day history at index 27: 2 on the 15th, 1 on the 16th.
+            self.assertEqual(tc[0][27], [["2026-01-15", 2], ["2026-01-16", 1]])
+            # Non-TC rows do not carry the extra field.
+            self.assertEqual(len(acc[0]), 27)
+
+
 class MetaAndCorridorExportTests(unittest.TestCase):
     def test_meta_file_and_corridor_field(self):
         """Every render writes traffic_meta.json (version hash, timestamp,

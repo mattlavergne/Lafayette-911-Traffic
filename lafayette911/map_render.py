@@ -20,7 +20,8 @@ from lafayette911.utils import atomic_write_text
 
 # Version of the exported traffic_data.js row layout. Bump when a row gains
 # fields so the page (and traffic_meta.json consumers) can tell schemas apart.
-DATA_SCHEMA_VERSION = 2
+# v3: aggregated TRAFFIC CONTROL rows carry per-day history at index 27.
+DATA_SCHEMA_VERSION = 3
 
 
 def _write_meta_file(output_datajs: str, incident_count: int) -> None:
@@ -739,6 +740,15 @@ def _collapse_traffic_control(df: pd.DataFrame, lat_col: str, lon_col: str) -> p
         .reset_index(drop=True)
     )
 
+    # Per-day recurrence history (last 30 active days per spot), exported so
+    # the popup can show WHEN a spot recurs — not just the total.
+    def _daily_history(group):
+        days = group.dropna().dt.strftime("%Y-%m-%d").value_counts().sort_index()
+        return [[d, int(n)] for d, n in days.items()][-30:]
+
+    hist = tc.groupby("__loc_norm", dropna=False)["__reported_dt"].apply(_daily_history)
+    agg["tc_history"] = hist.reset_index(drop=True)
+
     def _fmt_dt(x):
         if pd.isna(x):
             return ""
@@ -761,7 +771,7 @@ def _collapse_traffic_control(df: pd.DataFrame, lat_col: str, lon_col: str) -> p
 
     agg["incident_number"] = agg["location"].astype(str).apply(lambda x: f"TC_AGG::{_normalize_location(x)}")
 
-    for c in ["tc_total_count", "tc_first_reported", "tc_last_reported"]:
+    for c in ["tc_total_count", "tc_first_reported", "tc_last_reported", "tc_history"]:
         if c not in non.columns:
             non[c] = ""
 
@@ -1219,6 +1229,7 @@ def _write_streaming_datajs(
                             "count": 0,
                             "reported_min": None,
                             "reported_max": None,
+                            "daily": {},
                         }
                         tc_groups[key] = entry
                     entry["lat_sum"] = float(entry["lat_sum"]) + float(lat)
@@ -1232,6 +1243,10 @@ def _write_streaming_datajs(
                             entry["reported_min"] = reported_dt
                         if rmax is None or reported_dt > rmax:
                             entry["reported_max"] = reported_dt
+                        # Per-day tally so the page can show WHEN this spot
+                        # recurs (school-day pattern etc.), not just how often.
+                        day = reported_dt.strftime("%Y-%m-%d")
+                        entry["daily"][day] = int(entry["daily"].get(day, 0)) + 1
                     continue
 
                 if not _in_lafayette_bounds(lat, lon):
@@ -1344,6 +1359,10 @@ def _write_streaming_datajs(
                     "",     # created_at
                     None,   # is_holiday
                     corridor_ids(str(entry.get("location") or "")),  # index 26
+                    # index 27: recent per-day history [["YYYY-MM-DD", n], ...]
+                    # (last 30 active days) so the popup can show the recurrence
+                    # pattern without exporting every raw event.
+                    sorted(entry.get("daily", {}).items())[-30:],
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 tc_count += 1
@@ -1714,6 +1733,12 @@ def _create_map_from_dataframe(
                 corridor_ids(loc),  # canonical corridor ids (index 26)
             ]
         )
+        # Aggregated TRAFFIC CONTROL rows carry their per-day recurrence
+        # history at index 27 (other rows stay 27 fields long).
+        if cause_norm == "TRAFFIC CONTROL":
+            hist = r.get("tc_history")
+            if isinstance(hist, list) and hist:
+                incidents[-1].append(hist)
         incidents_latlng.append((lat, lng))
 
     _, _, osm_overall_counts = _compute_osm_context_for_incidents(
