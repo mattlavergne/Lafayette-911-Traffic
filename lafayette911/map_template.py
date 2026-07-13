@@ -534,6 +534,28 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   select:hover:not(:disabled) { border-color: var(--text-3); }
   select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   select:disabled { opacity: 0.45; cursor: not-allowed; }
+  input[type="date"] {
+    font-family: var(--font); font-size: 12.5px; color: var(--text);
+    padding: 6px 9px; border-radius: 9px; width: 100%;
+    border: 1px solid var(--panel-border); background-color: var(--input-bg);
+    outline: none; margin-top: 4px; color-scheme: light dark;
+    transition: border-color 0.13s ease;
+  }
+  input[type="date"]:hover { border-color: var(--text-3); }
+  input[type="date"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* locate-me: glass disc under the weather chip */
+  #locBtn {
+    position: fixed; top: 62px; right: 14px; z-index: 1100;
+    width: 38px; height: 38px; border-radius: 50%; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    box-shadow: var(--shadow-sm), var(--edge);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    color: var(--text-2); cursor: pointer; transition: color 0.13s ease, transform 0.12s ease;
+  }
+  #locBtn:hover { color: var(--text); transform: scale(1.05); }
+  #locBtn.busy svg { animation: ptr-spin 0.9s linear infinite; }
 
   .check {
     display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2);
@@ -984,6 +1006,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
               <select id="yearSelect">__YEAR_OPTIONS__</select>
             </label>
           </div>
+          <div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <label class="field">From date
+              <input type="date" id="dateFrom">
+            </label>
+            <label class="field">To date
+              <input type="date" id="dateTo">
+            </label>
+          </div>
           <div class="row row-grid">
             <label class="field">Day of week
               <select id="dowSelect">
@@ -1125,9 +1155,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div class="row row-checks">
             <label class="check"><input type="checkbox" id="chkPoints" checked> Incidents</label>
             <label class="check"><input type="checkbox" id="chkHeat"> Heatmap</label>
-            <label class="check"><input type="checkbox" id="chkHotSpots"> Hot spots</label>
+            <label class="check" title="Precomputed over the whole archive — not affected by filters"><input type="checkbox" id="chkHotSpots"> Hot spots (all-time)</label>
             <label class="check"><input type="checkbox" id="chkIntersections"> Rounded clusters</label>
-            <label class="check"><input type="checkbox" id="chkOsmIntersections"> OSM intersections</label>
+            <label class="check" title="Precomputed over the whole archive — not affected by filters"><input type="checkbox" id="chkOsmIntersections"> OSM intersections (all-time)</label>
             <label class="check"><input type="checkbox" id="chkMicro"> Micro hotspots</label>
             <label class="check"><input type="checkbox" id="chkRings"> Distance rings</label>
           </div>
@@ -1243,6 +1273,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div id="weatherPanelBody">Loading latest observation…</div>
 </div>
 
+<button id="locBtn" type="button" title="Show my location on the map (stays in your browser)" aria-label="Show my location on the map">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M12 2v3m0 14v3M2 12h3m14 0h3"/>
+    <circle cx="12" cy="12" r="8"/>
+  </svg>
+</button>
+
 <div class="modal-overlay" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutTitle" aria-hidden="true">
   <div class="modal-card">
     <h2 id="aboutTitle">About this map <button class="modal-close" id="aboutClose" type="button" aria-label="Close">×</button></h2>
@@ -1268,7 +1306,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     does contact external services to work — map tiles (CARTO/OpenStreetMap), the Leaflet library CDN
     (unpkg), weather/alerts (api.weather.gov), and the site host (GitHub Pages) — and those providers,
     like any web host, may keep standard technical access logs. Links out to Google Maps, Street View,
-    and Waze open only when you tap them.</p>
+    and Waze open only when you tap them. The locate button uses your device's location only inside
+    your browser to move the map — it is never transmitted or stored.</p>
     <h3>Licenses</h3>
     <p>Original code is MIT-licensed
     (<a href="https://github.com/mattlavergne/Lafayette-911-Traffic" target="_blank" rel="noopener noreferrer">source on GitHub</a>).
@@ -1602,6 +1641,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     topNSelect: $("topNSelect"), precIntersections: $("precIntersections"), precMicro: $("precMicro"),
     countTotal: $("countTotal"), countFiltered: $("countFiltered"), countInView: $("countInView"),
     chkInViewOnly: $("chkInViewOnly"), clearBtn: $("clearBtn"), fitBtn: $("fitBtn"),
+    dateFrom: $("dateFrom"), dateTo: $("dateTo"),
     activeChips: $("activeChips"), anClearRow: $("anClearRow"), anClearBtn: $("anClearBtn"),
     chartTrendTitle: $("chartTrendTitle"),
     aboutBtn: $("aboutBtn"), aboutModal: $("aboutModal"), aboutClose: $("aboutClose"),
@@ -2065,6 +2105,28 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     return (nowMs - dt.getTime()) <= hours * 3600 * 1000;
   }
 
+  // From/To calendar range. input[type=date] values are parsed as LOCAL
+  // days (new Date("2026-07-13") would be UTC midnight and shift a day).
+  function parseDateInput(v, endOfDay) {
+    if (!v) return null;
+    const p = String(v).split("-");
+    if (p.length !== 3) return null;
+    const d = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10));
+    if (isNaN(d.getTime())) return null;
+    if (endOfDay) d.setHours(23, 59, 59, 999);
+    return d.getTime();
+  }
+
+  function matchesCustomDateRange(row, f) {
+    if (f.dateFromMs == null && f.dateToMs == null) return true;
+    const dt = bestRowDate(row);
+    if (!dt) return false;
+    const ms = dt.getTime();
+    if (f.dateFromMs != null && ms < f.dateFromMs) return false;
+    if (f.dateToMs != null && ms > f.dateToMs) return false;
+    return true;
+  }
+
   function matchesDateFilter(row, f) {
     if (!f.mm && !f.dd && !f.yy) return true;
     const pr = parseReported(row[IDX_REPORTED]);
@@ -2304,6 +2366,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       mm: (els.monthSelect.value || "").trim(),
       dd: (els.daySelect.value || "").trim(),
       yy: (els.yearSelect.value || "").trim(),
+      dateFrom: (els.dateFrom.value || "").trim(),
+      dateTo: (els.dateTo.value || "").trim(),
+      dateFromMs: parseDateInput((els.dateFrom.value || "").trim(), false),
+      dateToMs: parseDateInput((els.dateTo.value || "").trim(), true),
       dayType: (els.dayTypeSelect.value || "all").trim(),
       timeBlock: (els.timeBlockSelect.value || "all").trim(),
       cause: (els.causeSelect.value || "__ALL__").trim(),
@@ -2339,6 +2405,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (f.cause !== "__ALL__") n++;
     if (f.causeGroup !== "__ALL__") n++;
     if (f.mm || f.dd || f.yy) n++;
+    if (f.dateFrom || f.dateTo) n++;
     if (f.dayType !== "all") n++;
     if (f.timeBlock !== "all") n++;
     if (f.dowValue !== "all") n++;
@@ -2378,6 +2445,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (!matchesCause(row, f.cause)) continue;
       if (!(x && x.range) && !matchesRange(row, f.range, nowMs)) continue;
       if (!matchesDateFilter(row, f)) continue;
+      if (!matchesCustomDateRange(row, f)) continue;
       if (!matchesDayType(row, f.dayType)) continue;
       if (!(x && x.hour) && !matchesExactHour(row, f.exactHour)) continue;
       if (!(x && x.hour) && !matchesTimeBlock(row, f.timeBlock)) continue;
@@ -2412,6 +2480,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   const HASH_FIELDS = [
     ["q", "roadSearch", ""], ["cg", "causeGroupSelect", "__ALL__"], ["c", "causeSelect", "__ALL__"],
     ["mm", "monthSelect", ""], ["dd", "daySelect", ""], ["yy", "yearSelect", ""],
+    ["df", "dateFrom", ""], ["dt2", "dateTo", ""],
     ["dow", "dowSelect", "all"], ["dt", "dayTypeSelect", "all"], ["tb", "timeBlockSelect", "all"],
     ["rt", "roadTypeSelect", "any"],
     ["tmp", "tempBand", "any"], ["pp", "precipBand", "any"], ["pa", "precipAmountBand", "any"],
@@ -3185,7 +3254,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (f.range === "24h") { span = computeSpanWindow(nowMsR - 86400000, nowMsR); windowNote = "the past 24 hours"; }
     else if (f.range === "7d") { span = computeSpanWindow(nowMsR - 7 * 86400000, nowMsR); windowNote = "the past 7 days"; }
     else if (f.range === "30d") { span = computeSpanWindow(nowMsR - 30 * 86400000, nowMsR); windowNote = "the past 30 days"; }
-    else if (f.mm || f.dd || f.yy) { span = computeSpanFor(rows); windowNote = "the selected dates"; }
+    else if (f.mm || f.dd || f.yy || f.dateFrom || f.dateTo) { span = computeSpanFor(rows); windowNote = "the selected dates"; }
     else { span = computeSpanFor(INCIDENTS); windowNote = "the full collection period"; }
     if (!span || span.totalDays === 0) {
       el.innerHTML = '<span class="rates-no-data">Not enough dated incidents to compute rates.</span>';
@@ -3947,6 +4016,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       let n = 0;
       acc.querySelectorAll(".acc-body select").forEach(function (s) { if (s.selectedIndex > 0) n++; });
       acc.querySelectorAll(".acc-body input[type=checkbox]").forEach(function (c) { if (c.checked) n++; });
+      acc.querySelectorAll(".acc-body input[type=date]").forEach(function (d2) { if (d2.value) n++; });
       // The agency checklist is chips, not a <select>/checkbox — count it once
       // if any agency is selected.
       if (acc.querySelector("#agencyChecklist") && state.agencies.size) n++;
@@ -4147,6 +4217,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.chkInViewOnly.checked = false;
     els.monthSelect.value = "";
     els.daySelect.value = "";
+    els.dateFrom.value = "";
+    els.dateTo.value = "";
     els.yearSelect.value = "";
     els.dayTypeSelect.value = "all";
     els.timeBlockSelect.value = "all";
@@ -4454,6 +4526,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         $("monthSelect").value = ""; $("daySelect").value = ""; $("yearSelect").value = "";
       });
     }
+    if (f.dateFrom || f.dateTo) {
+      chip((f.dateFrom || "…") + " → " + (f.dateTo || "…"), function () {
+        els.dateFrom.value = ""; els.dateTo.value = "";
+      });
+    }
     if (state.cats.size < CATEGORIES.length) {
       chip("Categories: " + state.cats.size + "/" + CATEGORIES.length, function () {
         state.cats = new Set(CATEGORIES.map(function (cc) { return cc.id; }));
@@ -4483,6 +4560,29 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (f.chkTornado) chip("Tornado watch", function () { els.chkTornadoWatch.checked = false; });
     if (f.light !== "any") chip(selText(els.lightSelect), function () { els.lightSelect.value = "any"; });
     if (f.inViewOnly) chip("Only in map view", function () { els.chkInViewOnly.checked = false; });
+  }
+
+  /* ═══════════ locate me (privacy: never leaves the browser) ═══════════ */
+  let locLayer = null;
+  function locateMe() {
+    if (!map) return;
+    if (!navigator.geolocation) { toast("Location is not available in this browser"); return; }
+    const btn = $("locBtn");
+    btn.classList.add("busy");
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      btn.classList.remove("busy");
+      const ll = [pos.coords.latitude, pos.coords.longitude];
+      if (locLayer) { try { map.removeLayer(locLayer); } catch (e) {} }
+      locLayer = L.layerGroup([
+        L.circle(ll, { radius: Math.min(pos.coords.accuracy || 50, 1500), color: "#2f6fed", weight: 1, fillColor: "#2f6fed", fillOpacity: 0.08 }),
+        L.circleMarker(ll, { radius: 7, color: "#ffffff", weight: 2, fillColor: "#2f6fed", fillOpacity: 1 })
+      ]).addTo(map);
+      try { map.setView(ll, Math.max(map.getZoom(), 14), { animate: !REDUCED_MOTION }); } catch (e) {}
+      toast("Showing your location — it stays in your browser");
+    }, function (err) {
+      btn.classList.remove("busy");
+      toast(err && err.code === 1 ? "Location permission denied" : "Couldn't get your location");
+    }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
   }
 
   /* ═══════════ About dialog ═══════════ */
@@ -4584,6 +4684,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     });
 
+    $("locBtn").addEventListener("click", locateMe);
+
     els.aboutBtn.addEventListener("click", openAbout);
     els.aboutClose.addEventListener("click", closeAbout);
     els.aboutModal.addEventListener("click", function (e) {
@@ -4605,7 +4707,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     const changeIds = [
       "causeGroupSelect", "causeSelect", "chkInViewOnly",
-      "monthSelect", "daySelect", "yearSelect",
+      "monthSelect", "daySelect", "yearSelect", "dateFrom", "dateTo",
       "dayTypeSelect", "timeBlockSelect",
       "chkRushHour", "chkSchoolDay", "dowSelect", "roadTypeSelect",
       "chkFloodWarning", "chkThunderstormWarning", "chkTornadoWatch",
