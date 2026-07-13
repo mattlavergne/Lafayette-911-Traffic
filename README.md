@@ -196,6 +196,57 @@ public map fresh while holding the deployment count to a handful per hour.
 (The entries are harmless — only the latest deployment is ever live — so pick
 whatever interval you prefer.)
 
+## Daily digest email (optional)
+
+The service can email you a **daily 24-hour summary** — new incidents by
+category (with emoji + bars), an hour-by-hour sparkline, top corridors,
+responding agencies, geocoding accounting (API calls used, queue, known-bad
+addresses), and service health (uptime, cycles, errors, memory). It sends at
+most once per local day; the "sent" marker lives in SQLite so restarts can't
+double-send, and a failing mail setup stops retrying after 3 attempts per
+day so it can never spam or crash collection.
+
+**Credentials never touch this repository.** SMTP settings come only from
+environment variables on the machine that runs the service. For Gmail,
+create an [App Password](https://myaccount.google.com/apppasswords)
+(requires 2-Step Verification) — never your real password.
+
+1. Put the settings in a root-owned env file **outside the repo**:
+   ```bash
+   sudo tee /etc/laf911-secrets.env >/dev/null <<'EOF'
+   LAF911_DIGEST_ENABLED=true
+   LAF911_DIGEST_SMTP_HOST=smtp.gmail.com
+   LAF911_DIGEST_SMTP_PORT=587
+   LAF911_DIGEST_SMTP_USER=yourname@gmail.com
+   LAF911_DIGEST_SMTP_PASS=abcd efgh ijkl mnop
+   LAF911_DIGEST_TO=yourname@gmail.com
+   LAF911_DIGEST_HOUR=7
+   LAF911_MAP_URL=https://<user>.github.io/<repo>/
+   EOF
+   sudo chmod 600 /etc/laf911-secrets.env
+   ```
+2. Point the systemd service at it (`sudo systemctl edit myscript.service`):
+   ```ini
+   [Service]
+   EnvironmentFile=/etc/laf911-secrets.env
+   ```
+   then `sudo systemctl daemon-reload && sudo systemctl restart myscript.service`.
+3. **Test without waiting** (uses the same env file):
+   ```bash
+   set -a; source /etc/laf911-secrets.env; set +a
+   python -m lafayette911.daily_digest --preview digest.html   # look at it
+   python -m lafayette911.daily_digest --send                  # send one now
+   ```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LAF911_DIGEST_ENABLED` | `false` | Master switch |
+| `LAF911_DIGEST_SMTP_HOST` / `_PORT` | `smtp.gmail.com` / `587` | 587 = STARTTLS, 465 = SSL |
+| `LAF911_DIGEST_SMTP_USER` / `_PASS` | *(empty)* | SMTP login (Gmail: app password) |
+| `LAF911_DIGEST_TO` / `_FROM` | *(SMTP user)* | Recipient / sender |
+| `LAF911_DIGEST_HOUR` | `7` | Local hour to send at/after |
+| `LAF911_MAP_URL` | *(empty)* | "Open the live map" button target |
+
 ## External services
 
 | Service | Used for | Cost notes |
