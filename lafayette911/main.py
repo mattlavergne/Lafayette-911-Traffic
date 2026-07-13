@@ -157,6 +157,18 @@ def main(base_dir: Optional[str] = None) -> int:
         seeded = store.seed_negative_cache_from_history()
         if seeded:
             log_event(logger, "geocode_negative_cache_seeded", addresses=seeded)
+        # One-time: incidents that were pinned on geocoder fallback points
+        # (city centroid / road midpoints — many DIFFERENT addresses sharing
+        # one exact coordinate) get their coordinates stripped and rejoin the
+        # queue, where the precision filter re-places or retires them.
+        purged = store.purge_shared_fallback_coordinates()
+        if purged:
+            log_event(
+                logger,
+                "geocode_fallback_purge",
+                shared_points=len(purged),
+                incidents_requeued=sum(p[3] for p in purged),
+            )
         log_event(
             logger,
             "geocode_budget_status",

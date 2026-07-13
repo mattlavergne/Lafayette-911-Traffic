@@ -72,6 +72,48 @@ def _has_allowed_lafayette_place(address_components) -> bool:
     return False
 
 
+# Google result types that mean "this is a real, specific place" regardless
+# of location_type (schools/businesses report GEOMETRIC_CENTER but are
+# precise enough to pin).
+_PRECISE_RESULT_TYPES = {
+    "street_address", "premise", "subpremise", "intersection", "street_number",
+    "establishment", "point_of_interest", "school", "park", "church",
+    "hospital", "shopping_mall", "university", "airport", "transit_station",
+}
+# Result types that mean Google gave up and matched an AREA: the locality
+# centroid (downtown Lafayette — the Rue Vermilion / S Buchanan pile-up), a
+# zip code, a neighborhood… Accepting these pins every unresolvable address
+# onto the same handful of shared points.
+_AREA_RESULT_TYPES = {
+    "locality", "postal_code", "neighborhood", "sublocality",
+    "sublocality_level_1", "administrative_area_level_1",
+    "administrative_area_level_2", "country",
+}
+
+
+def _acceptable_geocode_precision(location_type: str, result_types) -> bool:
+    """True when a Google result is precise enough to place a map point.
+
+    Rejections flow through the ordinary failure path: the incident stays in
+    the "locating…" queue, the address accrues failure attempts, and after
+    the limit it retires to unmappable — honest, instead of a wrong dot at
+    the city centroid or a road midpoint.
+    """
+    types = set(result_types or [])
+    if types & _PRECISE_RESULT_TYPES:
+        return True
+    lt = str(location_type or "").upper()
+    if lt in ("ROOFTOP", "RANGE_INTERPOLATED"):
+        return True
+    if types & _AREA_RESULT_TYPES:
+        return False          # city / zip / neighborhood centroid
+    if lt == "APPROXIMATE":
+        return False
+    if "route" in types:
+        return False          # midpoint of a whole road, not an address
+    return True
+
+
 def _filter_geocode_results(incidents, location_cache: Optional[dict] = None):
     def _reject_fresh_result(inc):
         # geocode_incidents caches fresh Google results before this validation
@@ -80,11 +122,16 @@ def _filter_geocode_results(incidents, location_cache: Optional[dict] = None):
         if location_cache is not None:
             location_cache.pop(inc.get("location", ""), None)
 
+    def _strip_geo_meta(inc):
+        inc.pop("address_components", None)
+        inc.pop("geo_location_type", None)
+        inc.pop("geo_types", None)
+
     for inc in incidents:
         lat = inc.get("latitude")
         lng = inc.get("longitude")
         if lat is None or lng is None:
-            inc.pop("address_components", None)
+            _strip_geo_meta(inc)
             continue
         # Coordinates that came from the location cache have no
         # 'address_components' key — only Google-geocoded results include that
@@ -99,14 +146,20 @@ def _filter_geocode_results(incidents, location_cache: Optional[dict] = None):
         if not _has_allowed_lafayette_place(comps):
             inc["latitude"] = None
             inc["longitude"] = None
-            inc.pop("address_components", None)
+            _strip_geo_meta(inc)
+            _reject_fresh_result(inc)
+            continue
+        if not _acceptable_geocode_precision(inc.get("geo_location_type"), inc.get("geo_types")):
+            inc["latitude"] = None
+            inc["longitude"] = None
+            _strip_geo_meta(inc)
             _reject_fresh_result(inc)
             continue
         if not _in_lafayette_bounds(lat, lng):
             inc["latitude"] = None
             inc["longitude"] = None
             _reject_fresh_result(inc)
-        inc.pop("address_components", None)
+        _strip_geo_meta(inc)
     return incidents
 
 
