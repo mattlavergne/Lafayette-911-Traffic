@@ -64,6 +64,26 @@ class NormalizeCorridorTests(unittest.TestCase):
         self.assertEqual(normalize_corridor("3500"), "")
         self.assertEqual(normalize_corridor("MM 103"), "")
 
+    def test_city_and_state_tags_are_not_corridors(self):
+        """Regression: the feed sometimes appends (or IS) the municipality,
+        and "LAFAYETTE LA" was ranking as the #1 "corridor" in analytics."""
+        self.assertEqual(normalize_corridor("LAFAYETTE LA"), "")
+        self.assertEqual(normalize_corridor("LAFAYETTE, LA"), "")
+        self.assertEqual(normalize_corridor("LAFAYETTE"), "")
+        self.assertEqual(normalize_corridor("YOUNGSVILLE LA"), "")
+        self.assertEqual(normalize_corridor("LAFAYETTE PARISH"), "")
+        # Trailing tags strip; the road remains and still groups.
+        self.assertEqual(normalize_corridor("MOSS ST LAFAYETTE LA"), "MOSS ST")
+        self.assertEqual(normalize_corridor("100 JOHNSTON STREET, LAFAYETTE, LA"), "JOHNSTON ST")
+        self.assertEqual(normalize_corridor("INTERSTATE 10 LAFAYETTE LA"), "I-10")
+        # Roads NAMED after places keep their names.
+        self.assertEqual(normalize_corridor("LAFAYETTE ST"), "LAFAYETTE ST")
+        self.assertEqual(normalize_corridor("YOUNGSVILLE HWY"), "YOUNGSVILLE HWY")
+
+    def test_city_only_locations_yield_no_corridor_ids(self):
+        self.assertEqual(corridor_ids("LAFAYETTE LA"), [])
+        self.assertEqual(corridor_ids("MOSS ST LAFAYETTE LA & JOHNSTON ST"), ["MOSS ST", "JOHNSTON ST"])
+
 
 class CorridorIdsTests(unittest.TestCase):
     def test_required_grouping_examples(self):

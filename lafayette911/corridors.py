@@ -106,6 +106,16 @@ _ALIASES = {
     "WILLOW": "WILLOW ST",
 }
 
+# Municipalities/state tags the feed appends to (or uses AS) the location.
+# "JOHNSTON ST LAFAYETTE LA" must group with "JOHNSTON ST", and a bare
+# "LAFAYETTE LA" is a CITY, not a corridor — it must produce nothing at all
+# (it was showing up as the #1 "corridor" in analytics).
+_CITY_TOKENS = {
+    "LAFAYETTE", "BROUSSARD", "YOUNGSVILLE", "SCOTT", "CARENCRO",
+    "DUSON", "MILTON", "MAURICE",
+}
+_STATE_TOKENS = {"LA", "LOUISIANA", "USA", "PARISH"}
+
 # Intersection separators: "X AT Y", "X & Y", "X / Y", "X @ Y", "X NEAR Y".
 _INTERSECTION_SPLIT = re.compile(
     r"\s+(?:AT|&+|/|@|NEAR|AND)\s+|\s*[&/]\s*"
@@ -182,6 +192,21 @@ def normalize_corridor(road: str) -> str:
 
     # Re-check highway now that direction/house noise is gone ("10 I"? no —
     # but "US HWY 90" with a house number stripped, yes).
+    hw = _canonical_highway(" ".join(tokens))
+    if hw:
+        return hw
+
+    # Strip trailing municipality/state tags ("MOSS ST LAFAYETTE LA" →
+    # "MOSS ST"); a location that was ONLY a city/state is not a corridor.
+    while tokens and (tokens[-1] in _STATE_TOKENS or tokens[-1] in _CITY_TOKENS):
+        tokens.pop()
+    if not tokens:
+        return ""
+    # A lone leftover direction ("W" from "W SCOTT") is junk, not a road.
+    if len(tokens) == 1 and tokens[0] in _DIRECTIONS:
+        return ""
+    # Highway forms can only surface now that the city tag is gone
+    # ("INTERSTATE 10 LAFAYETTE LA").
     hw = _canonical_highway(" ".join(tokens))
     if hw:
         return hw
