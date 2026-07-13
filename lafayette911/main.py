@@ -17,10 +17,12 @@ import multiprocessing
 import sys
 import time
 import tracemalloc
+from collections import deque
 from typing import Optional
 
 from lafayette911.collector import collect_once
 from lafayette911.config import Config, load_config
+from lafayette911.daily_digest import maybe_send_daily_digest
 from lafayette911.fetch_incidents import build_session
 from lafayette911.map_render import backfill_road_types, create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
@@ -186,6 +188,13 @@ def main(base_dir: Optional[str] = None) -> int:
     cycle = 0
     prev_snapshot = None
 
+    # Daily-digest bookkeeping: process start time and a rolling window of
+    # cycle-error timestamps so the email can report real 24h health.
+    service_started_epoch = time.time()
+    error_epochs: deque = deque()
+    last_duration = 0.0
+    last_rss = 0
+
     try:
         while True:
             cycle += 1
@@ -194,6 +203,8 @@ def main(base_dir: Optional[str] = None) -> int:
                 run_once(config, store, session, logger)
                 duration = time.monotonic() - start
                 rss = get_rss_bytes()
+                last_duration = duration
+                last_rss = rss or 0
                 log_event(
                     logger,
                     "cycle_complete",
@@ -213,7 +224,27 @@ def main(base_dir: Optional[str] = None) -> int:
                     trim_memory()
 
             except Exception as exc:
+                error_epochs.append(time.time())
                 log_event(logger, "cycle_error", error=str(exc), cycle=cycle)
+
+            while error_epochs and error_epochs[0] < time.time() - 86400:
+                error_epochs.popleft()
+
+            # Once per local day (when enabled + due), email the 24h digest.
+            # maybe_send_daily_digest never raises, so a mail hiccup can't
+            # take down collection.
+            maybe_send_daily_digest(
+                config,
+                store,
+                {
+                    "started_at_epoch": service_started_epoch,
+                    "cycles_completed": cycle,
+                    "errors_24h": len(error_epochs),
+                    "last_cycle_seconds": last_duration,
+                    "rss_bytes": last_rss,
+                },
+                logger,
+            )
 
             time.sleep(config.sleep_seconds)
 

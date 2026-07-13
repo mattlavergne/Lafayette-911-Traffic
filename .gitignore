@@ -5,6 +5,8 @@ pycache/
 .venv/
 
 .env
+*.env
+laf911-secrets.env
 
 *.log
 osm_cache/

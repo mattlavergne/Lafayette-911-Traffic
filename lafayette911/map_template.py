@@ -825,12 +825,21 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     #sidebar {
       top: auto; left: 0; right: 0; bottom: 0; width: 100%;
       border-radius: 28px 28px 0 0;
-      max-height: 88dvh;
+      max-height: 94dvh;
       height: 236px;
       transition: height 0.3s cubic-bezier(0.32, 0.72, 0, 1);
       padding-bottom: env(safe-area-inset-bottom);
     }
-    #sidebar.expanded { height: 88dvh; }
+    /* Expanded: near-full-screen, and compact the fixed chrome above the
+       scroll area — on short phones (iPhone mini) every saved pixel goes
+       straight to the filters/analytics scroll room. */
+    #sidebar.expanded { height: 94dvh; }
+    #sidebar.expanded .sb-header { padding-top: 0; padding-bottom: 4px; }
+    #sidebar.expanded .brand-sub { display: none; }
+    #sidebar.expanded .stat-tile { padding: 7px 6px 6px 6px; }
+    #sidebar.expanded .stat-tiles { padding-bottom: 4px; }
+    #sidebar.expanded .legend-chips { padding-bottom: 6px; }
+    #sidebar.expanded .tabs { margin-bottom: 6px; }
     #sidebar.dragging { transition: none; }
     /* Wide, finger-friendly grab target with a small visible bar. */
     #sbHandle {
@@ -3696,7 +3705,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     let sheetH = 0;
     if (window.innerWidth <= 700) {
       sheetH = els.sidebar.classList.contains("expanded")
-        ? Math.round(window.innerHeight * 0.88)
+        ? Math.round(window.innerHeight * 0.94)
         : 236;
     }
     const el = popup.getElement();
@@ -4765,7 +4774,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     // the handle still toggles.
     (function () {
       const COLLAPSED_H = 236;
-      function expandedH() { return Math.round(window.innerHeight * 0.88); }
+      function expandedH() { return Math.round(window.innerHeight * 0.94); }
       const header = els.sidebar.querySelector(".sb-header");
       let drag = null;
 
