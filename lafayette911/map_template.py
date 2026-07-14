@@ -1374,13 +1374,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="rb-draw" id="rbDraw" type="button">✏️ Draw route on the map</button>
     <div class="facet-note" id="rbPathStatus" aria-live="polite">No route drawn yet. Tap a few stops along
     your drive — the line <strong>snaps to the actual roads</strong> between taps (curves and turns included),
-    so side roads you merely cross never join the route. Only incidents close to that snapped line will alert.</div>
+    so side roads you merely cross never join the route. Only incidents close to that snapped line will alert; nearby or crossed roads are not added automatically.</div>
     <div class="rb-row" style="margin-top:8px;">
       <div><label class="rb-field" for="rbRadius">Match distance</label>
         <select class="rb-select" id="rbRadius"><option value="100">100 m — strict</option><option value="150" selected>150 m — tight</option><option value="250">250 m — normal</option><option value="400">400 m — loose</option></select></div>
       <div></div>
     </div>
-    <label class="rb-field" for="rbRoad">Extra roads (optional — whole-road matching)</label>
+    <label class="rb-field" for="rbRoad">Extra road labels (optional)</label>
     <div class="rb-addrow">
       <input class="rb-input" id="rbRoad" type="text" placeholder="e.g. Ambassador Caffery" list="rbRoadList" autocomplete="off">
       <button class="rb-add" id="rbAdd" type="button">Add</button>
@@ -4791,8 +4791,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   let rbPath = [];             // [[lat, lng], ...]
   let rbDrawing = false;
   let rbLine = null;
-  let rbAutoCorridors = [];    // canonical roads the line touches (fallback
-                               // matching for incidents still being geocoded)
 
   function rbPtSegDistM(plat, plng, a, b) {
     const lat0 = ((a[0] + b[0] + plat) / 3) * Math.PI / 180;
@@ -4803,27 +4801,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     let t = 0;
     if (dx !== 0 || dy !== 0) t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
     return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
-  }
-  function rbDistToPathM(lat, lng) {
-    if (rbPath.length < 2) return Infinity;
-    let best = Infinity;
-    for (let i = 0; i < rbPath.length - 1; i++) {
-      const d = rbPtSegDistM(lat, lng, rbPath[i], rbPath[i + 1]);
-      if (d < best) best = d;
-    }
-    return best;
-  }
-  function rbDeriveCorridors(radius) {
-    // Which canonical roads does the traced line touch? Uses the archive's
-    // located incidents as road evidence — serves as the fallback for
-    // incidents that haven't been geocoded yet.
-    const seen = new Set();
-    for (const row of INCIDENTS) {
-      if (rbDistToPathM(row[IDX_LAT], row[IDX_LNG]) <= radius) {
-        for (const c of corridorsOf(row)) seen.add(c);
-      }
-    }
-    return Array.from(seen).sort();
   }
   function rbUpdateLine() {
     if (rbLine) { try { map.removeLayer(rbLine); } catch (e) {} rbLine = null; }
@@ -4850,9 +4827,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const radius = parseInt(els.routeModal.querySelector("#rbRadius").value || "250", 10);
     if (rbPath.length >= 2) {
       status.innerHTML = "✅ <b>" + rbPath.length + " points drawn.</b> Only incidents within " + radius +
-        " m of your line will alert" +
-        (rbAutoCorridors.length ? " (roads touched: " + esc(rbAutoCorridors.slice(0, 5).map(titleCase).join(", ")) +
-          (rbAutoCorridors.length > 5 ? "…" : "") + ")" : "") + ". Draw again to replace.";
+        " m of your drawn line will alert. Draw again to replace.";
     } else {
       status.textContent = "No route drawn yet. Tap along your route (each tap adds a point); " +
         "only incidents within the match distance of your line will alert.";
@@ -4863,7 +4838,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const depart = els.routeModal.querySelector("#rbDepart").value || "07:20";
     const days = els.routeModal.querySelector("#rbDays").value;
     const roadSet = [];
-    rbAutoCorridors.forEach(function (c) { if (roadSet.indexOf(titleCase(c)) === -1) roadSet.push(titleCase(c)); });
     rbRoads.forEach(function (r) { if (roadSet.indexOf(titleCase(r.cid)) === -1) roadSet.push(titleCase(r.cid)); });
     let out =
       "LAF911_ROUTE_" + slot + "_NAME=" + name + "\n" +
@@ -4958,7 +4932,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     rbLegs = [];
     rbBusy = false;
     rbSnapWarned = false;
-    rbAutoCorridors = [];
     rbUpdateLine();
     els.routeModal.classList.remove("open");
     $("rbPill").classList.add("on");
@@ -4972,13 +4945,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       rbPath = [];
       rbAnchors = [];
       rbLegs = [];
-      rbAutoCorridors = [];
       rbUpdateLine();
       if (save) toast("Need at least 2 points — route not saved");
     } else {
       rbPath = rbSimplify(rbPath, 10);
       rbUpdateLine();
-      rbAutoCorridors = rbDeriveCorridors(parseInt(els.routeModal.querySelector("#rbRadius").value || "150", 10));
       toast("Route captured — " + rbPath.length + " points along the roads");
     }
     els.routeModal.classList.add("open");
@@ -5176,10 +5147,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     });
     els.routeModal.querySelector("#rbAdd").addEventListener("click", rbAdd);
     els.routeModal.querySelector("#rbDraw").addEventListener("click", rbStartDraw);
-    els.routeModal.querySelector("#rbRadius").addEventListener("input", function () {
-      if (rbPath.length >= 2) rbAutoCorridors = rbDeriveCorridors(parseInt(this.value || "250", 10));
-      rbRender();
-    });
+    els.routeModal.querySelector("#rbRadius").addEventListener("input", rbRender);
     $("rbUndo").addEventListener("click", function () {
       if (rbBusy) return;
       rbAnchors.pop();

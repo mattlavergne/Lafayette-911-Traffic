@@ -272,9 +272,10 @@ ignored.
 **Section-precise matching.** With a drawn route, located incidents match by
 distance to your line (default 150 m, choose 100/150/250/400 in the builder) —
 an accident five miles down a road you only briefly touch does **not**
-alert. Incidents still awaiting geocoding can't be distance-tested, so they
-fall back to the roads your line touches and are flagged *"not yet located —
-may be outside your section"*.
+alert. The builder no longer guesses nearby roads from an area around your line.
+Incidents still awaiting geocoding can't be distance-tested, so drawn routes skip
+them rather than using whole-road fallback. You still get the scheduled email when
+there are no matching incidents — it just says the route looks clear.
 
 **What it uses — and doesn't.** There is no free, keyless source of
 Google/Waze-style live traffic *speed* data. This matches the actual 911
