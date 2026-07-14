@@ -522,6 +522,25 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0;
   }
   .modal-close:hover { background: var(--chip-hover); color: var(--text); }
+  .rb-field { display: block; margin: 10px 0 2px; font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+  .rb-input, .rb-select { font-family: var(--font); font-size: 13px; color: var(--text); width: 100%;
+    padding: 8px 10px; border-radius: 9px; border: 1px solid var(--panel-border); background: var(--input-bg); outline: none; }
+  .rb-input:focus, .rb-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .rb-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .rb-addrow { display: flex; gap: 6px; margin-top: 4px; }
+  .rb-add { flex: none; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; cursor: pointer; }
+  .rb-roads { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+  .rb-road { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+    padding: 5px 6px 5px 11px; border-radius: 999px; border: 1px solid var(--panel-border);
+    background: var(--chip); color: var(--text); }
+  .rb-road .x { width: 16px; height: 16px; border: none; background: transparent; color: var(--text-3);
+    cursor: pointer; font-size: 13px; line-height: 1; padding: 0; border-radius: 50%; }
+  .rb-road .x:hover { background: var(--chip-hover); color: var(--text); }
+  .rb-out { width: 100%; box-sizing: border-box; margin-top: 6px; font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px; line-height: 1.5; color: var(--text); background: var(--chip); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 10px 12px; white-space: pre; overflow-x: auto; }
+  .rb-copy { margin-top: 8px; }
   select {
     font-family: var(--font); font-size: 12.5px; color: var(--text);
     padding: 7px 26px 7px 9px; border-radius: 9px; width: 100%;
@@ -913,6 +932,12 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
           <path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
         </svg>
       </button>
+      <button class="icon-btn" id="routeBtn" type="button" title="Build a commute alert" aria-label="Build a personal commute alert" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 19a2 2 0 1 1-.001-3.999A2 2 0 0 1 6 19zm12-11a2 2 0 1 1 .001-3.999A2 2 0 0 1 18 8z"/>
+          <path d="M6 17V9a3 3 0 0 1 3-3h6M18 10v5a3 3 0 0 1-3 3H9"/>
+        </svg>
+      </button>
       <button class="icon-btn" id="aboutBtn" type="button" title="About, disclaimers &amp; privacy" aria-label="About this project, disclaimers and privacy" aria-haspopup="dialog">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <circle cx="12" cy="12" r="9"/>
@@ -1290,6 +1315,39 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   </svg>
 </button>
 
+<div class="modal-overlay" id="routeModal" role="dialog" aria-modal="true" aria-labelledby="routeTitle" aria-hidden="true">
+  <div class="modal-card">
+    <h2 id="routeTitle">Build a commute alert <button class="modal-close" id="routeClose" type="button" aria-label="Close">×</button></h2>
+    <p>Get an email shortly before you leave, listing the <strong>current</strong> 911 incidents on the roads
+    you drive (plus active NWS alerts). Build your route here, then paste the generated settings into your
+    Pi&#39;s secrets file — nothing you enter is sent anywhere from this page.</p>
+    <div class="rb-row">
+      <div><label class="rb-field" for="rbSlot">Route slot</label>
+        <select class="rb-select" id="rbSlot"><option value="1">1 (e.g. to work)</option><option value="2">2 (e.g. home)</option><option value="3">3</option></select></div>
+      <div><label class="rb-field" for="rbName">Name</label>
+        <input class="rb-input" id="rbName" type="text" placeholder="To work" maxlength="40"></div>
+    </div>
+    <div class="rb-row">
+      <div><label class="rb-field" for="rbDepart">Usual departure</label>
+        <input class="rb-input" id="rbDepart" type="time" value="07:20"></div>
+      <div><label class="rb-field" for="rbDays">Days</label>
+        <select class="rb-select" id="rbDays"><option value="mon-fri">Weekdays</option><option value="daily">Every day</option><option value="weekends">Weekends</option><option value="mon,wed,fri">Mon/Wed/Fri</option></select></div>
+    </div>
+    <label class="rb-field" for="rbRoad">Roads on your route (in order)</label>
+    <div class="rb-addrow">
+      <input class="rb-input" id="rbRoad" type="text" placeholder="e.g. Ambassador Caffery" list="rbRoadList" autocomplete="off">
+      <button class="rb-add" id="rbAdd" type="button">Add</button>
+    </div>
+    <datalist id="rbRoadList"></datalist>
+    <div class="rb-roads" id="rbRoads" aria-live="polite"></div>
+    <label class="rb-field">Paste these lines into <code>/etc/laf911-secrets.env</code> on the Pi</label>
+    <div class="rb-out" id="rbOut" aria-live="polite"></div>
+    <button class="mini-clear rb-copy" id="rbCopy" type="button">Copy settings</button>
+    <p class="facet-note">Repeat for each slot (to-work and home can differ). See the README&#39;s
+    &ldquo;Personal route alerts&rdquo; section for the one-time enable step.</p>
+  </div>
+</div>
+
 <div class="modal-overlay" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutTitle" aria-hidden="true">
   <div class="modal-card">
     <h2 id="aboutTitle">About this map <button class="modal-close" id="aboutClose" type="button" aria-label="Close">×</button></h2>
@@ -1655,6 +1713,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     activeChips: $("activeChips"), anClearRow: $("anClearRow"), anClearBtn: $("anClearBtn"),
     chartTrendTitle: $("chartTrendTitle"),
     aboutBtn: $("aboutBtn"), aboutModal: $("aboutModal"), aboutClose: $("aboutClose"),
+    routeBtn: $("routeBtn"), routeModal: $("routeModal"), routeClose: $("routeClose"),
     aboutGenerated: $("aboutGenerated"),
     analyticsSummary: $("analyticsSummary"),
     chartHour: $("chartHour"), chartHourSub: $("chartHourSub"),
@@ -4649,6 +4708,98 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
   }
 
+  /* ═══════════ commute-alert builder ═══════════ */
+  const rbRoads = [];  // {label, cid}
+  let rbKnown = null;  // canonical corridor ids seen in the data (Python-normalized)
+  function rbKnownCorridors() {
+    if (rbKnown) return rbKnown;
+    const set = new Set();
+    for (const row of INCIDENTS) { for (const c of corridorsOf(row)) set.add(c); }
+    rbKnown = Array.from(set).sort(function (a, b) { return a.length - b.length; });
+    return rbKnown;
+  }
+  function rbNormalize(text) {
+    const cs = corridorsOfJS(text);   // reuse the map's canonical normalizer
+    let base = cs.length ? cs[0] : "";
+    if (!base) return "";
+    // Prefer a canonical corridor already in the data, so a loosely typed
+    // "ambassador caffery" resolves to the exact id the Pi will match
+    // ("AMBASSADOR CAFFERY PKWY") — the backend applies the same alias table.
+    const known = rbKnownCorridors();
+    if (known.indexOf(base) !== -1) return base;
+    for (const c of known) {
+      if (c === base || c.indexOf(base + " ") === 0 || base.indexOf(c + " ") === 0) return c;
+    }
+    return base;
+  }
+  function rbRender() {
+    const wrap = els.routeModal.querySelector("#rbRoads");
+    wrap.innerHTML = "";
+    rbRoads.forEach(function (r, i) {
+      const chip = document.createElement("span");
+      chip.className = "rb-road";
+      chip.innerHTML = "<span>" + esc(titleCase(r.cid)) + "</span>";
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "x"; x.setAttribute("aria-label", "Remove " + r.cid);
+      x.textContent = "\u00d7";
+      x.addEventListener("click", function () { rbRoads.splice(i, 1); rbRender(); });
+      chip.appendChild(x);
+      wrap.appendChild(chip);
+    });
+    // Generated env config
+    const slot = els.routeModal.querySelector("#rbSlot").value;
+    const name = (els.routeModal.querySelector("#rbName").value || "Route " + slot).trim();
+    const depart = els.routeModal.querySelector("#rbDepart").value || "07:20";
+    const days = els.routeModal.querySelector("#rbDays").value;
+    const roads = rbRoads.map(function (r) { return titleCase(r.cid); }).join(" | ");
+    const out =
+      "LAF911_ROUTE_ENABLED=true\n" +
+      "LAF911_ROUTE_" + slot + "_NAME=" + name + "\n" +
+      "LAF911_ROUTE_" + slot + "_CORRIDORS=" + (roads || "Add roads above") + "\n" +
+      "LAF911_ROUTE_" + slot + "_DEPART=" + depart + "\n" +
+      "LAF911_ROUTE_" + slot + "_DAYS=" + days;
+    els.routeModal.querySelector("#rbOut").textContent = out;
+    els.routeModal.__config = out;
+  }
+  function rbAdd() {
+    const input = els.routeModal.querySelector("#rbRoad");
+    const cid = rbNormalize(input.value);
+    if (!cid) { toast("Couldn't read that road name"); return; }
+    if (!rbRoads.some(function (r) { return r.cid === cid; })) rbRoads.push({ label: input.value, cid: cid });
+    input.value = "";
+    rbRender();
+  }
+  function rbFillRoadSuggestions() {
+    // Offer the corridors already seen in the loaded data as autocomplete.
+    const dl = els.routeModal.querySelector("#rbRoadList");
+    if (dl.__filled) return;
+    const seen = new Set();
+    for (const row of INCIDENTS) {
+      for (const c of corridorsOf(row)) { if (!seen.has(c)) seen.add(c); }
+      if (seen.size > 300) break;
+    }
+    const frag = document.createDocumentFragment();
+    Array.from(seen).sort().forEach(function (c) {
+      const o = document.createElement("option"); o.value = titleCase(c); frag.appendChild(o);
+    });
+    dl.appendChild(frag);
+    dl.__filled = true;
+  }
+  let routePrevFocus = null;
+  function openRoute() {
+    routePrevFocus = document.activeElement;
+    rbFillRoadSuggestions();
+    rbRender();
+    els.routeModal.classList.add("open");
+    els.routeModal.setAttribute("aria-hidden", "false");
+    els.routeModal.querySelector("#rbName").focus();
+  }
+  function closeRoute() {
+    els.routeModal.classList.remove("open");
+    els.routeModal.setAttribute("aria-hidden", "true");
+    if (routePrevFocus && routePrevFocus.focus) { try { routePrevFocus.focus(); } catch (e) {} }
+  }
+
   /* ═══════════ About dialog ═══════════ */
   let aboutPrevFocus = null;
   function openAbout() {
@@ -4755,8 +4906,28 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.aboutModal.addEventListener("click", function (e) {
       if (e.target === els.aboutModal) closeAbout();
     });
+    els.routeBtn.addEventListener("click", openRoute);
+    els.routeClose.addEventListener("click", closeRoute);
+    els.routeModal.addEventListener("click", function (e) {
+      if (e.target === els.routeModal) closeRoute();
+    });
+    els.routeModal.querySelector("#rbAdd").addEventListener("click", rbAdd);
+    els.routeModal.querySelector("#rbRoad").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); rbAdd(); }
+    });
+    ["#rbSlot", "#rbName", "#rbDepart", "#rbDays"].forEach(function (sel) {
+      els.routeModal.querySelector(sel).addEventListener("input", rbRender);
+    });
+    els.routeModal.querySelector("#rbCopy").addEventListener("click", function () {
+      const text = els.routeModal.__config || "";
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { toast("Settings copied"); },
+          function () { toast("Copy failed — select the text manually"); });
+      } else { toast("Copy not supported — select the text manually"); }
+    });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && els.aboutModal.classList.contains("open")) closeAbout();
+      if (e.key === "Escape" && els.routeModal.classList.contains("open")) closeRoute();
     });
 
     // Back/forward (chart selections push history entries) and hand-edited
