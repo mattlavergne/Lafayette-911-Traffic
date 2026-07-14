@@ -247,6 +247,57 @@ create an [App Password](https://myaccount.google.com/apppasswords)
 | `LAF911_DIGEST_HOUR` | `7` | Local hour to send at/after |
 | `LAF911_MAP_URL` | *(empty)* | "Open the live map" button target |
 
+## Personal route alerts (optional)
+
+Get an email shortly before you leave, listing the **current** 911 incidents on
+the roads of your commute (plus any active NWS alert). Different routes for the
+drive in and the drive home, each on its own schedule.
+
+**What it uses — and doesn't.** There is no free, keyless source of
+Google/Waze-style live traffic *speed* data. Instead this matches the actual
+911 incident feed (accidents/hazards/stalls dispatched on your route) against a
+freshness window, plus the NWS alerts already collected. The feed reports when
+an incident *started*, not when it cleared, so each item shows how long ago it
+was reported and you judge — minor accidents are often already gone. A paid
+traffic-flow provider can be added later (`fetch_traffic_flow` in
+`route_alerts.py`) without changing the free path.
+
+**Build a route the easy way.** Open the map, click the **route icon** in the
+header, add the roads you drive (autocompletes from roads the system knows,
+and canonicalizes what you type), set your departure time and days, and it
+generates the exact settings to paste — nothing you type there leaves the page.
+
+Reuses the digest's SMTP settings, so if the daily digest already works you
+only add the route lines to `/etc/laf911-secrets.env`:
+
+```bash
+LAF911_ROUTE_ENABLED=true
+LAF911_ROUTE_LEAD_MIN=10          # email this many minutes before departure
+LAF911_ROUTE_WINDOW_MIN=90        # only incidents newer than this
+LAF911_ROUTE_1_NAME=To work
+LAF911_ROUTE_1_CORRIDORS=Ambassador Caffery Pkwy | Kaliste Saloom Rd | I-10
+LAF911_ROUTE_1_DEPART=07:20
+LAF911_ROUTE_1_DAYS=mon-fri
+LAF911_ROUTE_2_NAME=Home
+LAF911_ROUTE_2_CORRIDORS=I-10 | Ambassador Caffery Pkwy | Johnston St
+LAF911_ROUTE_2_DEPART=17:00
+LAF911_ROUTE_2_DAYS=mon-fri
+```
+
+`daemon-reload` + restart the service, then test without waiting:
+
+```bash
+set -a; . <(sudo cat /etc/laf911-secrets.env); set +a
+python -m lafayette911.route_alerts --preview route.html --route 1   # look
+python -m lafayette911.route_alerts --send --route 1                 # send now
+```
+
+Roads are matched by the same canonical corridors the map uses, so loose input
+(`ambassador caffery`, `100 Kaliste Saloom Rd`) resolves correctly, and an
+intersection counts toward both roads. Sends at most once per route per day
+(SQLite-guarded), never for a day not in `_DAYS`, and backs off after repeated
+failures — the same fail-safe rules as the digest.
+
 ## External services
 
 | Service | Used for | Cost notes |
