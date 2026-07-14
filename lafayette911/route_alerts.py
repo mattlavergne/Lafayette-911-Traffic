@@ -86,7 +86,7 @@ class Route:
     # instead of by road name. Unlocated incidents are skipped because they
     # cannot be proven to be on the selected road section.
     path: List = field(default_factory=list)
-    radius_m: int = 250
+    radius_m: int = 100
 
 
 @dataclass
@@ -209,9 +209,9 @@ def _route_from_kv(i: int, kv: Dict[str, str]) -> Optional[Route]:
         cids = corridor_ids(label) or ([normalize_corridor(label)] if normalize_corridor(label) else [])
         canon.update(c for c in cids if c)
     try:
-        radius_m = int(str(kv.get("RADIUS_M") or "250").strip() or 250)
+        radius_m = int(str(kv.get("RADIUS_M") or "100").strip() or 100)
     except ValueError:
-        radius_m = 250
+        radius_m = 100
     depart = _parse_hhmm(kv.get("DEPART") or "")
     if depart is None or (not canon and len(path) < 2):
         return None
@@ -373,7 +373,7 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
     else:
         route_line = "your drawn route"
     if route.path and len(route.path) >= 2:
-        route_line += ' <span style="color:#b7bcc5;">· section-matched within %d m of your line</span>' % route.radius_m
+        route_line += ' <span style="color:#b7bcc5;">· section-matched on your drawn route</span>'
 
     if incidents:
         header_emoji = "🚧"

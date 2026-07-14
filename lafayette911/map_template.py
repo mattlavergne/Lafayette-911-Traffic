@@ -1375,12 +1375,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="facet-note" id="rbPathStatus" aria-live="polite">No route drawn yet. Tap a few stops along
     your drive — the line <strong>snaps to the actual roads</strong> between taps (curves and turns included),
     so side roads you merely cross never join the route. Only incidents close to that snapped line will alert; nearby or crossed roads are not added automatically.</div>
-    <div class="rb-row" style="margin-top:8px;">
-      <div><label class="rb-field" for="rbRadius">Match distance</label>
-        <select class="rb-select" id="rbRadius"><option value="100">100 m — strict</option><option value="150" selected>150 m — tight</option><option value="250">250 m — normal</option><option value="400">400 m — loose</option></select></div>
-      <div></div>
-    </div>
-    <label class="rb-field" for="rbRoad">Extra road labels (optional)</label>
+    <label class="rb-field" for="rbRoad">Road-only fallback labels (optional — ignored once a route is drawn)</label>
     <div class="rb-addrow">
       <input class="rb-input" id="rbRoad" type="text" placeholder="e.g. Ambassador Caffery" list="rbRoadList" autocomplete="off">
       <button class="rb-add" id="rbAdd" type="button">Add</button>
@@ -4824,13 +4819,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       wrap.appendChild(chip);
     });
     const status = els.routeModal.querySelector("#rbPathStatus");
-    const radius = parseInt(els.routeModal.querySelector("#rbRadius").value || "250", 10);
     if (rbPath.length >= 2) {
-      status.innerHTML = "✅ <b>" + rbPath.length + " points drawn.</b> Only incidents within " + radius +
-        " m of your drawn line will alert. Draw again to replace.";
+      status.innerHTML = "✅ <b>" + rbPath.length + " points drawn.</b> Only incidents on your drawn route will alert. Draw again to replace.";
     } else {
       status.textContent = "No route drawn yet. Tap along your route (each tap adds a point); " +
-        "only incidents within the match distance of your line will alert.";
+        "only incidents on your drawn route will alert.";
     }
     // Generated route config (env-line format the Pi's inbox reader parses)
     const slot = els.routeModal.querySelector("#rbSlot").value;
@@ -4845,10 +4838,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       "LAF911_ROUTE_" + slot + "_DAYS=" + days;
     if (rbPath.length >= 2) {
       out += "\nLAF911_ROUTE_" + slot + "_PATH=" +
-        rbPath.map(function (pt) { return pt[0].toFixed(5) + "," + pt[1].toFixed(5); }).join("; ") +
-        "\nLAF911_ROUTE_" + slot + "_RADIUS_M=" + radius;
+        rbPath.map(function (pt) { return pt[0].toFixed(5) + "," + pt[1].toFixed(5); }).join("; ");
     }
-    if (roadSet.length) {
+    // A drawn route is section-precise by PATH; do not add CORRIDORS,
+    // because a corridor name means whole-road matching for non-drawn routes.
+    if (roadSet.length && rbPath.length < 2) {
       out += "\nLAF911_ROUTE_" + slot + "_CORRIDORS=" + roadSet.join(" | ");
     }
     els.routeModal.querySelector("#rbOut").textContent = out;
@@ -5147,7 +5141,6 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     });
     els.routeModal.querySelector("#rbAdd").addEventListener("click", rbAdd);
     els.routeModal.querySelector("#rbDraw").addEventListener("click", rbStartDraw);
-    els.routeModal.querySelector("#rbRadius").addEventListener("input", rbRender);
     $("rbUndo").addEventListener("click", function () {
       if (rbBusy) return;
       rbAnchors.pop();
