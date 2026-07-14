@@ -249,54 +249,56 @@ create an [App Password](https://myaccount.google.com/apppasswords)
 
 ## Personal route alerts (optional)
 
-Get an email shortly before you leave, listing the **current** 911 incidents on
-the roads of your commute (plus any active NWS alert). Different routes for the
-drive in and the drive home, each on its own schedule.
+Get an email shortly before you leave, listing the **current** 911 incidents
+on the exact stretches of road you drive (plus any active NWS alert).
+Different routes for the drive in and home, each on its own schedule.
+
+**Zero Pi configuration.** If the daily digest already works, there is
+nothing to set up on the Pi. Open the map, tap the **route icon**, draw the
+sections you actually drive (each tap adds a point), pick departure time and
+days, then tap **"Email this route to your Pi"** — send that email **from and
+to the same Gmail account the collector uses**. The service checks its own
+mailbox every cycle (a Gmail App Password works for IMAP just like SMTP),
+saves the route into SQLite, and replies "route saved" within a few minutes.
+Replace a route by sending a new email for the same slot; remove one with a
+body line `LAF911_ROUTE_1_DELETE=true`. Only messages **from the account
+itself** with `LAF911` in the subject are honored; everything else is
+ignored.
+
+**Section-precise matching.** With a drawn route, located incidents match by
+distance to your line (default 250 m, choose 150/250/400 in the builder) —
+an accident five miles down a road you only briefly touch does **not**
+alert. Incidents still awaiting geocoding can't be distance-tested, so they
+fall back to the roads your line touches and are flagged *"not yet located —
+may be outside your section"*.
 
 **What it uses — and doesn't.** There is no free, keyless source of
-Google/Waze-style live traffic *speed* data. Instead this matches the actual
-911 incident feed (accidents/hazards/stalls dispatched on your route) against a
-freshness window, plus the NWS alerts already collected. The feed reports when
-an incident *started*, not when it cleared, so each item shows how long ago it
-was reported and you judge — minor accidents are often already gone. A paid
-traffic-flow provider can be added later (`fetch_traffic_flow` in
-`route_alerts.py`) without changing the free path.
+Google/Waze-style live traffic *speed* data. This matches the actual 911
+incident feed against a freshness window (default 90 min), plus the NWS
+alerts already collected. The feed reports when an incident *started*, not
+when it cleared, so each item shows how long ago it was reported — minor
+accidents are often already gone. A paid traffic-flow provider can be added
+later (`fetch_traffic_flow` in `route_alerts.py`) without changing the free
+path.
 
-**Build a route the easy way.** Open the map, click the **route icon** in the
-header, add the roads you drive (autocompletes from roads the system knows,
-and canonicalizes what you type), set your departure time and days, and it
-generates the exact settings to paste — nothing you type there leaves the page.
-
-Reuses the digest's SMTP settings, so if the daily digest already works you
-only add the route lines to `/etc/laf911-secrets.env`:
+Everything is also configurable by environment variables (see
+`route_alerts.py` for `LAF911_ROUTE_*`; env slots are overridden by
+email-configured slots). Useful knobs and tools:
 
 ```bash
-LAF911_ROUTE_ENABLED=true
-LAF911_ROUTE_LEAD_MIN=10          # email this many minutes before departure
-LAF911_ROUTE_WINDOW_MIN=90        # only incidents newer than this
-LAF911_ROUTE_1_NAME=To work
-LAF911_ROUTE_1_CORRIDORS=Ambassador Caffery Pkwy | Kaliste Saloom Rd | I-10
-LAF911_ROUTE_1_DEPART=07:20
-LAF911_ROUTE_1_DAYS=mon-fri
-LAF911_ROUTE_2_NAME=Home
-LAF911_ROUTE_2_CORRIDORS=I-10 | Ambassador Caffery Pkwy | Johnston St
-LAF911_ROUTE_2_DEPART=17:00
-LAF911_ROUTE_2_DAYS=mon-fri
+LAF911_ROUTE_LEAD_MIN=10      # email this many minutes before departure
+LAF911_ROUTE_WINDOW_MIN=90    # only incidents newer than this
+LAF911_ROUTE_INBOX=off        # disable the mailbox config channel
+
+python -m lafayette911.route_inbox --check     # poll the mailbox once, now
+python -m lafayette911.route_inbox --list      # show email-configured routes
+python -m lafayette911.route_alerts --preview route.html --route 1
+python -m lafayette911.route_alerts --send --route 1
 ```
 
-`daemon-reload` + restart the service, then test without waiting:
-
-```bash
-set -a; . <(sudo cat /etc/laf911-secrets.env); set +a
-python -m lafayette911.route_alerts --preview route.html --route 1   # look
-python -m lafayette911.route_alerts --send --route 1                 # send now
-```
-
-Roads are matched by the same canonical corridors the map uses, so loose input
-(`ambassador caffery`, `100 Kaliste Saloom Rd`) resolves correctly, and an
-intersection counts toward both roads. Sends at most once per route per day
-(SQLite-guarded), never for a day not in `_DAYS`, and backs off after repeated
-failures — the same fail-safe rules as the digest.
+Alerts send at most once per route per day (SQLite-guarded), only on
+configured days, and back off after repeated failures — the same fail-safe
+rules as the digest.
 
 ## External services
 

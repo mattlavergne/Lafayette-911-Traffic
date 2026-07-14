@@ -24,6 +24,7 @@ from lafayette911.collector import collect_once
 from lafayette911.config import Config, load_config
 from lafayette911.daily_digest import maybe_send_daily_digest
 from lafayette911.route_alerts import maybe_send_route_alerts
+from lafayette911.route_inbox import poll_route_inbox
 from lafayette911.fetch_incidents import build_session
 from lafayette911.map_render import backfill_road_types, create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
@@ -259,8 +260,10 @@ def main(base_dir: Optional[str] = None) -> int:
                 logger,
             )
 
-            # Personal commute alerts: fire in the lead-time window before each
-            # configured departure. Never raises into the loop.
+            # Personal commute alerts: check the mailbox for route-config
+            # emails (zero-Pi-config setup), then fire any alert due in the
+            # lead-time window before a departure. Neither ever raises.
+            poll_route_inbox(store, logger)
             maybe_send_route_alerts(config, store, session, logger)
 
             time.sleep(config.sleep_seconds)

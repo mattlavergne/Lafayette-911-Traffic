@@ -541,6 +541,34 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-size: 11px; line-height: 1.5; color: var(--text); background: var(--chip); border: 1px solid var(--panel-border);
     border-radius: 10px; padding: 10px 12px; white-space: pre; overflow-x: auto; }
   .rb-copy { margin-top: 8px; }
+  .rb-mail {
+    display: inline-flex; align-items: center; gap: 7px; margin: 10px 8px 0 0;
+    padding: 10px 20px; border-radius: 999px; border: none; cursor: pointer;
+    background: var(--accent); color: #fff; font-weight: 700; font-size: 13.5px;
+    text-decoration: none; box-shadow: var(--shadow-sm), var(--edge);
+  }
+  .rb-mail:hover { filter: brightness(1.08); }
+  .rb-draw {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 6px;
+    padding: 8px 16px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--accent); background: transparent; color: var(--accent);
+    font-weight: 700; font-size: 12.5px;
+  }
+  .rb-draw:hover { background: var(--accent-soft); }
+  #rbPill {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 3200;
+    display: none; align-items: center; gap: 8px; padding: 10px 14px;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 999px;
+    box-shadow: var(--shadow), var(--edge);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    font-size: 12.5px; color: var(--text); font-weight: 600; max-width: calc(100vw - 20px);
+  }
+  #rbPill.on { display: flex; }
+  #rbPill button {
+    padding: 6px 12px; border-radius: 999px; border: 1px solid var(--panel-border);
+    background: var(--chip); color: var(--text); font-weight: 700; font-size: 12px; cursor: pointer;
+  }
+  #rbPill button.done { background: var(--accent); border-color: var(--accent); color: #fff; }
   select {
     font-family: var(--font); font-size: 12.5px; color: var(--text);
     padding: 7px 26px 7px 9px; border-radius: 9px; width: 100%;
@@ -1315,12 +1343,21 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   </svg>
 </button>
 
+<div id="rbPill" role="status">
+  <span id="rbPillText">Tap the map along your route</span>
+  <button type="button" id="rbUndo">Undo</button>
+  <button type="button" id="rbCancel">Cancel</button>
+  <button type="button" class="done" id="rbDone">Done</button>
+</div>
+
 <div class="modal-overlay" id="routeModal" role="dialog" aria-modal="true" aria-labelledby="routeTitle" aria-hidden="true">
   <div class="modal-card">
     <h2 id="routeTitle">Build a commute alert <button class="modal-close" id="routeClose" type="button" aria-label="Close">×</button></h2>
-    <p>Get an email shortly before you leave, listing the <strong>current</strong> 911 incidents on the roads
-    you drive (plus active NWS alerts). Build your route here, then paste the generated settings into your
-    Pi&#39;s secrets file — nothing you enter is sent anywhere from this page.</p>
+    <p>Get an email shortly before you leave, listing the <strong>current</strong> 911 incidents on the
+    exact stretches of road you drive (plus active NWS alerts). Draw your route, then
+    <strong>email it to the same Gmail account your collector uses</strong> — it spots the message, saves
+    the route, and replies to confirm. Nothing to configure on the Pi, and nothing you enter here is
+    sent anywhere by this page.</p>
     <div class="rb-row">
       <div><label class="rb-field" for="rbSlot">Route slot</label>
         <select class="rb-select" id="rbSlot"><option value="1">1 (e.g. to work)</option><option value="2">2 (e.g. home)</option><option value="3">3</option></select></div>
@@ -1333,18 +1370,29 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div><label class="rb-field" for="rbDays">Days</label>
         <select class="rb-select" id="rbDays"><option value="mon-fri">Weekdays</option><option value="daily">Every day</option><option value="weekends">Weekends</option><option value="mon,wed,fri">Mon/Wed/Fri</option></select></div>
     </div>
-    <label class="rb-field" for="rbRoad">Roads on your route (in order)</label>
+    <label class="rb-field">Your route — the sections you actually drive</label>
+    <button class="rb-draw" id="rbDraw" type="button">✏️ Draw route on the map</button>
+    <div class="facet-note" id="rbPathStatus" aria-live="polite">No route drawn yet. Tap along your route
+    (each tap adds a point); only incidents within the match distance of your line will alert.</div>
+    <div class="rb-row" style="margin-top:8px;">
+      <div><label class="rb-field" for="rbRadius">Match distance</label>
+        <select class="rb-select" id="rbRadius"><option value="150">150 m — tight</option><option value="250" selected>250 m — normal</option><option value="400">400 m — loose</option></select></div>
+      <div></div>
+    </div>
+    <label class="rb-field" for="rbRoad">Extra roads (optional — whole-road matching)</label>
     <div class="rb-addrow">
       <input class="rb-input" id="rbRoad" type="text" placeholder="e.g. Ambassador Caffery" list="rbRoadList" autocomplete="off">
       <button class="rb-add" id="rbAdd" type="button">Add</button>
     </div>
     <datalist id="rbRoadList"></datalist>
     <div class="rb-roads" id="rbRoads" aria-live="polite"></div>
-    <label class="rb-field">Paste these lines into <code>/etc/laf911-secrets.env</code> on the Pi</label>
+    <a class="rb-mail" id="rbMail" href="#" rel="noopener">📧 Email this route to your Pi</a>
+    <button class="mini-clear rb-copy" id="rbCopy" type="button">Copy instead</button>
+    <p class="facet-note">Send it <strong>from and to the same Gmail address</strong> the collector uses —
+    it only trusts messages from itself. You&#39;ll get a &ldquo;route saved&rdquo; reply within a few
+    minutes. Repeat per slot (to-work and home can differ); to remove one, email
+    <code>LAF911_ROUTE_1_DELETE=true</code>.</p>
     <div class="rb-out" id="rbOut" aria-live="polite"></div>
-    <button class="mini-clear rb-copy" id="rbCopy" type="button">Copy settings</button>
-    <p class="facet-note">Repeat for each slot (to-work and home can differ). See the README&#39;s
-    &ldquo;Personal route alerts&rdquo; section for the one-time enable step.</p>
   </div>
 </div>
 
@@ -4732,6 +4780,51 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     return base;
   }
+  // Traced route state: waypoints + preview polyline + derived corridors.
+  let rbPath = [];             // [[lat, lng], ...]
+  let rbDrawing = false;
+  let rbLine = null;
+  let rbAutoCorridors = [];    // canonical roads the line touches (fallback
+                               // matching for incidents still being geocoded)
+
+  function rbPtSegDistM(plat, plng, a, b) {
+    const lat0 = ((a[0] + b[0] + plat) / 3) * Math.PI / 180;
+    const kx = 111320 * Math.cos(lat0), ky = 110540;
+    const px = plng * kx, py = plat * ky;
+    const ax = a[1] * kx, ay = a[0] * ky, bx = b[1] * kx, by = b[0] * ky;
+    const dx = bx - ax, dy = by - ay;
+    let t = 0;
+    if (dx !== 0 || dy !== 0) t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+  function rbDistToPathM(lat, lng) {
+    if (rbPath.length < 2) return Infinity;
+    let best = Infinity;
+    for (let i = 0; i < rbPath.length - 1; i++) {
+      const d = rbPtSegDistM(lat, lng, rbPath[i], rbPath[i + 1]);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+  function rbDeriveCorridors(radius) {
+    // Which canonical roads does the traced line touch? Uses the archive's
+    // located incidents as road evidence — serves as the fallback for
+    // incidents that haven't been geocoded yet.
+    const seen = new Set();
+    for (const row of INCIDENTS) {
+      if (rbDistToPathM(row[IDX_LAT], row[IDX_LNG]) <= radius) {
+        for (const c of corridorsOf(row)) seen.add(c);
+      }
+    }
+    return Array.from(seen).sort();
+  }
+  function rbUpdateLine() {
+    if (rbLine) { try { map.removeLayer(rbLine); } catch (e) {} rbLine = null; }
+    if (map && rbPath.length >= 1) {
+      rbLine = L.polyline(rbPath, { color: "#2f6fed", weight: 5, opacity: 0.75, dashArray: "1 8", lineCap: "round" }).addTo(map);
+    }
+  }
+
   function rbRender() {
     const wrap = els.routeModal.querySelector("#rbRoads");
     wrap.innerHTML = "";
@@ -4746,20 +4839,80 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       chip.appendChild(x);
       wrap.appendChild(chip);
     });
-    // Generated env config
+    const status = els.routeModal.querySelector("#rbPathStatus");
+    const radius = parseInt(els.routeModal.querySelector("#rbRadius").value || "250", 10);
+    if (rbPath.length >= 2) {
+      status.innerHTML = "✅ <b>" + rbPath.length + " points drawn.</b> Only incidents within " + radius +
+        " m of your line will alert" +
+        (rbAutoCorridors.length ? " (roads touched: " + esc(rbAutoCorridors.slice(0, 5).map(titleCase).join(", ")) +
+          (rbAutoCorridors.length > 5 ? "…" : "") + ")" : "") + ". Draw again to replace.";
+    } else {
+      status.textContent = "No route drawn yet. Tap along your route (each tap adds a point); " +
+        "only incidents within the match distance of your line will alert.";
+    }
+    // Generated route config (env-line format the Pi's inbox reader parses)
     const slot = els.routeModal.querySelector("#rbSlot").value;
     const name = (els.routeModal.querySelector("#rbName").value || "Route " + slot).trim();
     const depart = els.routeModal.querySelector("#rbDepart").value || "07:20";
     const days = els.routeModal.querySelector("#rbDays").value;
-    const roads = rbRoads.map(function (r) { return titleCase(r.cid); }).join(" | ");
-    const out =
-      "LAF911_ROUTE_ENABLED=true\n" +
+    const roadSet = [];
+    rbAutoCorridors.forEach(function (c) { if (roadSet.indexOf(titleCase(c)) === -1) roadSet.push(titleCase(c)); });
+    rbRoads.forEach(function (r) { if (roadSet.indexOf(titleCase(r.cid)) === -1) roadSet.push(titleCase(r.cid)); });
+    let out =
       "LAF911_ROUTE_" + slot + "_NAME=" + name + "\n" +
-      "LAF911_ROUTE_" + slot + "_CORRIDORS=" + (roads || "Add roads above") + "\n" +
       "LAF911_ROUTE_" + slot + "_DEPART=" + depart + "\n" +
       "LAF911_ROUTE_" + slot + "_DAYS=" + days;
+    if (rbPath.length >= 2) {
+      out += "\nLAF911_ROUTE_" + slot + "_PATH=" +
+        rbPath.map(function (pt) { return pt[0].toFixed(5) + "," + pt[1].toFixed(5); }).join("; ") +
+        "\nLAF911_ROUTE_" + slot + "_RADIUS_M=" + radius;
+    }
+    if (roadSet.length) {
+      out += "\nLAF911_ROUTE_" + slot + "_CORRIDORS=" + roadSet.join(" | ");
+    }
     els.routeModal.querySelector("#rbOut").textContent = out;
     els.routeModal.__config = out;
+    const mail = els.routeModal.querySelector("#rbMail");
+    mail.href = "mailto:?subject=" + encodeURIComponent("LAF911 route") +
+      "&body=" + encodeURIComponent(out);
+  }
+
+  /* draw mode: modal hides, a floating pill guides the tracing */
+  function rbSetPill() {
+    $("rbPillText").textContent = rbPath.length === 0
+      ? "Tap the map along your route"
+      : rbPath.length + " point" + (rbPath.length === 1 ? "" : "s") + " — keep tapping, then Done";
+  }
+  function rbStartDraw() {
+    if (!map) { toast("Map unavailable — can't draw"); return; }
+    rbDrawing = true;
+    rbPath = [];
+    rbAutoCorridors = [];
+    rbUpdateLine();
+    els.routeModal.classList.remove("open");
+    $("rbPill").classList.add("on");
+    rbSetPill();
+    if (window.innerWidth <= 700) setSheetExpanded(false);
+  }
+  function rbFinishDraw(save) {
+    rbDrawing = false;
+    $("rbPill").classList.remove("on");
+    if (!save || rbPath.length < 2) {
+      rbPath = [];
+      rbAutoCorridors = [];
+      rbUpdateLine();
+      if (save) toast("Need at least 2 points — route not saved");
+    } else {
+      rbAutoCorridors = rbDeriveCorridors(parseInt(els.routeModal.querySelector("#rbRadius").value || "250", 10));
+      toast("Route captured — " + rbPath.length + " points");
+    }
+    els.routeModal.classList.add("open");
+    rbRender();
+  }
+  function rbMapClick(latlng) {
+    rbPath.push([latlng.lat, latlng.lng]);
+    rbUpdateLine();
+    rbSetPill();
   }
   function rbAdd() {
     const input = els.routeModal.querySelector("#rbRoad");
@@ -4912,6 +5065,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (e.target === els.routeModal) closeRoute();
     });
     els.routeModal.querySelector("#rbAdd").addEventListener("click", rbAdd);
+    els.routeModal.querySelector("#rbDraw").addEventListener("click", rbStartDraw);
+    els.routeModal.querySelector("#rbRadius").addEventListener("input", function () {
+      if (rbPath.length >= 2) rbAutoCorridors = rbDeriveCorridors(parseInt(this.value || "250", 10));
+      rbRender();
+    });
+    $("rbUndo").addEventListener("click", function () { rbPath.pop(); rbUpdateLine(); rbSetPill(); });
+    $("rbCancel").addEventListener("click", function () { rbFinishDraw(false); });
+    $("rbDone").addEventListener("click", function () { rbFinishDraw(true); });
     els.routeModal.querySelector("#rbRoad").addEventListener("keydown", function (e) {
       if (e.key === "Enter") { e.preventDefault(); rbAdd(); }
     });
@@ -5158,6 +5319,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
       map.on("click", function (e) {
         if (!e || !e.containerPoint) return;
+        if (rbDrawing) { rbMapClick(e.latlng); return; }
         // During the post-open grace window ignore clicks entirely: the touch
         // browser's synthesized ghost click (~300 ms after a tap, at the old
         // screen position while the map is panning) would otherwise re-target

@@ -20,9 +20,10 @@ each with how long ago it was reported, so you can judge.
 
 Config & privacy
 ----------------
-Routes and the mailbox come ONLY from environment variables on the machine
-running the service (systemd ``EnvironmentFile`` on the Pi). Nothing personal
-— your addresses, routes, times, or email — ever touches this repository or
+Routes come from environment variables OR from config emails saved by
+:mod:`lafayette911.route_inbox` (the zero-Pi-configuration path; email slots
+override env slots and implicitly enable the feature). Nothing personal —
+your addresses, routes, times, or email — ever touches this repository or
 the published map. The SMTP settings are shared with the daily digest
 (``LAF911_DIGEST_SMTP_*`` / ``LAF911_DIGEST_TO``).
 
@@ -80,6 +81,11 @@ class Route:
     corridor_labels: List[str]    # display order as entered
     depart_minutes: int           # minutes since local midnight
     days: Set[int]                # weekday ints, 0=Mon … 6=Sun
+    # Optional traced path: [(lat, lng), ...]. When present, LOCATED incidents
+    # match by distance to this line (section-precise) instead of by road name;
+    # corridors then serve only as a fallback for not-yet-geocoded incidents.
+    path: List = field(default_factory=list)
+    radius_m: int = 250
 
 
 @dataclass
@@ -134,32 +140,124 @@ def _split_corridors(value: str) -> List[str]:
     return [p for p in parts if p]
 
 
-def load_route_config() -> RouteConfig:
+def _parse_path(value: str) -> List:
+    """Parse 'lat,lng; lat,lng; …' into [(lat, lng), ...]; junk points drop."""
+    out = []
+    for part in str(value or "").split(";"):
+        bits = part.strip().split(",")
+        if len(bits) != 2:
+            continue
+        try:
+            lat, lng = float(bits[0]), float(bits[1])
+        except ValueError:
+            continue
+        if -90 <= lat <= 90 and -180 <= lng <= 180:
+            out.append((lat, lng))
+    return out
+
+
+def _pt_seg_dist_m(plat, plng, alat, alng, blat, blng) -> float:
+    """Distance in meters from point P to segment AB (equirectangular — plenty
+    accurate at city scale)."""
+    import math
+    lat0 = math.radians((alat + blat + plat) / 3.0)
+    kx = 111320.0 * math.cos(lat0)   # meters per degree of longitude
+    ky = 110540.0                    # meters per degree of latitude
+    px, py = plng * kx, plat * ky
+    ax, ay = alng * kx, alat * ky
+    bx, by = blng * kx, blat * ky
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        t = 0.0
+    else:
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+    return ((px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2) ** 0.5
+
+
+def dist_to_path_m(lat: float, lng: float, path: List) -> float:
+    """Shortest distance from a point to a polyline, in meters."""
+    if not path:
+        return float("inf")
+    if len(path) == 1:
+        return _pt_seg_dist_m(lat, lng, path[0][0], path[0][1], path[0][0], path[0][1])
+    return min(
+        _pt_seg_dist_m(lat, lng, a[0], a[1], b[0], b[1])
+        for a, b in zip(path, path[1:])
+    )
+
+
+ROUTE_KV_KEYS = ("NAME", "CORRIDORS", "PATH", "RADIUS_M", "DEPART", "DAYS")
+
+# app_meta key holding routes configured BY EMAIL (see route_inbox.py) — the
+# zero-Pi-configuration path. Slots stored here override the same env slot.
+MAIL_ROUTES_META_KEY = "mail_routes_v1"
+
+
+def _route_from_kv(i: int, kv: Dict[str, str]) -> Optional[Route]:
+    """Build one Route from a {NAME, CORRIDORS, PATH, RADIUS_M, DEPART, DAYS}
+    mapping (values as raw strings). Returns None when the slot is empty or
+    unusable."""
+    name = str(kv.get("NAME") or "").strip()
+    corr = str(kv.get("CORRIDORS") or "")
+    path = _parse_path(kv.get("PATH") or "")
+    if not name and not corr and len(path) < 2:
+        return None
+    labels = _split_corridors(corr)
+    canon = set()
+    for label in labels:
+        cids = corridor_ids(label) or ([normalize_corridor(label)] if normalize_corridor(label) else [])
+        canon.update(c for c in cids if c)
+    try:
+        radius_m = int(str(kv.get("RADIUS_M") or "250").strip() or 250)
+    except ValueError:
+        radius_m = 250
+    depart = _parse_hhmm(kv.get("DEPART") or "")
+    if depart is None or (not canon and len(path) < 2):
+        return None
+    return Route(
+        index=i,
+        name=name or ("Route %d" % i),
+        corridors=canon,
+        corridor_labels=labels,
+        depart_minutes=depart,
+        days=_parse_days(kv.get("DAYS") or "mon-fri"),
+        path=path,
+        radius_m=max(50, min(2000, radius_m)),
+    )
+
+
+def _load_mail_routes(store) -> Dict[str, Dict[str, str]]:
+    """Routes saved from config emails: {"1": {"NAME": ..., ...}, ...}."""
+    if store is None:
+        return {}
+    try:
+        import json
+        raw = store._meta_get(MAIL_ROUTES_META_KEY)
+        data = json.loads(raw) if raw else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_route_config(store=None) -> RouteConfig:
+    """Effective route config: env slots, overridden per-slot by any route
+    configured BY EMAIL (stored in SQLite by route_inbox). Mailbox routes
+    also implicitly enable the feature — that's the zero-Pi-config path."""
     enabled = os.getenv("LAF911_ROUTE_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
     lead = int(os.getenv("LAF911_ROUTE_LEAD_MIN", "10") or 10)
     window = int(os.getenv("LAF911_ROUTE_WINDOW_MIN", "90") or 90)
+    mail_routes = _load_mail_routes(store)
     routes: List[Route] = []
     for i in range(1, 21):
-        name = os.getenv("LAF911_ROUTE_%d_NAME" % i, "")
-        corr = os.getenv("LAF911_ROUTE_%d_CORRIDORS" % i, "")
-        if not name and not corr:
-            continue
-        labels = _split_corridors(corr)
-        canon = set()
-        for label in labels:
-            cids = corridor_ids(label) or ([normalize_corridor(label)] if normalize_corridor(label) else [])
-            canon.update(c for c in cids if c)
-        depart = _parse_hhmm(os.getenv("LAF911_ROUTE_%d_DEPART" % i, ""))
-        if depart is None or not canon:
-            continue
-        routes.append(Route(
-            index=i,
-            name=name or ("Route %d" % i),
-            corridors=canon,
-            corridor_labels=labels,
-            depart_minutes=depart,
-            days=_parse_days(os.getenv("LAF911_ROUTE_%d_DAYS" % i, "mon-fri")),
-        ))
+        kv = {k: os.getenv("LAF911_ROUTE_%d_%s" % (i, k), "") for k in ROUTE_KV_KEYS}
+        mkv = mail_routes.get(str(i))
+        if isinstance(mkv, dict) and any(str(mkv.get(k) or "").strip() for k in ROUTE_KV_KEYS):
+            kv = {k: str(mkv.get(k) or "") for k in ROUTE_KV_KEYS}
+        route = _route_from_kv(i, kv)
+        if route is not None:
+            routes.append(route)
+    if mail_routes:
+        enabled = True
     return RouteConfig(enabled=enabled, lead_min=lead, window_min=window, routes=routes)
 
 
@@ -179,11 +277,15 @@ def _parse_reported_local(reported: str) -> Optional[datetime]:
 
 def find_route_incidents(db_path: str, route: Route, window_min: int,
                          now: Optional[datetime] = None) -> List[Dict]:
-    """Current incidents whose canonical corridors intersect the route.
+    """Current incidents on the route, within the freshness window.
 
-    Freshness is by REPORTED time (when it happened), within ``window_min``.
-    Unlocated incidents still count — an accident on your road matters even if
-    we couldn't geocode it. Sorted by severity, then most-recent first.
+    Section-precise when the route carries a traced ``path``: LOCATED
+    incidents match by distance to the line (within ``route.radius_m``), so
+    an accident five miles down a road you only briefly use does NOT match.
+    Incidents still awaiting geocoding can't be distance-tested, so they fall
+    back to the corridor list and are flagged ``approx`` ("somewhere on this
+    road"). Without a path (roads-only config), everything matches by
+    corridor as before. Sorted by severity, then most-recent first.
     """
     import sqlite3
 
@@ -203,9 +305,27 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
         dt = _parse_reported_local(reported)
         if dt is None or dt < cutoff or dt > now + timedelta(minutes=5):
             continue
-        matched = sorted(set(corridor_ids(loc)) & route.corridors)
-        if not matched:
-            continue
+        located = lat is not None and lng is not None
+        approx = False
+        dist_m = None
+        if route.path and len(route.path) >= 2:
+            if located:
+                dist_m = dist_to_path_m(float(lat), float(lng), route.path)
+                if dist_m > route.radius_m:
+                    continue
+                matched = sorted(set(corridor_ids(loc)) & route.corridors) or corridor_ids(loc)[:1]
+            else:
+                # No coordinates yet → distance test impossible; corridor
+                # fallback keeps a brand-new on-road accident visible, flagged
+                # as approximate.
+                matched = sorted(set(corridor_ids(loc)) & route.corridors)
+                if not matched:
+                    continue
+                approx = True
+        else:
+            matched = sorted(set(corridor_ids(loc)) & route.corridors)
+            if not matched:
+                continue
         cat = categorize(cause)
         emoji, rank = _CAT_META.get(cat, ("📋", 5))
         out.append({
@@ -217,7 +337,9 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
             "reported_dt": dt,
             "minutes_ago": int((now - dt).total_seconds() // 60),
             "matched": matched,
-            "located": lat is not None and lng is not None,
+            "located": located,
+            "approx": approx,
+            "dist_m": None if dist_m is None else int(dist_m),
             "rain": (pprob is not None and pprob >= 20) or (pin is not None and pin > 0.005),
         })
     out.sort(key=lambda r: (r["rank"], r["minutes_ago"]))
@@ -252,7 +374,12 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                        window_min: int, alerts: Optional[Dict] = None,
                        map_url: str = "") -> str:
     e = _html.escape
-    route_line = " → ".join(e(c.title()) for c in route.corridor_labels)
+    if route.corridor_labels:
+        route_line = " → ".join(e(c.title()) for c in route.corridor_labels)
+    else:
+        route_line = "your drawn route"
+    if route.path and len(route.path) >= 2:
+        route_line += ' <span style="color:#b7bcc5;">· section-matched within %d m of your line</span>' % route.radius_m
 
     if incidents:
         header_emoji = "🚧"
@@ -278,7 +405,10 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
             loc_txt = inc["location"].title() if inc["location"] else "Unknown location"
             on_roads = ", ".join(c.title() for c in inc["matched"])
             badges = ""
-            if not inc["located"]:
+            if inc.get("approx"):
+                badges += (' <span style="font-size:10.5px;color:#b45309;">(not yet located — '
+                           'somewhere on this road, may be outside your section)</span>')
+            elif not inc["located"]:
                 badges += ' <span style="font-size:10.5px;color:#8a919e;">(locating…)</span>'
             if inc["rain"]:
                 badges += ' 🌧️'
@@ -290,7 +420,8 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                 '<span style="float:right;font-weight:600;color:' + ago_color + ';font-size:12.5px;">' +
                 e(_fmt_ago(inc["minutes_ago"])) + '</span></div>'
                 '<div style="font-size:12.5px;color:#5c6470;padding-top:2px;">' + e(loc_txt) + badges + '</div>'
-                '<div style="font-size:11px;color:#8a919e;padding-top:1px;">on ' + e(on_roads) + '</div>'
+                '<div style="font-size:11px;color:#8a919e;padding-top:1px;">on ' + e(on_roads) +
+                ((' · ~%d ft from your line' % (inc["dist_m"] * 3.281)) if inc.get("dist_m") is not None else '') + '</div>'
                 '</td></tr>'
             )
         body = ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + rows_html + '</table>'
@@ -388,7 +519,7 @@ def maybe_send_route_alerts(config, store, session, logger,
     restart can't double-send and a broken mailbox can't spam forever."""
     from lafayette911.utils import log_event
 
-    rcfg = route_cfg or load_route_config()
+    rcfg = route_cfg or load_route_config(store)
     if not rcfg.enabled or not rcfg.routes:
         return 0
     cfg = digest_cfg or load_digest_config()
