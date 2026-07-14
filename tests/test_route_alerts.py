@@ -127,6 +127,34 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+    def test_drawn_path_skips_unlocated_whole_roads(self):
+        now = datetime.now().replace(microsecond=0)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            conn = sqlite3.connect(db)
+            conn.execute(
+                """CREATE TABLE incidents (incident_number TEXT PRIMARY KEY, location TEXT, cause TEXT,
+                reported TEXT, assisting TEXT, latitude REAL, longitude REAL, created_at TEXT,
+                weather_precip_prob REAL, weather_precip_in REAL)"""
+            )
+            rep = now.strftime("%m/%d/%Y %I:%M %p")
+            rows = [
+                ("R1", "3500 AMBASSADOR CAFFERY PKWY", "ACCIDENT", rep, "LPD", 30.2, -92.0, "", None, None),
+                ("R2", "KALISTE SALOOM RD", "ROAD HAZARD", rep, "LPD", None, None, "", None, None),
+            ]
+            conn.executemany("INSERT INTO incidents VALUES (%s)" % ",".join("?" * 10), rows)
+            conn.commit()
+            conn.close()
+
+            route = Route(
+                index=1, name="Drawn only", corridors=set(), corridor_labels=[],
+                depart_minutes=7 * 60, days={0, 1, 2, 3, 4},
+                path=[(30.199, -92.001), (30.201, -91.999)], radius_m=250,
+            )
+            found = find_route_incidents(db, route, window_min=90, now=now)
+
+        self.assertEqual([f["location"] for f in found], ["3500 AMBASSADOR CAFFERY PKWY"])
+
 class RenderTests(unittest.TestCase):
     def test_incident_email(self):
         now = datetime.now().replace(microsecond=0)
@@ -198,6 +226,23 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(n1, 1)
         self.assertEqual(n2, 0)          # deduped for the day
         self.assertEqual(len(sent), 1)
+
+
+    def test_sends_scheduled_email_when_route_has_no_incidents(self):
+        now = datetime(2026, 7, 13, 7, 12)
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, now)
+            cfg = self._cfg_at()
+            cfg.window_min = 5
+            n = maybe_send_route_alerts(_Cfg(db), _FakeStore(), None, None,
+                                        route_cfg=cfg, digest_cfg=_digest_cfg(),
+                                        send=lambda c, h, s: sent.append((h, s)), now=now)
+        self.assertEqual(n, 1)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("route clear", sent[0][1])
+        self.assertIn("Your route looks clear", sent[0][0])
 
     def test_outside_window_and_wrong_day(self):
         with tempfile.TemporaryDirectory() as tmp:
