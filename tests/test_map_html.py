@@ -45,6 +45,14 @@ class MapTemplateTests(unittest.TestCase):
         self.assertEqual(html.count("{"), html.count("}"))
         self.assertEqual(html.count("("), html.count(")"))
 
+
+    def test_route_builder_does_not_emit_corridors_for_drawn_paths(self):
+        html = render_map_html(30.2241, -92.0198, "traffic_data.js")
+        self.assertIn("A drawn route is section-precise by PATH", html)
+        self.assertIn("if (roadSet.length && rbPath.length < 2)", html)
+        self.assertNotIn("id=\"rbRadius\"", html)
+        self.assertNotIn("_RADIUS_M=", html)
+
     def test_create_map_from_db_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "incident_index.sqlite")

@@ -81,11 +81,12 @@ class Route:
     corridor_labels: List[str]    # display order as entered
     depart_minutes: int           # minutes since local midnight
     days: Set[int]                # weekday ints, 0=Mon … 6=Sun
-    # Optional traced path: [(lat, lng), ...]. When present, LOCATED incidents
-    # match by distance to this line (section-precise) instead of by road name;
-    # corridors then serve only as a fallback for not-yet-geocoded incidents.
+    # Optional traced path: [(lat, lng), ...]. When present, incidents must
+    # have coordinates and match by distance to this line (section-precise)
+    # instead of by road name. Unlocated incidents are skipped because they
+    # cannot be proven to be on the selected road section.
     path: List = field(default_factory=list)
-    radius_m: int = 250
+    radius_m: int = 100
 
 
 @dataclass
@@ -208,9 +209,9 @@ def _route_from_kv(i: int, kv: Dict[str, str]) -> Optional[Route]:
         cids = corridor_ids(label) or ([normalize_corridor(label)] if normalize_corridor(label) else [])
         canon.update(c for c in cids if c)
     try:
-        radius_m = int(str(kv.get("RADIUS_M") or "250").strip() or 250)
+        radius_m = int(str(kv.get("RADIUS_M") or "100").strip() or 100)
     except ValueError:
-        radius_m = 250
+        radius_m = 100
     depart = _parse_hhmm(kv.get("DEPART") or "")
     if depart is None or (not canon and len(path) < 2):
         return None
@@ -279,13 +280,13 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
                          now: Optional[datetime] = None) -> List[Dict]:
     """Current incidents on the route, within the freshness window.
 
-    Section-precise when the route carries a traced ``path``: LOCATED
-    incidents match by distance to the line (within ``route.radius_m``), so
-    an accident five miles down a road you only briefly use does NOT match.
-    Incidents still awaiting geocoding can't be distance-tested, so they fall
-    back to the corridor list and are flagged ``approx`` ("somewhere on this
-    road"). Without a path (roads-only config), everything matches by
-    corridor as before. Sorted by severity, then most-recent first.
+    Section-precise when the route carries a traced ``path``: incidents must
+    be geocoded and match by distance to the line (within ``route.radius_m``),
+    so an accident five miles down a road you only briefly use does NOT match.
+    Incidents still awaiting geocoding can't be distance-tested, so drawn-path
+    routes skip them rather than falling back to whole-road corridor matching.
+    Without a path (roads-only config), everything matches by corridor as
+    before. Sorted by severity, then most-recent first.
     """
     import sqlite3
 
@@ -309,19 +310,12 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
         approx = False
         dist_m = None
         if route.path and len(route.path) >= 2:
-            if located:
-                dist_m = dist_to_path_m(float(lat), float(lng), route.path)
-                if dist_m > route.radius_m:
-                    continue
-                matched = sorted(set(corridor_ids(loc)) & route.corridors) or corridor_ids(loc)[:1]
-            else:
-                # No coordinates yet → distance test impossible; corridor
-                # fallback keeps a brand-new on-road accident visible, flagged
-                # as approximate.
-                matched = sorted(set(corridor_ids(loc)) & route.corridors)
-                if not matched:
-                    continue
-                approx = True
+            if not located:
+                continue
+            dist_m = dist_to_path_m(float(lat), float(lng), route.path)
+            if dist_m > route.radius_m:
+                continue
+            matched = sorted(set(corridor_ids(loc)) & route.corridors) or corridor_ids(loc)[:1]
         else:
             matched = sorted(set(corridor_ids(loc)) & route.corridors)
             if not matched:
@@ -379,7 +373,7 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
     else:
         route_line = "your drawn route"
     if route.path and len(route.path) >= 2:
-        route_line += ' <span style="color:#b7bcc5;">· section-matched within %d m of your line</span>' % route.radius_m
+        route_line += ' <span style="color:#b7bcc5;">· section-matched on your drawn route</span>'
 
     if incidents:
         header_emoji = "🚧"

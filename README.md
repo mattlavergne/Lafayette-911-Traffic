@@ -269,12 +269,11 @@ body line `LAF911_ROUTE_1_DELETE=true`. Only messages **from the account
 itself** with `LAF911` in the subject are honored; everything else is
 ignored.
 
-**Section-precise matching.** With a drawn route, located incidents match by
-distance to your line (default 150 m, choose 100/150/250/400 in the builder) —
-an accident five miles down a road you only briefly touch does **not**
-alert. Incidents still awaiting geocoding can't be distance-tested, so they
-fall back to the roads your line touches and are flagged *"not yet located —
-may be outside your section"*.
+**Section-precise matching.** With a drawn route, located incidents match the route you selected — an
+accident five miles down a road you only briefly touch does **not** alert. Generated emails for drawn routes use `LAF911_ROUTE_<n>_PATH` as the source of truth and do not include a `CORRIDORS` whole-road list.
+Incidents still awaiting geocoding can't be distance-tested, so drawn routes skip
+them rather than using whole-road fallback. You still get the scheduled email when
+there are no matching incidents — it just says the route looks clear.
 
 **What it uses — and doesn't.** There is no free, keyless source of
 Google/Waze-style live traffic *speed* data. This matches the actual 911
