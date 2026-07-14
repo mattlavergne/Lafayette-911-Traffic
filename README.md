@@ -254,10 +254,14 @@ on the exact stretches of road you drive (plus any active NWS alert).
 Different routes for the drive in and home, each on its own schedule.
 
 **Zero Pi configuration.** If the daily digest already works, there is
-nothing to set up on the Pi. Open the map, tap the **route icon**, draw the
-sections you actually drive (each tap adds a point), pick departure time and
-days, then tap **"Email this route to your Pi"** — send that email **from and
-to the same Gmail account the collector uses**. The service checks its own
+nothing to set up on the Pi. Open the map, tap the **route icon**, and tap a
+few stops along your drive — the line **snaps to the actual roads between
+taps** (via the free [OSRM](https://project-osrm.org/) router; curves and
+turns included, so side roads you merely cross never join the route; straight
+lines are used if the router is unreachable). Pick departure time and days,
+then tap **"Email this route to your Pi"** — the builder can remember your
+collector's Gmail on your device so the compose window opens pre-addressed;
+send it **from and to the same Gmail account the collector uses**. The service checks its own
 mailbox every cycle (a Gmail App Password works for IMAP just like SMTP),
 saves the route into SQLite, and replies "route saved" within a few minutes.
 Replace a route by sending a new email for the same slot; remove one with a
@@ -266,7 +270,7 @@ itself** with `LAF911` in the subject are honored; everything else is
 ignored.
 
 **Section-precise matching.** With a drawn route, located incidents match by
-distance to your line (default 250 m, choose 150/250/400 in the builder) —
+distance to your line (default 150 m, choose 100/150/250/400 in the builder) —
 an accident five miles down a road you only briefly touch does **not**
 alert. Incidents still awaiting geocoding can't be distance-tested, so they
 fall back to the roads your line touches and are flagged *"not yet located —

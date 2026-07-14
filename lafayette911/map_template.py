@@ -1372,11 +1372,12 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
     <label class="rb-field">Your route — the sections you actually drive</label>
     <button class="rb-draw" id="rbDraw" type="button">✏️ Draw route on the map</button>
-    <div class="facet-note" id="rbPathStatus" aria-live="polite">No route drawn yet. Tap along your route
-    (each tap adds a point); only incidents within the match distance of your line will alert.</div>
+    <div class="facet-note" id="rbPathStatus" aria-live="polite">No route drawn yet. Tap a few stops along
+    your drive — the line <strong>snaps to the actual roads</strong> between taps (curves and turns included),
+    so side roads you merely cross never join the route. Only incidents close to that snapped line will alert.</div>
     <div class="rb-row" style="margin-top:8px;">
       <div><label class="rb-field" for="rbRadius">Match distance</label>
-        <select class="rb-select" id="rbRadius"><option value="150">150 m — tight</option><option value="250" selected>250 m — normal</option><option value="400">400 m — loose</option></select></div>
+        <select class="rb-select" id="rbRadius"><option value="100">100 m — strict</option><option value="150" selected>150 m — tight</option><option value="250">250 m — normal</option><option value="400">400 m — loose</option></select></div>
       <div></div>
     </div>
     <label class="rb-field" for="rbRoad">Extra roads (optional — whole-road matching)</label>
@@ -1386,12 +1387,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
     <datalist id="rbRoadList"></datalist>
     <div class="rb-roads" id="rbRoads" aria-live="polite"></div>
+    <label class="rb-field" for="rbPiEmail">Your collector&#39;s Gmail (optional — remembered only on this device)</label>
+    <input class="rb-input" id="rbPiEmail" type="email" placeholder="yourname@gmail.com" autocomplete="off">
     <a class="rb-mail" id="rbMail" href="#" rel="noopener">📧 Email this route to your Pi</a>
     <button class="mini-clear rb-copy" id="rbCopy" type="button">Copy instead</button>
     <p class="facet-note">Send it <strong>from and to the same Gmail address</strong> the collector uses —
     it only trusts messages from itself. You&#39;ll get a &ldquo;route saved&rdquo; reply within a few
     minutes. Repeat per slot (to-work and home can differ); to remove one, email
-    <code>LAF911_ROUTE_1_DELETE=true</code>.</p>
+    <code>LAF911_ROUTE_1_DELETE=true</code>. While drawing, your tapped points are sent to the public
+    <a href="https://project-osrm.org/" target="_blank" rel="noopener noreferrer">OSRM</a> router to snap the
+    line to real roads — the only time this page sends anything, and only while you draw.</p>
     <div class="rb-out" id="rbOut" aria-live="polite"></div>
   </div>
 </div>
@@ -1422,7 +1427,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     (unpkg), weather/alerts (api.weather.gov), and the site host (GitHub Pages) — and those providers,
     like any web host, may keep standard technical access logs. Links out to Google Maps, Street View,
     and Waze open only when you tap them. The locate button uses your device's location only inside
-    your browser to move the map — it is never transmitted or stored.</p>
+    your browser to move the map — it is never transmitted or stored. If you draw a commute route in the
+    route builder, the points you tap are sent to the public OSRM demo router
+    (router.project-osrm.org) to snap the line to real roads — only while drawing, never otherwise.</p>
     <h3>Licenses</h3>
     <p>Original code is MIT-licensed
     (<a href="https://github.com/mattlavergne/Lafayette-911-Traffic" target="_blank" rel="noopener noreferrer">source on GitHub</a>).
@@ -4873,20 +4880,84 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.routeModal.querySelector("#rbOut").textContent = out;
     els.routeModal.__config = out;
     const mail = els.routeModal.querySelector("#rbMail");
-    mail.href = "mailto:?subject=" + encodeURIComponent("LAF911 route") +
+    const piAddr = (els.routeModal.querySelector("#rbPiEmail").value || "").trim();
+    mail.href = "mailto:" + piAddr + "?subject=" + encodeURIComponent("LAF911 route") +
       "&body=" + encodeURIComponent(out);
   }
 
   /* draw mode: modal hides, a floating pill guides the tracing */
+  // Road snapping: each tap routes ALONG the real road network from the
+  // previous stop (via the public OSRM demo router), so the line follows
+  // curves and turns exactly and never sweeps across side roads. Falls back
+  // to a straight segment when the router is unreachable.
+  let rbAnchors = [];      // the user's tapped stops
+  let rbLegs = [];         // snapped geometry per leg
+  let rbBusy = false;      // one routing request at a time keeps it coherent
+  let rbSnapWarned = false;
+
+  function rbRebuildPath() {
+    rbPath = [];
+    for (let i = 0; i < rbLegs.length; i++) {
+      const leg = rbLegs[i];
+      for (let j = 0; j < leg.length; j++) {
+        if (rbPath.length && j === 0) continue;   // legs share their joint
+        rbPath.push(leg[j]);
+      }
+    }
+    rbUpdateLine();
+    rbSetPill();
+  }
+
+  function rbSnapLeg(from, to, cb) {
+    const url = "https://router.project-osrm.org/route/v1/driving/" +
+      from[1].toFixed(6) + "," + from[0].toFixed(6) + ";" +
+      to[1].toFixed(6) + "," + to[0].toFixed(6) +
+      "?overview=full&geometries=geojson&steps=false&alternatives=false";
+    let finished = false;
+    function fin(coords) { if (!finished) { finished = true; cb(coords); } }
+    try {
+      if (typeof fetch !== "function") { fin(null); return; }
+      const timer = setTimeout(function () { fin(null); }, 6000);
+      fetch(url).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+        clearTimeout(timer);
+        const g = j && j.routes && j.routes[0] && j.routes[0].geometry && j.routes[0].geometry.coordinates;
+        fin(g && g.length >= 2 ? g.map(function (c) { return [c[1], c[0]]; }) : null);
+      }).catch(function () { clearTimeout(timer); fin(null); });
+    } catch (e) { fin(null); }
+  }
+
+  // Douglas-Peucker: OSRM geometry is dense; ~10 m tolerance keeps the
+  // emailed config small without visibly changing the line.
+  function rbSimplify(path, tolM) {
+    if (path.length <= 2) return path.slice();
+    const keep = new Array(path.length).fill(false);
+    keep[0] = keep[path.length - 1] = true;
+    const stack = [[0, path.length - 1]];
+    while (stack.length) {
+      const seg = stack.pop();
+      let worst = -1, worstD = tolM;
+      for (let i = seg[0] + 1; i < seg[1]; i++) {
+        const d = rbPtSegDistM(path[i][0], path[i][1], path[seg[0]], path[seg[1]]);
+        if (d > worstD) { worstD = d; worst = i; }
+      }
+      if (worst !== -1) { keep[worst] = true; stack.push([seg[0], worst], [worst, seg[1]]); }
+    }
+    return path.filter(function (_, i) { return keep[i]; });
+  }
+
   function rbSetPill() {
-    $("rbPillText").textContent = rbPath.length === 0
-      ? "Tap the map along your route"
-      : rbPath.length + " point" + (rbPath.length === 1 ? "" : "s") + " — keep tapping, then Done";
+    $("rbPillText").textContent = rbBusy ? "Snapping to roads…" :
+      rbAnchors.length === 0 ? "Tap the map along your route" :
+      rbAnchors.length + " stop" + (rbAnchors.length === 1 ? "" : "s") + " — keep tapping, then Done";
   }
   function rbStartDraw() {
     if (!map) { toast("Map unavailable — can't draw"); return; }
     rbDrawing = true;
     rbPath = [];
+    rbAnchors = [];
+    rbLegs = [];
+    rbBusy = false;
+    rbSnapWarned = false;
     rbAutoCorridors = [];
     rbUpdateLine();
     els.routeModal.classList.remove("open");
@@ -4899,20 +4970,55 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     $("rbPill").classList.remove("on");
     if (!save || rbPath.length < 2) {
       rbPath = [];
+      rbAnchors = [];
+      rbLegs = [];
       rbAutoCorridors = [];
       rbUpdateLine();
       if (save) toast("Need at least 2 points — route not saved");
     } else {
-      rbAutoCorridors = rbDeriveCorridors(parseInt(els.routeModal.querySelector("#rbRadius").value || "250", 10));
-      toast("Route captured — " + rbPath.length + " points");
+      rbPath = rbSimplify(rbPath, 10);
+      rbUpdateLine();
+      rbAutoCorridors = rbDeriveCorridors(parseInt(els.routeModal.querySelector("#rbRadius").value || "150", 10));
+      toast("Route captured — " + rbPath.length + " points along the roads");
     }
     els.routeModal.classList.add("open");
     rbRender();
   }
   function rbMapClick(latlng) {
-    rbPath.push([latlng.lat, latlng.lng]);
-    rbUpdateLine();
+    if (rbBusy) return;   // wait for the current leg to snap
+    const pt = [latlng.lat, latlng.lng];
+    if (!rbAnchors.length) {
+      rbAnchors.push(pt);
+      rbLegs.push([pt]);
+      rbRebuildPath();
+      return;
+    }
+    const from = rbAnchors[rbAnchors.length - 1];
+    rbBusy = true;
     rbSetPill();
+    rbSnapLeg(from, pt, function (coords) {
+      rbBusy = false;
+      if (!rbDrawing) return;   // cancelled while the request was in flight
+      if (coords) {
+        // The router snaps both ends onto the road; adopt its endpoints so
+        // the next leg starts exactly on the roadway (and the very first
+        // tap's off-road stub is replaced too).
+        if (rbLegs.length === 1 && rbLegs[0].length === 1) {
+          rbLegs[0] = [coords[0]];
+          rbAnchors[0] = coords[0];
+        }
+        rbAnchors.push(coords[coords.length - 1]);
+        rbLegs.push(coords);
+      } else {
+        rbAnchors.push(pt);
+        rbLegs.push([from, pt]);
+        if (!rbSnapWarned) {
+          rbSnapWarned = true;
+          toast("Road snapping unavailable — using straight lines");
+        }
+      }
+      rbRebuildPath();
+    });
   }
   function rbAdd() {
     const input = els.routeModal.querySelector("#rbRoad");
@@ -4942,6 +5048,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function openRoute() {
     routePrevFocus = document.activeElement;
     rbFillRoadSuggestions();
+    try {
+      const saved = localStorage.getItem("laf911_pi_email");
+      if (saved) els.routeModal.querySelector("#rbPiEmail").value = saved;
+    } catch (e) {}
     rbRender();
     els.routeModal.classList.add("open");
     els.routeModal.setAttribute("aria-hidden", "false");
@@ -5070,7 +5180,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (rbPath.length >= 2) rbAutoCorridors = rbDeriveCorridors(parseInt(this.value || "250", 10));
       rbRender();
     });
-    $("rbUndo").addEventListener("click", function () { rbPath.pop(); rbUpdateLine(); rbSetPill(); });
+    $("rbUndo").addEventListener("click", function () {
+      if (rbBusy) return;
+      rbAnchors.pop();
+      rbLegs.pop();
+      rbRebuildPath();
+    });
+    els.routeModal.querySelector("#rbPiEmail").addEventListener("input", function () {
+      try { localStorage.setItem("laf911_pi_email", this.value.trim()); } catch (e) {}
+      rbRender();
+    });
     $("rbCancel").addEventListener("click", function () { rbFinishDraw(false); });
     $("rbDone").addEventListener("click", function () { rbFinishDraw(true); });
     els.routeModal.querySelector("#rbRoad").addEventListener("keydown", function (e) {
