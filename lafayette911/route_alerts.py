@@ -454,7 +454,9 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
     __BODY__
     __MAP_BTN__
     <div style="font-size:10.5px;color:#8a919e;text-align:center;line-height:1.5;padding-top:12px;">
-      Personal commute alert from your Raspberry Pi. Unofficial — not affiliated with any agency.<br>
+      Personal commute alert from your Raspberry Pi. To change or delete this route, use the
+      command reference in any "route settings saved" email (or re-draw it in the map app).<br>
+      Unofficial — not affiliated with any agency.<br>
       Not for navigation or emergencies. In an emergency, call 911.
     </div>
   </td></tr>

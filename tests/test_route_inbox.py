@@ -201,6 +201,28 @@ class PollTests(unittest.TestCase):
         self.assertIn("route settings saved", sent[0][0])
         self.assertIn("To work", sent[0][1])
 
+    def test_confirmation_escapes_html_and_includes_command_reference(self):
+        """The route NAME comes from an email body; even though only the
+        owner can send here, it must never land in the confirmation HTML
+        unescaped. And every confirmation carries the full command syntax."""
+        import logging
+        store = _FakeStore()
+        sent = []
+        msgs = [{"from": "me@gmail.com", "subject": "LAF911 route",
+                 "body": ("LAF911_ROUTE_1_NAME=<script>alert(1)</script>\n"
+                          "LAF911_ROUTE_1_CORRIDORS=Pinhook Rd\n"
+                          "LAF911_ROUTE_1_DEPART=07:20")}]
+        n = poll_route_inbox(store, logging.getLogger("t"), digest_cfg=_cfg(),
+                             fetch=lambda cfg: msgs, send=lambda c, h, s: sent.append(h))
+        self.assertEqual(n, 1)
+        html = sent[0]
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+        # Full command reference present in every confirmation.
+        for needle in ("Command reference", "_NAME=", "_PATH=", "_RADIUS_M=",
+                       "_CORRIDORS=", "_DEPART=", "_DAYS=", "_DELETE=true"):
+            self.assertIn(needle, html)
+
     def test_never_raises_and_backs_off(self):
         import logging
         store = _FakeStore()

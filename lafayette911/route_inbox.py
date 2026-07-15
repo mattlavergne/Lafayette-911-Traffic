@@ -32,6 +32,7 @@ Safety rules:
 - Polling failures back off to hourly and never touch the collection loop.
 """
 
+import html as _html
 import os
 import re
 import time
@@ -46,6 +47,29 @@ from lafayette911.route_alerts import (
 )
 
 _KV_LINE = re.compile(r"^LAF911_ROUTE_(\d{1,2})_([A-Z_]+)\s*=\s*(.*)$")
+
+# Every confirmation email carries the full command syntax, so the owner
+# never has to dig for it when editing a route from their phone.
+COMMANDS_REFERENCE_HTML = (
+    '<div style="background:#f6f7f9;border:1px solid #e7e9ee;border-radius:12px;'
+    'padding:12px 14px;margin-top:14px;">'
+    '<div style="font-size:11px;font-weight:800;color:#8a919e;text-transform:uppercase;'
+    'letter-spacing:0.06em;padding-bottom:6px;">📖 Command reference</div>'
+    '<div style="font-size:12px;color:#5c6470;padding-bottom:8px;">Email these lines to this '
+    'address (subject must contain <b>LAF911</b>, and it only listens to messages from itself). '
+    'Slots run 1–20; to-work and home are usually 1 and 2. The easiest way to build the '
+    'PATH line is the route icon in the map app.</div>'
+    '<pre style="margin:0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;'
+    'line-height:1.7;color:#171a21;white-space:pre-wrap;">'
+    'LAF911_ROUTE_&lt;n&gt;_NAME=To work            display name for the alert\n'
+    'LAF911_ROUTE_&lt;n&gt;_PATH=lat,lng; lat,lng   drawn route (section-precise)\n'
+    'LAF911_ROUTE_&lt;n&gt;_RADIUS_M=100            match distance around the path (m)\n'
+    'LAF911_ROUTE_&lt;n&gt;_CORRIDORS=Road A | Road B   whole-road matching (no path)\n'
+    'LAF911_ROUTE_&lt;n&gt;_DEPART=07:20            departure, 24-hour local time\n'
+    'LAF911_ROUTE_&lt;n&gt;_DAYS=mon-fri            or: daily, weekends, mon,wed,fri\n'
+    'LAF911_ROUTE_&lt;n&gt;_DELETE=true             remove slot n entirely</pre>'
+    '</div>'
+)
 
 
 def _derive_imap_host(smtp_host: str) -> str:
@@ -226,13 +250,16 @@ def poll_route_inbox(store, logger, digest_cfg: Optional[DigestConfig] = None,
             except Exception:
                 pass
             # Confirmation reply so you know it took — sent to the same box.
+            # Summaries include the route NAME from the email; escape it even
+            # though only the owner can send here (defense in depth).
             try:
+                items = "".join("<li>%s</li>" % _html.escape(s) for s in summaries)
                 body_html = ("<html><body style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;"
                              "font-size:14px;color:#171a21;\"><p>🧭 <b>Route settings received.</b></p><ul>"
-                             + "".join("<li>%s</li>" % s for s in summaries) +
+                             + items +
                              "</ul><p style=\"font-size:12px;color:#8a919e;\">Alerts arrive shortly before each departure. "
-                             "Send a new LAF911 route email anytime to replace a slot, or "
-                             "<code>LAF911_ROUTE_&lt;n&gt;_DELETE=true</code> to remove one.</p></body></html>")
+                             "An email replaces only the slots it mentions.</p>"
+                             + COMMANDS_REFERENCE_HTML + "</body></html>")
                 send(cfg, body_html, "🧭 LAF911: route settings saved")
             except Exception:
                 pass

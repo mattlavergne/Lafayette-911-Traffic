@@ -1358,6 +1358,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     <strong>email it to the same Gmail account your collector uses</strong> — it spots the message, saves
     the route, and replies to confirm. Nothing to configure on the Pi, and nothing you enter here is
     sent anywhere by this page.</p>
+    <div id="rbSavedWrap" style="display:none">
+      <label class="rb-field">My saved routes (stored only in this browser)</label>
+      <div class="rb-roads" id="rbSaved" aria-live="polite"></div>
+      <div class="facet-note">Tap <b>map</b> to see a route on the map — it renders only on this device
+      and is never uploaded. Removing a route here only forgets it on this device; to remove it from the
+      Pi, email <code>LAF911_ROUTE_&lt;n&gt;_DELETE=true</code>.</div>
+    </div>
     <div class="rb-row">
       <div><label class="rb-field" for="rbSlot">Route slot</label>
         <select class="rb-select" id="rbSlot"><option value="1">1 (e.g. to work)</option><option value="2">2 (e.g. home)</option><option value="3">3</option></select></div>
@@ -5009,6 +5016,86 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     dl.appendChild(frag);
     dl.__filled = true;
   }
+  /* Device-local saved routes: captured when you email/copy a route config.
+     Rendered on the map only in THIS browser — never uploaded, never part of
+     the public page's data. */
+  let rbSavedLayers = {};
+  const RB_ROUTE_COLORS = ["#7c3aed", "#0d9488", "#ea580c", "#db2777"];
+
+  function rbLoadSaved() {
+    try { return JSON.parse(localStorage.getItem("laf911_saved_routes") || "{}") || {}; } catch (e) { return {}; }
+  }
+  function rbStoreSaved(obj) {
+    try { localStorage.setItem("laf911_saved_routes", JSON.stringify(obj)); } catch (e) {}
+  }
+  function rbSaveCurrent() {
+    if (rbPath.length < 2) return;
+    const slot = els.routeModal.querySelector("#rbSlot").value;
+    const saved = rbLoadSaved();
+    saved[slot] = {
+      name: (els.routeModal.querySelector("#rbName").value || "Route " + slot).trim(),
+      depart: els.routeModal.querySelector("#rbDepart").value || "",
+      days: els.routeModal.querySelector("#rbDays").value || "",
+      path: rbPath.map(function (pt) { return [Number(pt[0].toFixed(5)), Number(pt[1].toFixed(5))]; }),
+      ts: Date.now()
+    };
+    rbStoreSaved(saved);
+    rbRenderSaved();
+  }
+  function rbToggleShow(slot) {
+    if (rbSavedLayers[slot]) {
+      try { map.removeLayer(rbSavedLayers[slot]); } catch (e) {}
+      delete rbSavedLayers[slot];
+    } else {
+      const r = rbLoadSaved()[slot];
+      if (!r || !r.path || r.path.length < 2 || !map) return;
+      rbSavedLayers[slot] = L.polyline(r.path, {
+        color: RB_ROUTE_COLORS[(parseInt(slot, 10) - 1 || 0) % RB_ROUTE_COLORS.length],
+        weight: 5, opacity: 0.8
+      }).addTo(map);
+      try { map.fitBounds(rbSavedLayers[slot].getBounds(), { padding: [60, 60] }); } catch (e) {}
+    }
+    rbRenderSaved();
+  }
+  function rbRenderSaved() {
+    const wrap = $("rbSavedWrap"), list = $("rbSaved");
+    const saved = rbLoadSaved();
+    const slots = Object.keys(saved).sort();
+    wrap.style.display = slots.length ? "" : "none";
+    list.innerHTML = "";
+    slots.forEach(function (slot) {
+      const r = saved[slot] || {};
+      const chip = document.createElement("span");
+      chip.className = "rb-road";
+      chip.innerHTML = "<span>" + esc(r.name || ("Route " + slot)) +
+        (r.depart ? " <span style='color:var(--text-3);font-weight:500'>· " + esc(r.depart) + "</span>" : "") + "</span>";
+      const show = document.createElement("button");
+      show.type = "button";
+      show.className = "x";
+      show.style.width = "auto";
+      show.style.fontSize = "10.5px";
+      show.style.padding = "0 6px";
+      show.textContent = rbSavedLayers[slot] ? "hide" : "map";
+      show.setAttribute("aria-label", (rbSavedLayers[slot] ? "Hide " : "Show ") + (r.name || slot) + " on the map");
+      show.addEventListener("click", function () { rbToggleShow(slot); });
+      chip.appendChild(show);
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "x";
+      x.textContent = "\u00d7";
+      x.setAttribute("aria-label", "Forget " + (r.name || slot) + " on this device");
+      x.addEventListener("click", function () {
+        const s2 = rbLoadSaved();
+        delete s2[slot];
+        rbStoreSaved(s2);
+        if (rbSavedLayers[slot]) { try { map.removeLayer(rbSavedLayers[slot]); } catch (e) {} delete rbSavedLayers[slot]; }
+        rbRenderSaved();
+      });
+      chip.appendChild(x);
+      list.appendChild(chip);
+    });
+  }
+
   let routePrevFocus = null;
   function openRoute() {
     routePrevFocus = document.activeElement;
@@ -5017,6 +5104,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       const saved = localStorage.getItem("laf911_pi_email");
       if (saved) els.routeModal.querySelector("#rbPiEmail").value = saved;
     } catch (e) {}
+    rbRenderSaved();
     rbRender();
     els.routeModal.classList.add("open");
     els.routeModal.setAttribute("aria-hidden", "false");
@@ -5159,7 +5247,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     ["#rbSlot", "#rbName", "#rbDepart", "#rbDays"].forEach(function (sel) {
       els.routeModal.querySelector(sel).addEventListener("input", rbRender);
     });
+    els.routeModal.querySelector("#rbMail").addEventListener("click", function () {
+      rbSaveCurrent();   // keep a device-local copy so it can be shown on the map
+    });
     els.routeModal.querySelector("#rbCopy").addEventListener("click", function () {
+      rbSaveCurrent();
       const text = els.routeModal.__config || "";
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(function () { toast("Settings copied"); },
