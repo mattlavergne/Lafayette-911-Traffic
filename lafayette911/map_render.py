@@ -21,7 +21,11 @@ from lafayette911.utils import atomic_write_text
 # Version of the exported traffic_data.js row layout. Bump when a row gains
 # fields so the page (and traffic_meta.json consumers) can tell schemas apart.
 # v3: aggregated TRAFFIC CONTROL rows carry per-day history at index 27.
-DATA_SCHEMA_VERSION = 3
+# v4: every row carries geocode_confidence (27), feed-visible minutes (28),
+#     currently-in-feed flag (29) and observation_count (30); the aggregated
+#     TRAFFIC CONTROL per-day history moves to index 31. The page still reads
+#     v3 files: an Array at index 27 is treated as the old history slot.
+DATA_SCHEMA_VERSION = 4
 
 
 def _write_meta_file(output_datajs: str, incident_count: int) -> None:
@@ -825,6 +829,72 @@ def _safe_int(value):
         return None
 
 
+def _parse_iso_z(value):
+    """Parse the store's UTC timestamps ("2026-07-16T12:34:56Z") or None."""
+    text = _safe_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text.rstrip("Z"), "%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return None
+
+
+def _visible_minutes(first_seen, last_seen):
+    """Minutes an incident stayed visible in the public feed, or None.
+
+    This measures feed visibility only (first sighting → last sighting by
+    our collector) — it is NOT response time or clearance time.
+    """
+    first_dt = _parse_iso_z(first_seen)
+    last_dt = _parse_iso_z(last_seen)
+    if first_dt is None or last_dt is None:
+        return None
+    return max(0, int(round((last_dt - first_dt).total_seconds() / 60.0)))
+
+
+def _load_feed_active_ids(conn) -> set:
+    """Incident ids listed in the most recent successful feed sweep.
+
+    Exact membership (stored by StateStore.touch_feed_observations) rather
+    than timestamp comparison, so "currently in the feed" can never be
+    confused by two sweeps landing in the same second. Empty set when the
+    DB predates the tracking.
+    """
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_meta WHERE key = 'feed_active_ids'"
+        ).fetchone()
+        if not row or not row[0]:
+            return set()
+        ids = json.loads(row[0])
+        return {str(i) for i in ids} if isinstance(ids, list) else set()
+    except Exception:
+        return set()
+
+
+def _ensure_visibility_columns(conn) -> None:
+    """Add the v4 feed-visibility columns to DBs that predate them.
+
+    The StateStore migration normally does this at service startup, but the
+    renderer can be pointed at an older DB copy directly; without the columns
+    the export SELECT would fail and the map would silently render empty.
+    """
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(incidents)").fetchall()}
+        for name, col_type in (
+            ("geocode_confidence", "TEXT"),
+            ("first_seen_at", "TEXT"),
+            ("last_seen_at", "TEXT"),
+            ("observation_count", "INTEGER"),
+        ):
+            if name not in cols:
+                conn.execute(f"ALTER TABLE incidents ADD COLUMN {name} {col_type}")
+        conn.commit()
+    except Exception:
+        pass
+
+
 def _parse_reported(value):
     if value is None:
         return None
@@ -1153,6 +1223,8 @@ def _write_streaming_datajs(
             _stream_jsonjs_header(handle)
             first = True
 
+            _ensure_visibility_columns(conn)
+            active_ids = _load_feed_active_ids(conn)
             cursor = conn.execute(
                 """
                 SELECT location, cause, reported, assisting, incident_number, latitude, longitude, geocode_attempts,
@@ -1161,7 +1233,8 @@ def _write_streaming_datajs(
                        weather_sky_cover_pct, weather_observed_at, weather_source,
                        hour_of_day, day_of_week, is_school_day,
                        nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch,
-                       road_type, created_at, is_holiday
+                       road_type, created_at, is_holiday,
+                       geocode_confidence, first_seen_at, last_seen_at, observation_count
                 FROM incidents
                 """
             )
@@ -1192,6 +1265,10 @@ def _write_streaming_datajs(
                 db_road_type,
                 created_at,
                 is_holiday,
+                geocode_confidence,
+                first_seen_at,
+                last_seen_at,
+                observation_count,
             ) in cursor:
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
@@ -1230,8 +1307,11 @@ def _write_streaming_datajs(
                             "reported_min": None,
                             "reported_max": None,
                             "daily": {},
+                            "active": False,
                         }
                         tc_groups[key] = entry
+                    if str(incident_number or "") in active_ids:
+                        entry["active"] = True
                     entry["lat_sum"] = float(entry["lat_sum"]) + float(lat)
                     entry["lon_sum"] = float(entry["lon_sum"]) + float(lon)
                     entry["count"] = int(entry["count"]) + 1
@@ -1301,6 +1381,13 @@ def _write_streaming_datajs(
                     # canonical corridor ids (index 26) — an intersection
                     # legitimately lists both roads
                     corridor_ids(loc),
+                    # v4 fields — geocode confidence (27), minutes visible in
+                    # the public feed (28, NOT clearance time), currently
+                    # listed in the feed (29), feed checks that listed it (30)
+                    _safe_text(geocode_confidence) or None,
+                    _visible_minutes(first_seen_at, last_seen_at),
+                    1 if str(incident_number or "") in active_ids else 0,
+                    _safe_int(observation_count),
                 ]
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
@@ -1359,7 +1446,11 @@ def _write_streaming_datajs(
                     "",     # created_at
                     None,   # is_holiday
                     corridor_ids(str(entry.get("location") or "")),  # index 26
-                    # index 27: recent per-day history [["YYYY-MM-DD", n], ...]
+                    None,   # geocode_confidence (27): mixed group, not meaningful
+                    None,   # visible_minutes (28): aggregate spans days, not one listing
+                    1 if entry.get("active") else 0,  # any member in current feed (29)
+                    None,   # observation_count (30): per-incident metric
+                    # index 31: recent per-day history [["YYYY-MM-DD", n], ...]
                     # (last 30 active days) so the popup can show the recurrence
                     # pattern without exporting every raw event.
                     sorted(entry.get("daily", {}).items())[-30:],
@@ -1552,6 +1643,42 @@ def _load_geocode_attempts_map(db_path: str) -> dict:
         return {}
 
 
+def _load_feed_visibility_map(db_path: str) -> dict:
+    """{incident_number: [confidence, visible_minutes, currently_active, obs_count]}.
+
+    The CSV archive carries none of the live feed-visibility state, so the
+    CSV render path borrows it from the working store the same way retry
+    state is borrowed. Empty dict when the DB is unavailable — rows then
+    export with the v4 fields null, which the page treats as "not tracked".
+    """
+    if not db_path or not os.path.exists(db_path):
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            _ensure_visibility_columns(conn)
+            active_ids = _load_feed_active_ids(conn)
+            rows = conn.execute(
+                "SELECT incident_number, geocode_confidence, first_seen_at, last_seen_at, observation_count "
+                "FROM incidents"
+            ).fetchall()
+        finally:
+            conn.close()
+        out = {}
+        for num, conf, first_seen, last_seen, obs in rows:
+            if not num:
+                continue
+            out[str(num)] = [
+                _safe_text(conf) or None,
+                _visible_minutes(first_seen, last_seen),
+                1 if str(num) in active_ids else 0,
+                _safe_int(obs),
+            ]
+        return out
+    except Exception:
+        return {}
+
+
 def create_map_from_csv(
     input_csv: str, output_map: str, output_datajs: str, osm_cache_dir: str, db_path: str = ""
 ) -> None:
@@ -1561,7 +1688,8 @@ def create_map_from_csv(
 
     df = _load_dataframe_from_csv(input_csv)
     attempts_map = _load_geocode_attempts_map(db_path)
-    _create_map_from_dataframe(df, output_map, output_datajs, osm_cache_dir, attempts_map)
+    visibility_map = _load_feed_visibility_map(db_path)
+    _create_map_from_dataframe(df, output_map, output_datajs, osm_cache_dir, attempts_map, visibility_map)
 
 
 def create_map_from_db(db_path: str, output_map: str, output_datajs: str, osm_cache_dir: str) -> None:
@@ -1598,7 +1726,7 @@ def backfill_road_types(db_path: str, osm_cache_dir: str) -> int:
 
 def _create_map_from_dataframe(
     df: pd.DataFrame, output_map: str, output_datajs: str, osm_cache_dir: str,
-    attempts_map: Optional[dict] = None,
+    attempts_map: Optional[dict] = None, visibility_map: Optional[dict] = None,
 ) -> None:
     if df.empty:
         _write_text_if_changed(output_datajs, "window.INCIDENTS_DATA=[];window.OSM_INTERSECTIONS_DATA=[];")
@@ -1733,8 +1861,18 @@ def _create_map_from_dataframe(
                 corridor_ids(loc),  # canonical corridor ids (index 26)
             ]
         )
+        # v4 fields (indices 27-30): geocode confidence, minutes visible in
+        # the public feed, currently-in-feed flag, observation count — all
+        # live in the DB, joined here by incident_number. Aggregated TRAFFIC
+        # CONTROL rows have a synthetic id (TC_AGG::…) that never matches,
+        # so they correctly export as untracked.
+        vis = (visibility_map or {}).get(_safe_text(r.get("incident_number")))
+        if vis:
+            incidents[-1].extend(vis)
+        else:
+            incidents[-1].extend([None, None, 0, None])
         # Aggregated TRAFFIC CONTROL rows carry their per-day recurrence
-        # history at index 27 (other rows stay 27 fields long).
+        # history at index 31 (other rows stay 31 fields long).
         if cause_norm == "TRAFFIC CONTROL":
             hist = r.get("tc_history")
             if isinstance(hist, list) and hist:

@@ -241,8 +241,46 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     display: flex; align-items: center; justify-content: center;
     font-weight: 700; font-family: var(--font);
     border: 2.5px solid var(--cat, #2563eb);
-    box-shadow: 0 1px 6px rgba(0,0,0,0.25);
+    /* offset second rim reads as a STACK of incidents, not one big point */
+    box-shadow: 0 1px 6px rgba(0,0,0,0.25),
+                -3px 3px 0 -1.5px var(--panel-solid),
+                -3px 3px 0 0 var(--cat, #2563eb);
   }
+
+  /* corridor detail dialog */
+  .cd-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0 4px 0; }
+  .cd-stat {
+    background: var(--chip); border: 1px solid var(--panel-border);
+    border-radius: var(--radius-sm); padding: 8px 10px;
+  }
+  .cd-stat b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+  .cd-stat span { font-size: 10.5px; color: var(--text-2); }
+  .cd-spot { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 3px 0; border-bottom: 1px dashed var(--panel-border); }
+  .cd-spot:last-child { border-bottom: 0; }
+  .cd-spot b { font-variant-numeric: tabular-nums; }
+  .cd-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+  /* legend dialog samples */
+  .lg-row { display: flex; gap: 10px; align-items: flex-start; margin: 7px 0; font-size: 12px; line-height: 1.4; }
+  .lg-sym { flex: none; width: 34px; display: flex; align-items: center; justify-content: center; padding-top: 2px; }
+  .lg-dot { width: 13px; height: 13px; border-radius: 50%; border: 2.2px solid var(--cat, #2563eb); background: color-mix(in srgb, var(--cat, #2563eb) 45%, transparent); display: inline-block; }
+  .lg-count {
+    width: 22px; height: 22px; border-radius: 999px; background: var(--panel-solid);
+    border: 2.5px solid var(--cat, #2563eb); display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+    box-shadow: -3px 3px 0 -1.5px var(--panel-solid), -3px 3px 0 0 var(--cat, #2563eb);
+  }
+  .lg-cluster { width: 22px; height: 22px; border-radius: 50%; border: 1.8px solid #2563eb; background: rgba(147, 197, 253, 0.45); display: inline-block; }
+  .lg-beacon { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--good); display: inline-block; position: relative; }
+  .lg-beacon::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--good); opacity: 0.4; }
+  .legend-help { color: var(--text-2); }
+  .legend-help .dot { background: var(--text-3); }
+
+  /* data-quality rows (analytics) */
+  .dq-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; padding: 2.5px 0; }
+  .dq-row .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+  .dq-row .lbl { flex: 1; min-width: 0; }
+  .dq-row .n { color: var(--text-3); font-variant-numeric: tabular-nums; }
 
   /* ── Sidebar ──────────────────────────────────────────────────────── */
   #sidebar {
@@ -1130,6 +1168,12 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
               </select>
             </label>
           </div>
+          <div class="row row-checks">
+            <label class="check" title="Hide incidents whose mapped point is only an approximate road match"><input type="checkbox" id="chkExcludeLowConf"> Exclude low-confidence locations</label>
+          </div>
+          <div class="row-note">Hides points placed with only an approximate road match, so hot spots and
+          corridor rankings use trusted locations only. Precomputed all-time layers (hot spots,
+          OSM intersections) are built server-side and unaffected.</div>
         </div>
       </div>
 
@@ -1285,10 +1329,15 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
 
       <div class="chart-block">
-        <div class="chart-title">Top corridors <span class="sub">tap to filter the map</span></div>
+        <div class="chart-title">Top corridors <span class="sub">tap a corridor for details</span></div>
         <div id="corridorList"></div>
         <div class="facet-note">Corridors are normalized from raw locations (house numbers, suffixes and
         direction tags collapse). An incident at an intersection counts toward both roads.</div>
+      </div>
+
+      <div class="chart-block">
+        <div class="chart-title">Data quality <span class="sub" id="dataQualitySub"></span></div>
+        <div id="dataQuality"></div>
       </div>
 
       <div class="section">
@@ -1403,6 +1452,20 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="modal-overlay" id="corridorModal" role="dialog" aria-modal="true" aria-labelledby="corridorTitle" aria-hidden="true">
+  <div class="modal-card">
+    <h2 id="corridorTitle"><span id="corridorTitleText">Corridor</span> <button class="modal-close" id="corridorClose" type="button" aria-label="Close">&times;</button></h2>
+    <div id="corridorBody"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="legendModal" role="dialog" aria-modal="true" aria-labelledby="legendTitle" aria-hidden="true">
+  <div class="modal-card">
+    <h2 id="legendTitle">Map legend <button class="modal-close" id="legendClose" type="button" aria-label="Close">&times;</button></h2>
+    <div id="legendBody"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutTitle" aria-hidden="true">
   <div class="modal-card">
     <h2 id="aboutTitle">About this map <button class="modal-close" id="aboutClose" type="button" aria-label="Close">×</button></h2>
@@ -1468,7 +1531,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         IDX_DOW = 18, IDX_SCHOOL_DAY = 19, IDX_NWS_FLOOD = 20, IDX_NWS_STORM = 21,
         IDX_NWS_TORNADO = 22, IDX_HIGHWAY = 23, IDX_CREATED_AT = 24, IDX_HOLIDAY = 25,
         IDX_CORRIDORS = 26,  // canonical corridor ids (array), absent in old data
-        IDX_TC_HISTORY = 27; // aggregated TRAFFIC CONTROL only: [["YYYY-MM-DD", n], ...]
+        IDX_CONFIDENCE = 27, // v4: geocode confidence string (v3 files carry the old TC-history Array here)
+        IDX_VISIBLE_MIN = 28,// v4: minutes visible in the public feed (NOT response/clearance time)
+        IDX_ACTIVE = 29,     // v4: 1 = listed in the most recent feed check
+        IDX_OBS_COUNT = 30,  // v4: number of feed checks that listed this incident
+        IDX_TC_HISTORY = 31; // aggregated TRAFFIC CONTROL only: [["YYYY-MM-DD", n], ...] (index 27 in v3 files)
 
   const DATAJS_SRC = "__DATAJS_SRC__";
   const REDUCED_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1771,6 +1838,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     chartTrendTitle: $("chartTrendTitle"),
     aboutBtn: $("aboutBtn"), aboutModal: $("aboutModal"), aboutClose: $("aboutClose"),
     routeBtn: $("routeBtn"), routeModal: $("routeModal"), routeClose: $("routeClose"),
+    corridorModal: $("corridorModal"), corridorClose: $("corridorClose"),
+    corridorBody: $("corridorBody"), corridorTitleText: $("corridorTitleText"),
+    legendModal: $("legendModal"), legendClose: $("legendClose"), legendBody: $("legendBody"),
+    dataQuality: $("dataQuality"), dataQualitySub: $("dataQualitySub"),
+    chkExcludeLowConf: $("chkExcludeLowConf"),
     aboutGenerated: $("aboutGenerated"),
     analyticsSummary: $("analyticsSummary"),
     chartHour: $("chartHour"), chartHourSub: $("chartHourSub"),
@@ -1919,6 +1991,48 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       String(row[IDX_CAUSE] || "").trim().toUpperCase() === "TRAFFIC CONTROL";
   }
 
+  // v4 row fields, tolerant of v3 data files: in v3 the aggregated
+  // TRAFFIC CONTROL history Array lived at index 27, so a string there is
+  // v4 confidence and an Array is the old history.
+  function confidenceOf(row) {
+    const v = (row.length > IDX_CONFIDENCE) ? row[IDX_CONFIDENCE] : null;
+    return (typeof v === "string" && v) ? v : null;
+  }
+  function tcHistoryOf(row) {
+    if (row.length > IDX_TC_HISTORY && Array.isArray(row[IDX_TC_HISTORY])) return row[IDX_TC_HISTORY];
+    const legacy = (row.length > IDX_CONFIDENCE) ? row[IDX_CONFIDENCE] : null;
+    return Array.isArray(legacy) ? legacy : null;
+  }
+  function visibleMinutesOf(row) {
+    const v = (row.length > IDX_VISIBLE_MIN) ? row[IDX_VISIBLE_MIN] : null;
+    return (typeof v === "number" && isFinite(v) && v >= 0) ? v : null;
+  }
+  function isInFeedNow(row) {
+    return row.length > IDX_ACTIVE && row[IDX_ACTIVE] === 1;
+  }
+  function obsCountOf(row) {
+    const v = (row.length > IDX_OBS_COUNT) ? row[IDX_OBS_COUNT] : null;
+    return (typeof v === "number" && isFinite(v) && v > 0) ? v : null;
+  }
+  function fmtVisibleMin(min) {
+    if (min < 5) return "a few minutes";
+    if (min < 90) return "~" + min + " min";
+    const h = Math.floor(min / 60), m = min % 60;
+    if (min < 1440) return "~" + h + " h" + (m >= 10 ? " " + m + " min" : "");
+    const d = Math.round(min / 1440);
+    return "~" + d + " day" + (d === 1 ? "" : "s");
+  }
+
+  // How each mapped point was placed, mirroring the collector's labels.
+  const CONFIDENCE_LEVELS = {
+    precise:      { label: "Precise address",           color: "#16a34a", desc: "Matched to an exact address or building." },
+    intersection: { label: "Intersection",              color: "#0d9488", desc: "Pinned to a named road crossing." },
+    place:        { label: "Known place",               color: "#2563eb", desc: "A named establishment — school, business, park…" },
+    cached:       { label: "Reused earlier geocode",    color: "#9333ea", desc: "Same address as an earlier incident, so its already-validated coordinates were reused." },
+    approximate:  { label: "Approximate road location", color: "#ca8a04", desc: "Only a general road match — treat the exact spot with caution." }
+  };
+  const CONFIDENCE_ORDER = ["precise", "intersection", "place", "cached", "approximate"];
+
   function hasWeatherData(row) {
     return (
       weatherNumber(row, IDX_TEMP_F) != null || weatherNumber(row, IDX_PRECIP_PROB) != null ||
@@ -1946,7 +2060,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       // Recurrence pattern: last 14 calendar days from the exported per-day
       // history, as a tiny sparkline (routine school traffic control shows
       // up as a school-day comb).
-      const hist = (row.length > IDX_TC_HISTORY && Array.isArray(row[IDX_TC_HISTORY])) ? row[IDX_TC_HISTORY] : null;
+      const hist = tcHistoryOf(row);
       if (hist && hist.length) {
         const byDay = {};
         let histMax = 1;
@@ -1971,6 +2085,28 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     const hw = normalizeText(row.length > IDX_HIGHWAY ? row[IDX_HIGHWAY] : "");
     if (hw) rows.push("<div>Road class: <b>" + esc(hw.replace(/_/g, " ")) + "</b></div>");
+
+    const conf = confidenceOf(row);
+    if (conf && CONFIDENCE_LEVELS[conf]) {
+      const cl = CONFIDENCE_LEVELS[conf];
+      rows.push("<div title='" + esc(cl.desc) + "'>Location precision: <b style='color:" + cl.color + "'>" + esc(cl.label) + "</b></div>");
+    }
+
+    // Feed visibility: how long this incident stayed listed on the public
+    // 911 feed. Labeled explicitly, because it is NOT response time and NOT
+    // clearance time — only how long our collector kept seeing it.
+    const visMin = visibleMinutesOf(row);
+    const obsN = obsCountOf(row);
+    const feedNote = "<div style='font-size:10px;color:var(--text-3)'>Time visible in the public feed — not response or clearance time.</div>";
+    const checksTxt = obsN ? " <span style='color:var(--text-3)'>(" + obsN + " feed check" + (obsN === 1 ? "" : "s") + ")</span>" : "";
+    if (isInFeedNow(row)) {
+      rows.push("<div>In the public feed <b style='color:var(--good)'>now</b>" +
+        (visMin != null ? " · visible for approximately <b>" + esc(fmtVisibleMin(visMin)) + "</b> so far" : "") +
+        checksTxt + "</div>" + feedNote);
+    } else if (visMin != null && !isRoutineTC(row)) {
+      rows.push("<div>Was visible in the public feed for approximately <b>" + esc(fmtVisibleMin(visMin)) + "</b>" +
+        checksTxt + "</div>" + feedNote);
+    }
 
     const ctx = [];
     const dowNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -2205,6 +2341,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   function matchesCorridor(row, cid) {
     if (!cid) return true;
     return corridorsOf(row).indexOf(cid) !== -1;
+  }
+
+  // Optional data-quality gate: hide points whose geocode was only an
+  // approximate road match, so hot spots and corridor rankings can be
+  // computed from trusted locations only.
+  function matchesConfidence(row, excludeLowConf) {
+    if (!excludeLowConf) return true;
+    return confidenceOf(row) !== "approximate";
   }
 
   // Local hour of a row: prefer the stored enrichment hour, fall back to the
@@ -2559,6 +2703,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       schoolDay: !!els.chkSchoolDay.checked,
       dowValue: (els.dowSelect.value || "all").trim(),
       roadType: (els.roadTypeSelect.value || "any").trim(),
+      excludeLowConf: !!els.chkExcludeLowConf.checked,
       roadSearch: (els.roadSearch.value || "").trim(),
       chkFlood: !!els.chkFloodWarning.checked,
       chkStorm: !!els.chkThunderstormWarning.checked,
@@ -2583,6 +2728,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (f.timeBlock !== "all") n++;
     if (f.dowValue !== "all") n++;
     if (f.roadType !== "any") n++;
+    if (f.excludeLowConf) n++;
     if (f.rushHour) n++;
     if (f.schoolDay) n++;
     if (f.weatherOnly) n++;
@@ -2627,6 +2773,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (!matchesSchoolDay(row, f.schoolDay)) continue;
       if (!(x && x.dow) && !matchesDow(row, f.dowValue)) continue;
       if (!matchesRoadType(row, f.roadType)) continue;
+      if (!matchesConfidence(row, f.excludeLowConf)) continue;
       if (!matchesRoadSearch(row, f.roadSearch)) continue;
       if (!(x && x.corridor) && !matchesCorridor(row, f.corridorId)) continue;
       if (!matchesNwsAlerts(row, f)) continue;
@@ -2663,7 +2810,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   const HASH_CHECKS = [
     ["rush", "chkRushHour"], ["school", "chkSchoolDay"], ["wo", "chkWeatherOnly"],
     ["flood", "chkFloodWarning"], ["storm", "chkThunderstormWarning"], ["tor", "chkTornadoWatch"],
-    ["hol", "chkHoliday"], ["heat", "chkHeat"], ["hot", "chkHotSpots"]
+    ["hol", "chkHoliday"], ["heat", "chkHeat"], ["hot", "chkHotSpots"],
+    ["xlc", "chkExcludeLowConf"]
   ];
 
   let hashApplying = false;
@@ -2912,6 +3060,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       });
       els.legendChips.appendChild(btn);
     }
+    // Trailing "Legend" chip: the one obvious place that explains every
+    // color, shape and badge on the map.
+    const helpBtn = document.createElement("button");
+    helpBtn.type = "button";
+    helpBtn.className = "legend-chip legend-help";
+    helpBtn.title = "What do the marker colors, shapes and badges mean?";
+    helpBtn.setAttribute("aria-haspopup", "dialog");
+    helpBtn.innerHTML = "<span class='dot'></span>Legend";
+    helpBtn.addEventListener("click", openLegend);
+    els.legendChips.appendChild(helpBtn);
   }
 
   /* ═══════════════════════ charts (inline SVG) ═══════════════════════ */
@@ -3014,6 +3172,62 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       svg: "<svg class='chart-svg' viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Incidents by hour and day of week'>" + cells + hourLabels + "</svg>",
       peak: max > 0 ? { day: dayNames[peakR], hour: fmtHour(peakC), count: max } : null
     };
+  }
+
+  // Archive-wide geocoding coverage + per-point confidence breakdown.
+  // Deliberately NOT filter-dependent: it describes the quality of the
+  // dataset itself, not of the current selection.
+  function renderDataQuality() {
+    let located = 0;
+    const byConf = { precise: 0, intersection: 0, place: 0, cached: 0, approximate: 0 };
+    let untracked = 0;
+    for (const row of INCIDENTS) {
+      located += incidentCount(row);
+      const c = confidenceOf(row);
+      if (c && byConf[c] != null) byConf[c] += 1;
+      else untracked += 1;
+    }
+    const total = located + UNLOCATED_COUNT + UNMAPPABLE_COUNT;
+    if (!total) {
+      els.dataQuality.innerHTML = "<span class='rates-no-data'>Waiting for data…</span>";
+      els.dataQualitySub.textContent = "";
+      return;
+    }
+    const pct = Math.round((located / total) * 100);
+    els.dataQualitySub.textContent = pct + "% located";
+    let html = "<div class='mix-bar'>";
+    html += "<span class='mix-seg' style='flex:0 0 " + ((located / total) * 100).toFixed(2) + "%;background:var(--good)' title='Located: " + located.toLocaleString() + "'></span>";
+    if (UNLOCATED_COUNT > 0) html += "<span class='mix-seg' style='flex:0 0 " + ((UNLOCATED_COUNT / total) * 100).toFixed(2) + "%;background:#ca8a04' title='Still locating: " + UNLOCATED_COUNT.toLocaleString() + "'></span>";
+    if (UNMAPPABLE_COUNT > 0) html += "<span class='mix-seg' style='flex:0 0 " + ((UNMAPPABLE_COUNT / total) * 100).toFixed(2) + "%;background:var(--text-3)' title='Could not be located: " + UNMAPPABLE_COUNT.toLocaleString() + "'></span>";
+    html += "</div>";
+    html += "<div class='chart-note'>Geocoding coverage: <b>" + located.toLocaleString() + "</b> of " +
+      total.toLocaleString() + " incidents placed on the map (" + pct + "%)." +
+      (UNLOCATED_COUNT > 0 ? " <b>" + UNLOCATED_COUNT.toLocaleString() + "</b> still locating." : "") +
+      (UNMAPPABLE_COUNT > 0 ? " <b>" + UNMAPPABLE_COUNT.toLocaleString() + "</b> could not be located and are excluded." : "") +
+      "</div>";
+    const trackedPts = INCIDENTS.length - untracked;
+    if (trackedPts > 0) {
+      html += "<div style='margin-top:7px'>";
+      for (const key of CONFIDENCE_ORDER) {
+        const n = byConf[key];
+        if (!n) continue;
+        const cl = CONFIDENCE_LEVELS[key];
+        const p = Math.round((n / INCIDENTS.length) * 100);
+        html += "<div class='dq-row' title='" + esc(cl.desc) + "'>" +
+          "<span class='dot' style='background:" + cl.color + "'></span>" +
+          "<span class='lbl'>" + esc(cl.label) + "</span>" +
+          "<span class='n'>" + n.toLocaleString() + " · " + p + "%</span></div>";
+      }
+      if (untracked > 0) {
+        html += "<div class='dq-row' title='Mapped before precision tracking was added'>" +
+          "<span class='dot' style='background:var(--text-3)'></span>" +
+          "<span class='lbl'>Recorded before precision tracking</span>" +
+          "<span class='n'>" + untracked.toLocaleString() + "</span></div>";
+      }
+      html += "</div><div class='facet-note'>Per mapped point. Use “Exclude low-confidence locations” " +
+        "(Filters → Road) to keep approximate road matches out of the map, hot spots and corridor rankings.</div>";
+    }
+    els.dataQuality.innerHTML = html;
   }
 
   function renderCharts(rows, f) {
@@ -3293,13 +3507,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         btn.type = "button";
         btn.className = "cor-row" + (isSel ? " on" : "");
         btn.setAttribute("aria-pressed", isSel ? "true" : "false");
-        btn.title = isSel ? "Clear the corridor filter" : "Filter the map to " + titleCase(entry[0]);
+        btn.title = "Details for " + titleCase(entry[0]) + (isSel ? " (currently filtering the map)" : "");
         btn.innerHTML = "<span class='cor-rank'>" + (i + 1) + "</span>" +
           "<span class='cor-name'>" + esc(titleCase(entry[0])) + "</span>" +
           "<span class='cor-bar-wrap'><span class='cor-bar' style='width:" + ((entry[1] / maxC) * 100).toFixed(1) + "%'></span></span>" +
           "<span class='cor-n'>" + entry[1].toLocaleString() + "</span>" +
           "<span class='cor-pct'>" + pct + "%</span>";
-        btn.addEventListener("click", function () { setCorridor(entry[0]); });
+        btn.addEventListener("click", function () { openCorridorDetail(entry[0]); });
         cfrag.appendChild(btn);
       });
       els.corridorList.innerHTML = "";
@@ -3316,6 +3530,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     } else {
       els.corridorList.innerHTML = "<span class='rates-no-data'>No corridor data in this selection.</span>";
     }
+
+    renderDataQuality();
 
     // One obvious escape hatch for chart-created selections.
     els.anClearRow.style.display =
@@ -4413,6 +4629,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.chkSchoolDay.checked = false;
     els.dowSelect.value = "all";
     els.roadTypeSelect.value = "any";
+    els.chkExcludeLowConf.checked = false;
     els.roadSearch.value = "";
     els.roadSearchClear.classList.remove("show");
     els.chkFloodWarning.checked = false;
@@ -5137,6 +5354,192 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (aboutPrevFocus && aboutPrevFocus.focus) { try { aboutPrevFocus.focus(); } catch (e) {} }
   }
 
+  /* ═══════════ corridor detail dialog ═══════════ */
+  let corridorPrevFocus = null;
+
+  // Per-day counts for a row between fromMs (inclusive) and toMs (exclusive).
+  // Aggregated
+  // TRAFFIC CONTROL rows spread across their exported per-day history;
+  // ordinary rows count once by their best date.
+  function countInWindow(row, fromMs, toMs) {
+    if (isRoutineTC(row)) {
+      const hist = tcHistoryOf(row) || [];
+      let n = 0;
+      for (const h of hist) {
+        const d = new Date(h[0] + "T12:00:00");
+        const ms = d.getTime();
+        if (!isNaN(ms) && ms >= fromMs && ms < toMs) n += (parseInt(h[1], 10) || 0);
+      }
+      return n;
+    }
+    const dt = bestRowDate(row);
+    if (!dt) return 0;
+    const ms = dt.getTime();
+    return (ms >= fromMs && ms < toMs) ? 1 : 0;
+  }
+
+  function corridorDetailHtml(cid, f) {
+    // Everything here respects the active filters — except the corridor
+    // filter itself, so details open the same way whether or not the map is
+    // already filtered to a corridor.
+    const base = filteredIncidents(f, map, { corridor: 1 });
+    const rows = [];
+    for (const r of base) { if (corridorsOf(r).indexOf(cid) !== -1) rows.push(r); }
+
+    let total = 0, accidents = 0;
+    const byHour = new Array(24).fill(0);
+    const byDow = new Array(7).fill(0);
+    const byLoc = new Map();
+    for (const row of rows) {
+      const n = incidentCount(row);
+      total += n;
+      if (categoryOf(row[IDX_CAUSE]).id === "accident") accidents += n;
+      const h = rowHourOf(row);
+      if (h != null) byHour[h] += n;
+      const pr = parseReported(row[IDX_REPORTED]);
+      if (pr && pr.dt) byDow[pr.dt.getDay()] += n;
+      const loc = String(row[IDX_LOCATION] || "").trim().toUpperCase();
+      if (loc) byLoc.set(loc, (byLoc.get(loc) || 0) + n);
+    }
+
+    const dowNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const peakH = byHour.indexOf(Math.max.apply(null, byHour));
+    const peakHourTxt = byHour[peakH] > 0 ? (fmtHour(peakH) + "–" + fmtHour((peakH + 1) % 24)) : "—";
+    const peakD = byDow.indexOf(Math.max.apply(null, byDow));
+    const peakDayTxt = byDow[peakD] > 0 ? dowNames[peakD] : "—";
+
+    // 30-day comparison: computed WITHOUT the quick-range filter (it needs
+    // both windows), but every other active filter still applies.
+    const cmpBase = filteredIncidents(f, map, { corridor: 1, range: 1 });
+    const nowMs = Date.now();
+    const D30 = 30 * 86400000;
+    let cur30 = 0, prev30 = 0;
+    for (const row of cmpBase) {
+      if (corridorsOf(row).indexOf(cid) === -1) continue;
+      cur30 += countInWindow(row, nowMs - D30, nowMs + 86400000);
+      prev30 += countInWindow(row, nowMs - 2 * D30, nowMs - D30);
+    }
+    let cmpTxt;
+    if (prev30 > 0) {
+      const chg = ((cur30 - prev30) / prev30) * 100;
+      const dir = chg >= 0 ? "up" : "down";
+      cmpTxt = "<b>" + cur30.toLocaleString() + "</b> vs <b>" + prev30.toLocaleString() + "</b> " +
+        "<span class='trend-delta " + dir + "'>" + (chg >= 0 ? "▲" : "▼") + " " + Math.abs(chg).toFixed(0) + "%</span>";
+    } else if (cur30 > 0) {
+      cmpTxt = "<b>" + cur30.toLocaleString() + "</b> vs <b>0</b> — no baseline in the previous 30 days";
+    } else {
+      cmpTxt = "none in either window";
+    }
+
+    const topSpots = Array.from(byLoc.entries()).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 5);
+    let spotsHtml = "";
+    if (topSpots.length) {
+      spotsHtml = "<h3>Busiest reported spots</h3>" + topSpots.map(function (e) {
+        return "<div class='cd-spot'><span>" + esc(titleCase(e[0])) + "</span><b>" + e[1].toLocaleString() + "</b></div>";
+      }).join("");
+    }
+
+    const isSel = f.corridorId === cid;
+    return "<div class='cd-grid'>" +
+      "<div class='cd-stat'><b>" + total.toLocaleString() + "</b><span>total incidents</span></div>" +
+      "<div class='cd-stat'><b>" + accidents.toLocaleString() + "</b><span>accidents</span></div>" +
+      "<div class='cd-stat'><b>" + esc(peakHourTxt) + "</b><span>peak hour</span></div>" +
+      "<div class='cd-stat'><b>" + esc(peakDayTxt) + "</b><span>busiest day</span></div>" +
+      "</div>" +
+      "<p>Last 30 days vs previous 30: " + cmpTxt + "</p>" +
+      spotsHtml +
+      "<div class='cd-actions'>" +
+      "<button type='button' class='mini-clear' id='cdFilterBtn'>" +
+      (isSel ? "Clear the corridor map filter" : "Filter the map to this corridor") + "</button></div>" +
+      "<p class='facet-note'>All numbers respect your current filters (the 30-day comparison ignores the " +
+      "quick date range so both windows stay comparable). Routine traffic-control groups count every " +
+      "recorded occurrence.</p>";
+  }
+
+  function openCorridorDetail(cid) {
+    corridorPrevFocus = document.activeElement;
+    const f = currentFilterObj();
+    els.corridorTitleText.textContent = titleCase(cid);
+    els.corridorBody.innerHTML = corridorDetailHtml(cid, f);
+    const fb = document.getElementById("cdFilterBtn");
+    if (fb) fb.addEventListener("click", function () {
+      closeCorridorDetail();
+      setCorridor(cid);   // toggles: applies the filter, or clears it if set
+    });
+    els.corridorModal.classList.add("open");
+    els.corridorModal.setAttribute("aria-hidden", "false");
+    els.corridorClose.focus();
+  }
+  function closeCorridorDetail() {
+    els.corridorModal.classList.remove("open");
+    els.corridorModal.setAttribute("aria-hidden", "true");
+    if (corridorPrevFocus && corridorPrevFocus.focus) { try { corridorPrevFocus.focus(); } catch (e) {} }
+  }
+
+  /* ═══════════ map legend dialog ═══════════ */
+  let legendPrevFocus = null;
+
+  const CATEGORY_DESCS = {
+    accident: "Crashes, collisions, hit-and-runs.",
+    fire: "Vehicle fires and smoke reports.",
+    hazard: "Debris, flooding, trees or lines down, spills, animals.",
+    control: "Traffic control and signal problems.",
+    vehicle: "Stalled, disabled or abandoned vehicles.",
+    medical: "Medical emergencies and pedestrian incidents.",
+    other: "Anything that doesn't match the groups above."
+  };
+
+  function legendBodyHtml() {
+    let html = "<h3>Incident colors</h3>";
+    for (const cat of CATEGORIES) {
+      html += "<div class='lg-row'><span class='lg-sym'><span class='lg-dot' style='--cat:" + cat.color + "'></span></span>" +
+        "<div><b>" + esc(cat.label) + "</b> — " + esc(CATEGORY_DESCS[cat.id] || "") + "</div></div>";
+    }
+    html += "<h3>Marker shapes</h3>" +
+      "<div class='lg-row'><span class='lg-sym'><span class='lg-dot' style='--cat:#e5484d'></span></span>" +
+      "<div><b>Small circle</b> — one incident; the color is its category above.</div></div>" +
+      "<div class='lg-row'><span class='lg-sym'><span class='lg-count' style='--cat:#e5484d'>3</span></span>" +
+      "<div><b>Numbered stack</b> — several incidents share this exact point; the number is the combined count " +
+      "and the border shows the most common category. <b>Tap it to browse each incident separately.</b></div></div>" +
+      "<div class='lg-row'><span class='lg-sym'><span class='lg-cluster'></span></span>" +
+      "<div><b>Translucent circle</b> — on very large result sets, nearby incidents are grouped (roughly a city block); " +
+      "tap for the full list. Zoom in for exact points.</div></div>" +
+      "<div class='lg-row'><span class='lg-sym'><span class='lg-beacon'></span></span>" +
+      "<div><b>Pulsing halo</b> — reported within the last 2 hours.</div></div>" +
+      "<div class='lg-row'><span class='lg-sym'><span class='lg-count' style='--cat:#2563eb'>12</span></span>" +
+      "<div><b>Blue numbered stack</b> — routine recurring traffic control (e.g. daily school car-rider duty) collapsed " +
+      "into one point so it can't crowd out real incidents; every occurrence stays counted.</div></div>";
+    html += "<h3>Optional layers</h3><ul>" +
+      "<li><b>Heatmap</b> — density glow of the filtered incidents.</li>" +
+      "<li><b>Hot spots (all-time)</b> — precomputed circles scored by recency-weighted history; red = hottest, blue = cooler. Not affected by filters.</li>" +
+      "<li><b>Rounded clusters</b> (blue) and <b>micro hotspots</b> (purple) — the filtered incidents grouped at ~100 m / ~10 m.</li>" +
+      "<li><b>OSM intersections (all-time)</b> (teal) — incidents snapped to the nearest real road junction. Not affected by filters.</li>" +
+      "<li><b>Distance rings</b> — 1/2/3/5/8 km around the dataset center.</li></ul>";
+    html += "<h3>Location precision</h3>";
+    for (const key of CONFIDENCE_ORDER) {
+      const cl = CONFIDENCE_LEVELS[key];
+      html += "<div class='lg-row'><span class='lg-sym'><span class='dot' style='background:" + cl.color + ";width:10px;height:10px;border-radius:50%;display:inline-block'></span></span>" +
+        "<div><b>" + esc(cl.label) + "</b> — " + esc(cl.desc) + "</div></div>";
+    }
+    html += "<p class='facet-note'>Each incident popup shows its own precision. “In the public feed” times " +
+      "measure how long an incident stayed listed on the public 911 feed — they are not response or " +
+      "clearance times.</p>";
+    return html;
+  }
+
+  function openLegend() {
+    legendPrevFocus = document.activeElement;
+    els.legendBody.innerHTML = legendBodyHtml();
+    els.legendModal.classList.add("open");
+    els.legendModal.setAttribute("aria-hidden", "false");
+    els.legendClose.focus();
+  }
+  function closeLegend() {
+    els.legendModal.classList.remove("open");
+    els.legendModal.setAttribute("aria-hidden", "true");
+    if (legendPrevFocus && legendPrevFocus.focus) { try { legendPrevFocus.focus(); } catch (e) {} }
+  }
+
   /* ═══════════ data-driven year options ═══════════ */
   // The archive decides which years are offered — not a hardcoded window.
   function buildYearOptions() {
@@ -5222,6 +5625,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.aboutModal.addEventListener("click", function (e) {
       if (e.target === els.aboutModal) closeAbout();
     });
+    els.corridorClose.addEventListener("click", closeCorridorDetail);
+    els.corridorModal.addEventListener("click", function (e) {
+      if (e.target === els.corridorModal) closeCorridorDetail();
+    });
+    els.legendClose.addEventListener("click", closeLegend);
+    els.legendModal.addEventListener("click", function (e) {
+      if (e.target === els.legendModal) closeLegend();
+    });
     els.routeBtn.addEventListener("click", openRoute);
     els.routeClose.addEventListener("click", closeRoute);
     els.routeModal.addEventListener("click", function (e) {
@@ -5261,6 +5672,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && els.aboutModal.classList.contains("open")) closeAbout();
       if (e.key === "Escape" && els.routeModal.classList.contains("open")) closeRoute();
+      if (e.key === "Escape" && els.corridorModal.classList.contains("open")) closeCorridorDetail();
+      if (e.key === "Escape" && els.legendModal.classList.contains("open")) closeLegend();
     });
 
     // Back/forward (chart selections push history entries) and hand-edited
@@ -5277,7 +5690,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       "causeGroupSelect", "causeSelect", "chkInViewOnly",
       "monthSelect", "daySelect", "yearSelect", "dateFrom", "dateTo",
       "dayTypeSelect", "timeBlockSelect",
-      "chkRushHour", "chkSchoolDay", "dowSelect", "roadTypeSelect",
+      "chkRushHour", "chkSchoolDay", "dowSelect", "roadTypeSelect", "chkExcludeLowConf",
       "chkFloodWarning", "chkThunderstormWarning", "chkTornadoWatch",
       "chkHoliday", "lightSelect",
       "chkWeatherOnly", "tempBand", "precipBand", "precipAmountBand", "windBand", "visBand", "cloudBand",
