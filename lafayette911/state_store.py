@@ -1,4 +1,5 @@
 import csv
+import json
 import math
 import os
 import re
@@ -9,6 +10,15 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 class StateStore:
+    # app_meta keys for feed-visibility tracking: the timestamp of the most
+    # recent successful feed sweep, and the exact incident ids that sweep
+    # contained. The id list is what makes "currently in the feed" exact —
+    # timestamp comparisons alone can't tell two sweeps in the same second
+    # apart — and comparing it across sweeps triggers a re-render when
+    # incidents leave the feed, not only when new ones arrive.
+    FEED_SWEEP_META_KEY = "last_feed_sweep_at"
+    FEED_ACTIVE_IDS_META_KEY = "feed_active_ids"
+
     def __init__(self, db_path: str, csv_path: str) -> None:
         self.db_path = db_path
         self.csv_path = csv_path
@@ -135,6 +145,16 @@ class StateStore:
             # loop to prevent burning API quota on permanently-unresolvable
             # addresses.
             ("geocode_attempts", "INTEGER"),
+            # Feed-visibility tracking: when this incident first/last appeared
+            # in the public feed and how many feed checks listed it. This
+            # measures time VISIBLE in the feed only — not response time and
+            # not clearance time. NULL on rows that predate the tracking.
+            ("first_seen_at", "TEXT"),
+            ("last_seen_at", "TEXT"),
+            ("observation_count", "INTEGER"),
+            # How the map point was placed: precise / intersection / place /
+            # approximate / cached. NULL on rows geocoded before tracking.
+            ("geocode_confidence", "TEXT"),
         ]
         for name, col_type in additions:
             if name in cols:
@@ -443,6 +463,12 @@ class StateStore:
                         _safe_int(row.get("nws_tornado_watch")),
                         _safe_int(row.get("nws_active_alert_count")),
                         _safe_text(row.get("road_type")),
+                        # Feed-visibility fields are unknown for CSV-seeded
+                        # rows; leave them NULL rather than inventing history.
+                        None,
+                        None,
+                        None,
+                        None,
                     )
                 )
                 if len(rows) >= 500:
@@ -521,8 +547,9 @@ class StateStore:
              weather_observed_at, weather_source,
              hour_of_day, day_of_week, is_weekend, is_rush_hour, month, is_school_day, is_holiday,
              nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch,
-             nws_active_alert_count, road_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             nws_active_alert_count, road_type,
+             first_seen_at, last_seen_at, observation_count, geocode_confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -548,6 +575,7 @@ class StateStore:
         if not new_incidents:
             return []
 
+        now_iso = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         rows: List[Tuple] = []
         index_rows: List[Tuple[str]] = []
         content_rows: List[Tuple[str, str]] = []
@@ -571,7 +599,7 @@ class StateStore:
                     inc.get("assisting", ""),
                     _safe_float(inc.get("latitude")),
                     _safe_float(inc.get("longitude")),
-                    datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    now_iso,
                     _safe_float(inc.get("weather_temp_f")),
                     _safe_float(inc.get("weather_precip_prob")),
                     _safe_float(inc.get("weather_precip_in")),
@@ -593,6 +621,12 @@ class StateStore:
                     _safe_int(inc.get("nws_tornado_watch")),
                     _safe_int(inc.get("nws_active_alert_count")),
                     _safe_text(inc.get("road_type")),
+                    # First appearance in the feed IS this insert; the sweep
+                    # that discovered it counts as observation #1.
+                    now_iso,
+                    now_iso,
+                    1,
+                    _safe_text(inc.get("geocode_confidence")) or None,
                 )
             )
 
@@ -600,6 +634,75 @@ class StateStore:
             self._insert_batch(rows, index_rows, content_rows)
 
         return new_incidents
+
+    def touch_feed_observations(self, incidents: Sequence[Dict]) -> Tuple[int, bool]:
+        """Record one feed observation for every incident currently listed.
+
+        Called once per *successful* feed check with the full parsed snapshot,
+        BEFORE new incidents are stored — so only already-known incidents
+        match here (brand-new ones get their first observation stamped at
+        insert). Every matched row gets the same per-sweep timestamp in
+        last_seen_at, observation_count is incremented, and first_seen_at is
+        backfilled from created_at for rows that predate this tracking.
+
+        These fields measure how long an incident stays VISIBLE in the public
+        feed — they are NOT response time or clearance time.
+
+        Returns (rows_touched, active_set_changed). The second value is True
+        when the set of feed-listed incidents differs from the previous sweep
+        (something appeared or disappeared), which callers use to trigger a
+        re-render so the page's "currently in feed" markers stay honest.
+        """
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        ids = {str(inc.get("incident_number") or "").strip() for inc in incidents}
+        ids.discard("")
+        # Resolve through the content index too, so feed formatting jitter
+        # (which changes the synthesized incident_number) still counts as a
+        # sighting of the incident we already have.
+        keys = sorted({
+            self.content_key(inc.get("location"), inc.get("cause"), inc.get("reported"))
+            for inc in incidents
+        })
+        for i in range(0, len(keys), 900):
+            chunk = keys[i : i + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.conn.execute(
+                f"SELECT incident_number FROM incident_content_index WHERE content_key IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            ids.update(str(r[0]) for r in rows if r and r[0])
+
+        touched = 0
+        id_list = sorted(ids)
+        for i in range(0, len(id_list), 900):
+            chunk = id_list[i : i + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = self.conn.execute(
+                f"""
+                UPDATE incidents
+                SET last_seen_at = ?,
+                    observation_count = COALESCE(observation_count, 0) + 1,
+                    first_seen_at = COALESCE(first_seen_at, created_at, ?)
+                WHERE incident_number IN ({placeholders})
+                """,
+                [now, now] + chunk,
+            )
+            touched += cursor.rowcount
+        self.conn.commit()
+
+        # The exact membership of this sweep is the source of truth for
+        # "currently in the feed" — brand-new incidents (not yet in the DB at
+        # touch time) are included by their feed ids, which match once stored.
+        active_json = json.dumps(id_list, separators=(",", ":"))
+        changed = active_json != (self._meta_get(self.FEED_ACTIVE_IDS_META_KEY) or "")
+        self._meta_set(self.FEED_ACTIVE_IDS_META_KEY, active_json)
+        self._meta_set(self.FEED_SWEEP_META_KEY, now)
+        return touched, changed
+
+    def get_last_feed_sweep_at(self) -> Optional[str]:
+        """Timestamp of the most recent successful feed sweep, or None."""
+        return self._meta_get(self.FEED_SWEEP_META_KEY)
 
     def filter_new_incidents(self, incidents: Sequence[Dict]) -> List[Dict]:
         """Return only incidents we have never stored.
@@ -718,11 +821,12 @@ class StateStore:
             cursor = self.conn.execute(
                 """
                 UPDATE incidents
-                SET latitude = ?, longitude = ?
+                SET latitude = ?, longitude = ?,
+                    geocode_confidence = COALESCE(?, geocode_confidence)
                 WHERE incident_number = ?
                   AND (latitude IS NULL OR longitude IS NULL)
                 """,
-                (lat, lon, incident_number),
+                (lat, lon, _safe_text(inc.get("geocode_confidence")) or None, incident_number),
             )
             updated += cursor.rowcount
         if updated:

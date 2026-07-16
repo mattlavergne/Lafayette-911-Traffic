@@ -234,7 +234,7 @@ class TrafficControlHistoryTests(unittest.TestCase):
     def test_tc_groups_carry_daily_history_and_never_hide_accidents(self):
         """Routine TRAFFIC CONTROL stays collapsed to ONE point per location
         (so daily school control can't flood the map), but now exports its
-        per-day recurrence history at index 27 — and a real accident at the
+        per-day recurrence history at index 31 — and a real accident at the
         same location remains its own full row."""
         import json as _json
         import re
@@ -264,10 +264,10 @@ class TrafficControlHistoryTests(unittest.TestCase):
             self.assertEqual(len(tc), 1)      # collapsed to one point
             self.assertEqual(len(acc), 1)     # the accident is NOT swallowed
             self.assertEqual(tc[0][7], 3)     # occurrence count preserved
-            # Per-day history at index 27: 2 on the 15th, 1 on the 16th.
-            self.assertEqual(tc[0][27], [["2026-01-15", 2], ["2026-01-16", 1]])
-            # Non-TC rows do not carry the extra field.
-            self.assertEqual(len(acc[0]), 27)
+            # Per-day history at index 31 (v4): 2 on the 15th, 1 on the 16th.
+            self.assertEqual(tc[0][31], [["2026-01-15", 2], ["2026-01-16", 1]])
+            # Non-TC rows carry the v4 fields (27-30) but no history slot.
+            self.assertEqual(len(acc[0]), 31)
 
 
 class MetaAndCorridorExportTests(unittest.TestCase):

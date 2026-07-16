@@ -114,6 +114,36 @@ def _acceptable_geocode_precision(location_type: str, result_types) -> bool:
     return True
 
 
+# Confidence labels for how a map point was placed. Stored per incident and
+# shown on the page so viewers can judge each dot:
+#   precise      — rooftop/interpolated address match (or an exact premise)
+#   intersection — pinned to a named road crossing
+#   place        — a known establishment/POI (school, business, park…)
+#   approximate  — passed validation but Google only gave a general match
+#   cached       — coordinates reused from a previously geocoded identical
+#                  address (original precision unknown at reuse time)
+GEOCODE_CONFIDENCE_PRECISE = "precise"
+GEOCODE_CONFIDENCE_INTERSECTION = "intersection"
+GEOCODE_CONFIDENCE_PLACE = "place"
+GEOCODE_CONFIDENCE_APPROXIMATE = "approximate"
+GEOCODE_CONFIDENCE_CACHED = "cached"
+
+_PRECISE_ADDRESS_TYPES = {"street_address", "premise", "subpremise", "street_number"}
+
+
+def _classify_geocode_confidence(location_type: str, result_types) -> str:
+    """Label an ACCEPTED Google result by how precisely it was placed."""
+    types = set(result_types or [])
+    if "intersection" in types:
+        return GEOCODE_CONFIDENCE_INTERSECTION
+    lt = str(location_type or "").upper()
+    if types & _PRECISE_ADDRESS_TYPES or lt in ("ROOFTOP", "RANGE_INTERPOLATED"):
+        return GEOCODE_CONFIDENCE_PRECISE
+    if types & _PRECISE_RESULT_TYPES:
+        return GEOCODE_CONFIDENCE_PLACE
+    return GEOCODE_CONFIDENCE_APPROXIMATE
+
+
 def _filter_geocode_results(incidents, location_cache: Optional[dict] = None):
     def _reject_fresh_result(inc):
         # geocode_incidents caches fresh Google results before this validation
@@ -141,6 +171,8 @@ def _filter_geocode_results(incidents, location_cache: Optional[dict] = None):
             if not _in_lafayette_bounds(lat, lng):
                 inc["latitude"] = None
                 inc["longitude"] = None
+            else:
+                inc["geocode_confidence"] = GEOCODE_CONFIDENCE_CACHED
             continue
         comps = inc.get("address_components") or []
         if not _has_allowed_lafayette_place(comps):
@@ -159,6 +191,12 @@ def _filter_geocode_results(incidents, location_cache: Optional[dict] = None):
             inc["latitude"] = None
             inc["longitude"] = None
             _reject_fresh_result(inc)
+        else:
+            # Classify BEFORE stripping — geo_location_type/geo_types only
+            # exist on fresh Google results and are dropped just below.
+            inc["geocode_confidence"] = _classify_geocode_confidence(
+                inc.get("geo_location_type"), inc.get("geo_types")
+            )
         _strip_geo_meta(inc)
     return incidents
 
@@ -321,6 +359,23 @@ def collect_once(config: Config, store: StateStore, session, logger) -> bool:
 
     raw = fetch_traffic_data(session, timeout=config.fetch_timeout_seconds, logger=logger)
     incidents = parse_traffic_data(raw)
+
+    # Feed-visibility sweep: every incident currently listed in the feed gets
+    # its last_seen_at / observation_count updated (only rows already in the
+    # DB match — new ones get observation #1 stamped at insert below). Runs
+    # only on a successful fetch (raw is None on failure) so an outage never
+    # marks everything as gone. A change in WHICH incidents are listed
+    # triggers a re-render so the page's "currently in feed" markers and
+    # visibility durations stay honest even when nothing new arrived.
+    if raw is not None:
+        try:
+            touched, active_changed = store.touch_feed_observations(incidents)
+            if active_changed:
+                has_new_incidents = True
+                log_event(logger, "feed_active_set_changed", listed=len(incidents), touched=touched)
+        except Exception:
+            pass
+
     if incidents:
         new_incidents = store.filter_new_incidents(incidents)
         if new_incidents:
