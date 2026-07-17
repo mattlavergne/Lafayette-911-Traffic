@@ -30,6 +30,9 @@ the published map. The SMTP settings are shared with the daily digest
     LAF911_ROUTE_ENABLED=true
     LAF911_ROUTE_LEAD_MIN=10           # email this many minutes before departure
     LAF911_ROUTE_WINDOW_MIN=90         # only incidents newer than this
+    LAF911_ROUTE_FOLLOWUP_MIN=15       # keep watching this long after the email;
+                                       # NEW incidents trigger a follow-up alert
+                                       # (0 disables; raise it for longer drives)
     LAF911_ROUTE_1_NAME=To work
     LAF911_ROUTE_1_CORRIDORS=Ambassador Caffery | Kaliste Saloom | I-10
     LAF911_ROUTE_1_DEPART=07:20
@@ -94,6 +97,10 @@ class RouteConfig:
     enabled: bool
     lead_min: int
     window_min: int
+    # After the departure email goes out, keep watching the route for this
+    # many minutes; anything NEW that appears gets a follow-up alert (you may
+    # already be driving). 0 disables. LAF911_ROUTE_FOLLOWUP_MIN overrides.
+    followup_min: int = 15
     routes: List[Route] = field(default_factory=list)
 
 
@@ -247,6 +254,10 @@ def load_route_config(store=None) -> RouteConfig:
     enabled = os.getenv("LAF911_ROUTE_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
     lead = int(os.getenv("LAF911_ROUTE_LEAD_MIN", "10") or 10)
     window = int(os.getenv("LAF911_ROUTE_WINDOW_MIN", "90") or 90)
+    try:
+        followup = max(0, min(120, int(os.getenv("LAF911_ROUTE_FOLLOWUP_MIN", "15") or 15)))
+    except ValueError:
+        followup = 15
     mail_routes = _load_mail_routes(store)
     routes: List[Route] = []
     for i in range(1, 21):
@@ -259,7 +270,8 @@ def load_route_config(store=None) -> RouteConfig:
             routes.append(route)
     if mail_routes:
         enabled = True
-    return RouteConfig(enabled=enabled, lead_min=lead, window_min=window, routes=routes)
+    return RouteConfig(enabled=enabled, lead_min=lead, window_min=window,
+                       followup_min=followup, routes=routes)
 
 
 def _parse_reported_local(reported: str) -> Optional[datetime]:
@@ -290,19 +302,34 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
     """
     import sqlite3
 
+    from lafayette911.episodes import find_episode_duplicates
+
     now = now or datetime.now()
     cutoff = now - timedelta(minutes=window_min)
     conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
     try:
         rows = conn.execute(
             "SELECT location, cause, reported, latitude, longitude,"
-            " weather_precip_prob, weather_precip_in FROM incidents"
+            " weather_precip_prob, weather_precip_in, incident_number FROM incidents"
         ).fetchall()
     finally:
         conn.close()
 
+    # One crash is often logged twice within minutes (reclassification,
+    # hit-and-run + accident type). Fold those into one alert line — and one
+    # follow-up identity — instead of emailing the same event twice.
+    fresh = [r for r in rows
+             if (lambda d: d is not None and d >= cutoff)(_parse_reported_local(r[2]))]
+    secondary_ids, extras_by_primary = find_episode_duplicates([
+        {"id": str(r[7] or ""), "location": r[0], "cause": r[1],
+         "reported": r[2], "located": r[3] is not None and r[4] is not None}
+        for r in fresh
+    ])
+
     out: List[Dict] = []
-    for loc, cause, reported, lat, lng, pprob, pin in rows:
+    for loc, cause, reported, lat, lng, pprob, pin, inum in rows:
+        if str(inum or "") in secondary_ids:
+            continue
         dt = _parse_reported_local(reported)
         if dt is None or dt < cutoff or dt > now + timedelta(minutes=5):
             continue
@@ -322,6 +349,7 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
                 continue
         cat = categorize(cause)
         emoji, rank = _CAT_META.get(cat, ("📋", 5))
+        extras = extras_by_primary.get(str(inum or ""), [])
         out.append({
             "location": str(loc or "").strip(),
             "cause": str(cause or "").strip(),
@@ -335,6 +363,11 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
             "approx": approx,
             "dist_m": None if dist_m is None else int(dist_m),
             "rain": (pprob is not None and pprob >= 20) or (pin is not None and pin > 0.005),
+            # Duplicate feed listings folded into this line, and the full id
+            # set of the episode — the follow-up watcher keys on these so a
+            # re-listing of an already-emailed crash is never "new".
+            "also": [x["cause"] for x in extras],
+            "episode_ids": [str(inum or "")] + [x["id"] for x in extras],
         })
     out.sort(key=lambda r: (r["rank"], r["minutes_ago"]))
     return out
@@ -366,7 +399,7 @@ def _fmt_depart(minutes: int) -> str:
 
 def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                        window_min: int, alerts: Optional[Dict] = None,
-                       map_url: str = "") -> str:
+                       map_url: str = "", followup: bool = False) -> str:
     e = _html.escape
     if route.corridor_labels:
         route_line = " → ".join(e(c.title()) for c in route.corridor_labels)
@@ -375,7 +408,13 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
     if route.path and len(route.path) >= 2:
         route_line += ' <span style="color:#b7bcc5;">· section-matched on your drawn route</span>'
 
-    if incidents:
+    if followup:
+        # Post-departure watch: only NEW incidents since the departure email,
+        # sent while the reader may already be behind the wheel.
+        header_emoji = "🚨"
+        headline = "%d NEW incident%s on your route" % (len(incidents), "" if len(incidents) == 1 else "s")
+        head_bg = "#b91c1c"
+    elif incidents:
         header_emoji = "🚧"
         headline = "%d active incident%s on your route" % (len(incidents), "" if len(incidents) == 1 else "s")
         head_bg = "#b45309"
@@ -406,6 +445,9 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                 badges += ' <span style="font-size:10.5px;color:#8a919e;">(locating…)</span>'
             if inc["rain"]:
                 badges += ' 🌧️'
+            if inc.get("also"):
+                badges += (' <span style="font-size:10.5px;color:#8a919e;">(also logged as: ' +
+                           e(", ".join(c.title() for c in inc["also"])) + ')</span>')
             ago_color = "#b45309" if inc["minutes_ago"] <= 30 else "#8a919e"
             rows_html += (
                 '<tr><td style="padding:9px 0;border-bottom:1px solid #eef0f4;">'
@@ -418,11 +460,14 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                 ((' · ~%d ft from your line' % (inc["dist_m"] * 3.281)) if inc.get("dist_m") is not None else '') + '</div>'
                 '</td></tr>'
             )
-        body = ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + rows_html + '</table>'
-                '<div style="font-size:11px;color:#8a919e;padding-top:10px;line-height:1.5;">'
+        note = ('Reported AFTER your departure email — sent because it may affect the drive '
+                'you are on right now. Do not read this while driving.'
+                if followup else
                 'Incidents reported within the last ' + window_txt + ' minutes. The feed shows when an '
-                'incident was reported, not when it clears — minor ones are often already cleared. '
-                'Drive safely and defer to what you see on the road.</div>')
+                'incident was reported, not when it clears — minor ones are often already cleared.')
+        body = ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + rows_html + '</table>'
+                '<div style="font-size:11px;color:#8a919e;padding-top:10px;line-height:1.5;">' +
+                note + ' Drive safely and defer to what you see on the road.</div>')
     else:
         body = ('<div style="text-align:center;padding:18px 6px;">'
                 '<div style="font-size:40px;">🛣️</div>'
@@ -480,7 +525,12 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
     return tmpl
 
 
-def _subject_for(route: Route, incidents: List[Dict]) -> str:
+def _subject_for(route: Route, incidents: List[Dict], followup: bool = False) -> str:
+    if followup:
+        top = incidents[0]
+        return "🚨 %s: NEW on your route — %s %s (%s)" % (
+            route.name, top["emoji"],
+            (top["cause"] or top["category"]).title(), _fmt_ago(top["minutes_ago"]))
     if not incidents:
         return "✅ %s: route clear (%s)" % (route.name, time.strftime("%-I:%M %p"))
     top = incidents[0]
@@ -527,43 +577,95 @@ def maybe_send_route_alerts(config, store, session, logger,
     now_min = now.hour * 60 + now.minute
     sent = 0
 
+    import json as _json
+
     for route in rcfg.routes:
         if now.weekday() not in route.days:
             continue
-        target = route.depart_minutes - rcfg.lead_min
-        # Fire in the window [target, depart): up to lead_min minutes, several
-        # cycles — but never after departure.
-        if not (target <= now_min < route.depart_minutes):
-            continue
         sent_key = "route_%d_sent_date" % route.index
-        if store._meta_get(sent_key) == today:
-            continue
         fail_key = "route_%d_fail" % route.index
+        sent_today = store._meta_get(sent_key) == today
         if (store._meta_get(fail_key + "_date") == today
                 and int(store._meta_get(fail_key + "_count") or 0) >= 3):
             continue
-        try:
-            incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=now)
-            alerts = _fetch_alerts_best_effort(session, logger)
-            html = render_route_email(route, incidents, now, rcfg.window_min,
-                                      alerts=alerts, map_url=cfg.map_url)
-            send(cfg, html, _subject_for(route, incidents))
-            store._meta_set(sent_key, today)
-            store._meta_set(fail_key + "_count", "0")
-            sent += 1
-            # Logging must never turn a delivered email into a "failure".
+
+        target = route.depart_minutes - rcfg.lead_min
+        # Departure email: fire in the window [target, depart) — up to
+        # lead_min minutes, several cycles — but never after departure.
+        if not sent_today and target <= now_min < route.depart_minutes:
             try:
-                log_event(logger, "route_alert_sent", route=route.name, incidents=len(incidents))
-            except Exception:
-                pass
-        except Exception as exc:
+                incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=now)
+                alerts = _fetch_alerts_best_effort(session, logger)
+                html = render_route_email(route, incidents, now, rcfg.window_min,
+                                          alerts=alerts, map_url=cfg.map_url)
+                send(cfg, html, _subject_for(route, incidents))
+                store._meta_set(sent_key, today)
+                store._meta_set(fail_key + "_count", "0")
+                # Arm the post-departure watch: remember when we sent and
+                # every episode id already reported, so only genuinely NEW
+                # events (not re-listings of the same crash) follow up.
+                reported = sorted({i for inc in incidents for i in inc.get("episode_ids", []) if i})
+                store._meta_set("route_%d_sent_at_min" % route.index, str(now_min))
+                store._meta_set("route_%d_reported_ids" % route.index, _json.dumps(reported))
+                store._meta_set("route_%d_followups" % route.index, "0")
+                sent += 1
+                # Logging must never turn a delivered email into a "failure".
+                try:
+                    log_event(logger, "route_alert_sent", route=route.name, incidents=len(incidents))
+                except Exception:
+                    pass
+            except Exception as exc:
+                try:
+                    prev = int(store._meta_get(fail_key + "_count") or 0) if store._meta_get(fail_key + "_date") == today else 0
+                    store._meta_set(fail_key + "_date", today)
+                    store._meta_set(fail_key + "_count", str(prev + 1))
+                    log_event(logger, "route_alert_error", route=route.name, error=str(exc), attempt=prev + 1)
+                except Exception:
+                    pass
+            continue
+
+        # Post-departure watch: for followup_min minutes after the departure
+        # email, alert on incidents that appear on the route — you may
+        # already be driving. Each event alerts at most once (episode ids),
+        # and follow-ups cap at 3 per day as a spam fail-safe.
+        if sent_today and rcfg.followup_min > 0:
             try:
-                prev = int(store._meta_get(fail_key + "_count") or 0) if store._meta_get(fail_key + "_date") == today else 0
-                store._meta_set(fail_key + "_date", today)
-                store._meta_set(fail_key + "_count", str(prev + 1))
-                log_event(logger, "route_alert_error", route=route.name, error=str(exc), attempt=prev + 1)
-            except Exception:
-                pass
+                sent_at = int(store._meta_get("route_%d_sent_at_min" % route.index) or -1)
+            except ValueError:
+                sent_at = -1
+            if sent_at < 0 or not (sent_at <= now_min <= sent_at + rcfg.followup_min):
+                continue
+            if int(store._meta_get("route_%d_followups" % route.index) or 0) >= 3:
+                continue
+            try:
+                known = set(_json.loads(store._meta_get("route_%d_reported_ids" % route.index) or "[]"))
+                incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=now)
+                fresh = [inc for inc in incidents
+                         if not (set(inc.get("episode_ids", [])) & known)]
+                if not fresh:
+                    continue
+                html = render_route_email(route, fresh, now, rcfg.window_min,
+                                          alerts=_fetch_alerts_best_effort(session, logger),
+                                          map_url=cfg.map_url, followup=True)
+                send(cfg, html, _subject_for(route, fresh, followup=True))
+                for inc in fresh:
+                    known.update(inc.get("episode_ids", []))
+                store._meta_set("route_%d_reported_ids" % route.index, _json.dumps(sorted(known)))
+                store._meta_set("route_%d_followups" % route.index,
+                                str(int(store._meta_get("route_%d_followups" % route.index) or 0) + 1))
+                sent += 1
+                try:
+                    log_event(logger, "route_followup_sent", route=route.name, incidents=len(fresh))
+                except Exception:
+                    pass
+            except Exception as exc:
+                try:
+                    prev = int(store._meta_get(fail_key + "_count") or 0) if store._meta_get(fail_key + "_date") == today else 0
+                    store._meta_set(fail_key + "_date", today)
+                    store._meta_set(fail_key + "_count", str(prev + 1))
+                    log_event(logger, "route_followup_error", route=route.name, error=str(exc), attempt=prev + 1)
+                except Exception:
+                    pass
     return sent
 
 

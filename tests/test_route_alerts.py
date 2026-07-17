@@ -284,5 +284,147 @@ class ScheduleTests(unittest.TestCase):
             self.assertEqual(calls, [])   # backed off after 3 failures
 
 
+class EpisodeDedupeTests(unittest.TestCase):
+    def test_one_crash_logged_twice_is_one_alert_line(self):
+        """HIT AND RUN + TRAFFIC ACCIDENT MINOR at the same spot minutes apart
+        must email as ONE incident, labeled with the extra listing."""
+        now = datetime.now().replace(microsecond=0)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            conn = sqlite3.connect(db)
+            conn.execute(
+                """CREATE TABLE incidents (incident_number TEXT PRIMARY KEY, location TEXT, cause TEXT,
+                reported TEXT, assisting TEXT, latitude REAL, longitude REAL, created_at TEXT,
+                weather_precip_prob REAL, weather_precip_in REAL)"""
+            )
+            rep = lambda dt: dt.strftime("%m/%d/%Y %I:%M %p")
+            conn.executemany("INSERT INTO incidents VALUES (?,?,?,?,?,?,?,?,?,?)", [
+                ("D1", "3500 AMBASSADOR CAFFERY PKWY", "TRAFFIC ACCIDENT MINOR",
+                 rep(now - timedelta(minutes=12)), "LPD", 30.2, -92.0, "", None, None),
+                ("D2", "3500 AMBASSADOR CAFFERY PKWY", "HIT AND RUN",
+                 rep(now - timedelta(minutes=9)), "LPD", 30.2, -92.0, "", None, None),
+            ])
+            conn.commit()
+            conn.close()
+            found = find_route_incidents(db, _route(), window_min=90, now=now)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["cause"], "HIT AND RUN")     # severity wins
+        self.assertEqual(found[0]["also"], ["TRAFFIC ACCIDENT MINOR"])
+        self.assertEqual(set(found[0]["episode_ids"]), {"D1", "D2"})
+        html = render_route_email(_route(), found, now, 90)
+        self.assertIn("also logged as: Traffic Accident Minor", html)
+
+
+class FollowupTests(unittest.TestCase):
+    def _cfg(self):
+        return RouteConfig(enabled=True, lead_min=10, window_min=90, followup_min=15, routes=[
+            Route(index=1, name="To work", corridors={"AMBASSADOR CAFFERY PKWY"},
+                  corridor_labels=["Ambassador Caffery"],
+                  depart_minutes=_parse_hhmm("07:20"), days={0, 1, 2, 3, 4})
+        ])
+
+    def _add(self, db, num, cause, dt, location="3500 AMBASSADOR CAFFERY PKWY"):
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "INSERT INTO incidents VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (num, location, cause, dt.strftime("%m/%d/%Y %I:%M %p"), "LPD",
+             30.2, -92.0, "", None, None),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_new_incident_after_send_triggers_one_followup(self):
+        now = datetime(2026, 7, 13, 7, 12)   # Monday; window [07:10, 07:20)
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, now)
+            store = _FakeStore()
+            send = lambda c, h, s: sent.append((h, s))
+            n1 = maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=self._cfg(),
+                                         digest_cfg=_digest_cfg(), send=send, now=now)
+            self.assertEqual(n1, 1)
+
+            # A brand-new crash appears (different spot on the same corridor —
+            # a new record at R1's own address within the episode window would
+            # correctly fold into the already-reported crash instead).
+            later = datetime(2026, 7, 13, 7, 16)
+            self._add(db, "NEW1", "TRAFFIC ACCIDENT MAJOR", datetime(2026, 7, 13, 7, 14),
+                      location="5100 AMBASSADOR CAFFERY PKWY")
+            n2 = maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=self._cfg(),
+                                         digest_cfg=_digest_cfg(), send=send, now=later)
+            self.assertEqual(n2, 1)
+            self.assertTrue(sent[-1][1].startswith("🚨"))
+            self.assertIn("NEW incident", sent[-1][0])
+            self.assertIn("Traffic Accident Major", sent[-1][1].title())
+
+            # Same state again → nothing new, no repeat.
+            n3 = maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=self._cfg(),
+                                         digest_cfg=_digest_cfg(), send=send,
+                                         now=datetime(2026, 7, 13, 7, 20))
+            self.assertEqual(n3, 0)
+            self.assertEqual(len(sent), 2)
+
+    def test_relisting_of_reported_crash_is_not_new(self):
+        """The feed logging the SAME crash under a second cause after the
+        departure email must NOT fire a follow-up — episode ids match."""
+        now = datetime(2026, 7, 13, 7, 12)
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, now)   # R1 at 07:02 on Ambassador Caffery, emailed below
+            store = _FakeStore()
+            maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=self._cfg(),
+                                    digest_cfg=_digest_cfg(),
+                                    send=lambda c, h, s: sent.append(s), now=now)
+            # Dispatch re-lists R1's crash as a hit-and-run 8 minutes later.
+            self._add(db, "RELIST", "HIT AND RUN", datetime(2026, 7, 13, 7, 10))
+            n = maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=self._cfg(),
+                                        digest_cfg=_digest_cfg(),
+                                        send=lambda c, h, s: sent.append(s),
+                                        now=datetime(2026, 7, 13, 7, 16))
+        self.assertEqual(n, 0)
+        self.assertEqual(len(sent), 1)
+
+    def test_followup_window_expires(self):
+        now = datetime(2026, 7, 13, 7, 12)
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, now)
+            store = _FakeStore()
+            maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=self._cfg(),
+                                    digest_cfg=_digest_cfg(),
+                                    send=lambda c, h, s: sent.append(s), now=now)
+            self._add(db, "NEW1", "TRAFFIC ACCIDENT MAJOR", datetime(2026, 7, 13, 7, 26))
+            # 07:30 is 18 min after the 07:12 email → outside the 15-min watch.
+            n = maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=self._cfg(),
+                                        digest_cfg=_digest_cfg(),
+                                        send=lambda c, h, s: sent.append(s),
+                                        now=datetime(2026, 7, 13, 7, 30))
+        self.assertEqual(n, 0)
+        self.assertEqual(len(sent), 1)
+
+    def test_followup_disabled_when_zero(self):
+        now = datetime(2026, 7, 13, 7, 12)
+        sent = []
+        cfg = self._cfg()
+        cfg.followup_min = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, now)
+            store = _FakeStore()
+            maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=cfg,
+                                    digest_cfg=_digest_cfg(),
+                                    send=lambda c, h, s: sent.append(s), now=now)
+            self._add(db, "NEW1", "TRAFFIC ACCIDENT MAJOR", datetime(2026, 7, 13, 7, 13))
+            n = maybe_send_route_alerts(_Cfg(db), store, None, None, route_cfg=cfg,
+                                        digest_cfg=_digest_cfg(),
+                                        send=lambda c, h, s: sent.append(s),
+                                        now=datetime(2026, 7, 13, 7, 14))
+        self.assertEqual(n, 0)
+        self.assertEqual(len(sent), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

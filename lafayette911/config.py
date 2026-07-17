@@ -83,7 +83,10 @@ def load_config(base_dir: Optional[str] = None) -> Config:
         datajs_path=datajs_path,
         db_path=db_path,
         osm_cache_dir=osm_cache_dir,
-        sleep_seconds=_env_int("LAF911_SLEEP_SECONDS", 300),
+        # Hard floor of 5 minutes: one fetch of lafayette911.org per cycle is
+        # the only load we put on their site, and it must stay polite even if
+        # the env var is mistyped or set too low.
+        sleep_seconds=max(300, _env_int("LAF911_SLEEP_SECONDS", 300)),
         fetch_timeout_seconds=_env_int("LAF911_FETCH_TIMEOUT", 30),
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         mode=os.getenv("LAF911_MODE", "all"),
