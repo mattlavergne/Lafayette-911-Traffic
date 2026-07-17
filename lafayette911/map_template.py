@@ -1535,7 +1535,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         IDX_VISIBLE_MIN = 28,// v4: minutes visible in the public feed (NOT response/clearance time)
         IDX_ACTIVE = 29,     // v4: 1 = listed in the most recent feed check
         IDX_OBS_COUNT = 30,  // v4: number of feed checks that listed this incident
-        IDX_TC_HISTORY = 31; // aggregated TRAFFIC CONTROL only: [["YYYY-MM-DD", n], ...] (index 27 in v3 files)
+        IDX_TC_HISTORY = 31, // aggregated TRAFFIC CONTROL only: [["YYYY-MM-DD", n], ...] (index 27 in v3 files)
+        IDX_EPISODE = 32;    // v5: episode primaries carry folded duplicate listings [[cause, reported], ...]
 
   const DATAJS_SRC = "__DATAJS_SRC__";
   const REDUCED_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -2014,6 +2015,13 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     const v = (row.length > IDX_OBS_COUNT) ? row[IDX_OBS_COUNT] : null;
     return (typeof v === "number" && isFinite(v) && v > 0) ? v : null;
   }
+  // v5: duplicate feed listings of this same event, folded at export time
+  // into this (primary) row: [[cause, reported], ...].
+  function episodeExtrasOf(row) {
+    const v = (row.length > IDX_EPISODE) ? row[IDX_EPISODE] : null;
+    return Array.isArray(v) && v.length ? v : null;
+  }
+
   function fmtVisibleMin(min) {
     if (min < 5) return "a few minutes";
     if (min < 90) return "~" + min + " min";
@@ -2106,6 +2114,21 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     } else if (visMin != null && !isRoutineTC(row)) {
       rows.push("<div>Was visible in the public feed for approximately <b>" + esc(fmtVisibleMin(visMin)) + "</b>" +
         checksTxt + "</div>" + feedNote);
+    }
+
+    // One real-world event, several feed entries (reclassification, a
+    // hit-and-run also logged as an accident type…) — folded into this
+    // incident, with the other entries disclosed here.
+    const epExtras = episodeExtrasOf(row);
+    if (epExtras) {
+      const parts = epExtras.map(function (x) {
+        const c = normalizeText(x && x[0]);
+        const t = normalizeText(x && x[1]);
+        return "<b>" + esc(titleCase(c)) + "</b>" +
+          (t ? " <span style='color:var(--text-3)'>(" + esc(t) + ")</span>" : "");
+      });
+      rows.push("<div>Also logged in the feed as: " + parts.join(", ") + "</div>" +
+        "<div style='font-size:10px;color:var(--text-3)'>Duplicate feed entries for the same event are counted once.</div>");
     }
 
     const ctx = [];
@@ -4212,12 +4235,33 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       });
       const sizing = getPointSizing();
       const mkList = [];
+      // In aggregated mode, give the busiest clusters a real numbered stack
+      // marker (bounded — DOM markers are expensive at this scale); the long
+      // tail stays as cheap canvas circles.
+      let bigStackBudget = usePerfMode ? 150 : 0;
       for (const group of grouped) {
         let mk = null;
         const groupCount = usePerfMode ? group.count : group.rows.length;
         const anchor = [group.lat, group.lng];
         if (groupCount > 1) {
-          if (usePerfMode) {
+          if (usePerfMode && groupCount >= 5 && bigStackBudget > 0) {
+            // Big cluster: show the combined count on the marker itself.
+            bigStackBudget--;
+            const cat = dominantCategory(group.rows);
+            const digits = String(groupCount).length;
+            const size = sizing.countSize + (digits > 2 ? 9 : digits > 1 ? 3 : 0);
+            const icon = L.divIcon({
+              className: "",
+              html: countIconHtml(groupCount, size, sizing.countFont, cat.color),
+              iconSize: [size, size],
+              iconAnchor: [size / 2, size / 2]
+            });
+            mk = L.marker(anchor, { icon: icon, riseOnHover: true });
+            (function (rows, label) {
+              mk.on("click", function () { openIncidentPopup(anchor, rows, { label: label }); });
+            })(group.rows, cellLabel(zoom >= 14 ? 4 : 3));
+            hitTargets.push({ lat: group.lat, lng: group.lng, rows: group.rows, label: cellLabel(zoom >= 14 ? 4 : 3), routine: group.rows.every(isRoutineTC) });
+          } else if (usePerfMode) {
             // Canvas circles scale far better than divIcons for thousands of symbols.
             const cat = categoryOf(group.sample[IDX_CAUSE]);
             const radius = Math.max(4, Math.min(12, 3 + Math.sqrt(groupCount)));
@@ -5503,12 +5547,17 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       "and the border shows the most common category. <b>Tap it to browse each incident separately.</b></div></div>" +
       "<div class='lg-row'><span class='lg-sym'><span class='lg-cluster'></span></span>" +
       "<div><b>Translucent circle</b> — on very large result sets, nearby incidents are grouped (roughly a city block); " +
-      "tap for the full list. Zoom in for exact points.</div></div>" +
+      "tap for the full list, and the busiest groups show their combined count. Zoom in for exact points.</div></div>" +
       "<div class='lg-row'><span class='lg-sym'><span class='lg-beacon'></span></span>" +
       "<div><b>Pulsing halo</b> — reported within the last 2 hours.</div></div>" +
       "<div class='lg-row'><span class='lg-sym'><span class='lg-count' style='--cat:#2563eb'>12</span></span>" +
       "<div><b>Blue numbered stack</b> — routine recurring traffic control (e.g. daily school car-rider duty) collapsed " +
       "into one point so it can't crowd out real incidents; every occurrence stays counted.</div></div>";
+    html += "<h3>Duplicate feed listings</h3>" +
+      "<p style='font-size:12px'>Dispatch often logs one crash more than once within a few minutes — " +
+      "a hit-and-run also logged as an accident type, or a minor accident upgraded to major. " +
+      "The map counts those as <b>one incident</b>; its popup discloses the other entries under " +
+      "\u201calso logged in the feed as\u201d. Every raw record stays in the archive.</p>";
     html += "<h3>Optional layers</h3><ul>" +
       "<li><b>Heatmap</b> — density glow of the filtered incidents.</li>" +
       "<li><b>Hot spots (all-time)</b> — precomputed circles scored by recency-weighted history; red = hottest, blue = cooler. Not affected by filters.</li>" +

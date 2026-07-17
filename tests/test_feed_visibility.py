@@ -158,8 +158,9 @@ class SchemaV4ExportTests(unittest.TestCase):
             self.assertEqual(row[29], 1)                # listed in the latest sweep
             self.assertEqual(row[30], 2)                # insert + one touch sweep
 
+            from lafayette911.map_render import DATA_SCHEMA_VERSION
             meta = json.load(open(os.path.join(tmpdir, "traffic_meta.json"), encoding="utf-8"))
-            self.assertEqual(meta["schema_version"], 4)
+            self.assertEqual(meta["schema_version"], DATA_SCHEMA_VERSION)
 
     def test_db_export_marks_departed_incidents_inactive(self):
         with tempfile.TemporaryDirectory() as tmpdir:

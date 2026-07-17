@@ -15,6 +15,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 
 from lafayette911.corridors import corridor_ids
+from lafayette911.episodes import find_episode_duplicates
 from lafayette911.map_template import render_map_html
 from lafayette911.utils import atomic_write_text
 
@@ -25,7 +26,12 @@ from lafayette911.utils import atomic_write_text
 #     currently-in-feed flag (29) and observation_count (30); the aggregated
 #     TRAFFIC CONTROL per-day history moves to index 31. The page still reads
 #     v3 files: an Array at index 27 is treated as the old history slot.
-DATA_SCHEMA_VERSION = 4
+# v5: duplicate feed listings of the same real-world event (same location,
+#     reported within the episode window) are folded into one exported row;
+#     the surviving primary may carry the folded records at index 32 as
+#     [[cause, reported], ...] ("also logged in the feed as"). Index 31
+#     remains the TC-history slot (null padding on non-TC rows with extras).
+DATA_SCHEMA_VERSION = 5
 
 
 def _write_meta_file(output_datajs: str, incident_count: int) -> None:
@@ -641,24 +647,57 @@ def _persist_osm_road_types(db_path: str, osm_road_types: dict) -> int:
         return 0
 
 
-def _compute_hot_spots_from_db(db_path: str, top_n: int = 100, min_count: int = 2) -> List[List]:
+def _compute_episode_groups_db(db_path: str):
+    """(secondary_ids, extras_by_primary) for the whole DB — duplicate feed
+    listings of one real-world event, folded at export time (see episodes.py).
+    Empty results on any failure so a grouping problem can never lose a map."""
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT incident_number, location, cause, reported, latitude, longitude "
+                "FROM incidents"
+            ).fetchall()
+        finally:
+            conn.close()
+        records = [
+            {
+                "id": str(num or ""),
+                "location": loc,
+                "cause": cause,
+                "reported": reported,
+                "located": lat is not None and lon is not None,
+            }
+            for num, loc, cause, reported, lat, lon in rows
+        ]
+        return find_episode_duplicates(records)
+    except Exception:
+        return set(), {}
+
+
+def _compute_hot_spots_from_db(db_path: str, top_n: int = 100, min_count: int = 2,
+                               exclude_ids=None) -> List[List]:
     """
     Compute recency-weighted hot spots from the incident DB.
 
     Groups incidents by a ~100 m grid (3 decimal-place rounding), then scores
     each location as sum(exp(-days_since / 30)) so that recent incidents count
     more.  Returns a list of [lat, lng, count, hot_score, label] sorted by
-    hot_score descending.
+    hot_score descending. ``exclude_ids`` (episode secondaries) are skipped so
+    one crash logged twice scores once.
     """
+    exclude_ids = exclude_ids or set()
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.execute(
-            "SELECT latitude, longitude, location, reported FROM incidents "
+            "SELECT latitude, longitude, location, reported, incident_number FROM incidents "
             "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
         )
         now = datetime.now()
         spots: Dict[tuple, dict] = {}
-        for lat, lon, location, reported in cursor:
+        for lat, lon, location, reported, incident_number in cursor:
+            if str(incident_number or "") in exclude_ids:
+                continue
             lat = _safe_float(lat)
             lon = _safe_float(lon)
             if lat is None or lon is None:
@@ -1188,10 +1227,14 @@ def _write_streaming_datajs(
         except Exception:
             pass
 
+    # Duplicate feed listings of one real-world event fold into a single
+    # exported episode; the raw records all stay in the DB/CSV untouched.
+    episode_secondary_ids, episode_extras = _compute_episode_groups_db(db_path)
+
     # Pre-compute recency-weighted hot spots
     hot_spots: List[List] = []
     try:
-        hot_spots = _compute_hot_spots_from_db(db_path)
+        hot_spots = _compute_hot_spots_from_db(db_path, exclude_ids=episode_secondary_ids)
     except Exception:
         pass
 
@@ -1270,6 +1313,11 @@ def _write_streaming_datajs(
                 last_seen_at,
                 observation_count,
             ) in cursor:
+                # Episode secondaries are extra feed listings of an event that
+                # exports elsewhere as its primary record — folded entirely
+                # (they must not count as located, unlocated OR unmappable).
+                if str(incident_number or "") in episode_secondary_ids:
+                    continue
                 lat = _safe_float(lat)
                 lon = _safe_float(lon)
                 if lat is None or lon is None:
@@ -1389,6 +1437,13 @@ def _write_streaming_datajs(
                     1 if str(incident_number or "") in active_ids else 0,
                     _safe_int(observation_count),
                 ]
+                # Episode primary: carry the folded duplicate listings at
+                # index 32 ("also logged in the feed as"), padding the
+                # TC-history slot (31) which non-TC rows never use.
+                extras = episode_extras.get(str(incident_number or ""))
+                if extras:
+                    incident.append(None)
+                    incident.append([[x["cause"], x["reported"]] for x in extras])
                 first = _stream_jsonjs_incident(handle, incident, first)
                 non_tc_count += 1
 
@@ -1755,6 +1810,19 @@ def _create_map_from_dataframe(
         if c in df.columns:
             df[c] = df[c].fillna("")
 
+    # Duplicate feed listings of one real-world event (episodes.py) fold into
+    # a single exported row here too; the CSV archive keeps every raw record.
+    episode_records = []
+    for _, r in df.iterrows():
+        episode_records.append({
+            "id": _safe_text(r.get("incident_number")),
+            "location": _safe_text(r.get("location")),
+            "cause": _safe_text(r.get("cause")),
+            "reported": _safe_text(r.get("reported")),
+            "located": _safe_float(r.get(lat_col)) is not None and _safe_float(r.get(lon_col)) is not None,
+        })
+    episode_secondary_ids, episode_extras = find_episode_duplicates(episode_records)
+
     # Incidents awaiting geocoding must not vanish silently: surface them to
     # the page (feed "locating…" entries + status chip) instead of dropping
     # them on the floor.
@@ -1762,6 +1830,8 @@ def _create_map_from_dataframe(
     unlocated_rows: List[List] = []
     unmappable_count = 0
     for _, r in df[unlocated_mask].iterrows():
+        if _safe_text(r.get("incident_number")) in episode_secondary_ids:
+            continue
         # Rows whose retry lifetime is spent are "unmappable": they must not
         # sit in the "locating…" indicator forever. Retry state lives in the
         # DB (attempts_map); without it, everything counts as still locating.
@@ -1781,6 +1851,9 @@ def _create_map_from_dataframe(
         key=lambda r: _parse_reported(r[2]) or datetime.min, reverse=True
     )
     unlocated_rows = unlocated_rows[:50]
+
+    if episode_secondary_ids:
+        df = df[~df["incident_number"].astype(str).apply(_safe_text).isin(episode_secondary_ids)].copy()
 
     df = df.dropna(subset=[lat_col, lon_col]).copy()
     if df.empty:
@@ -1872,11 +1945,17 @@ def _create_map_from_dataframe(
         else:
             incidents[-1].extend([None, None, 0, None])
         # Aggregated TRAFFIC CONTROL rows carry their per-day recurrence
-        # history at index 31 (other rows stay 31 fields long).
+        # history at index 31; episode primaries carry their folded duplicate
+        # listings at index 32 (31 padded null). Plain rows stay 31 long.
         if cause_norm == "TRAFFIC CONTROL":
             hist = r.get("tc_history")
             if isinstance(hist, list) and hist:
                 incidents[-1].append(hist)
+        else:
+            extras = episode_extras.get(_safe_text(r.get("incident_number")))
+            if extras:
+                incidents[-1].append(None)
+                incidents[-1].append([[x["cause"], x["reported"]] for x in extras])
         incidents_latlng.append((lat, lng))
 
     _, _, osm_overall_counts = _compute_osm_context_for_incidents(

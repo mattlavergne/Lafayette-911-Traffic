@@ -43,7 +43,8 @@ from lafayette911.corridors import corridor_ids
 # ── categories (mirrors the web page's grouping, with emoji) ──────────────
 _CATEGORIES: List[Tuple[str, str, str, Tuple[str, ...]]] = [
     # (label, emoji, bar color, keywords)
-    ("Accidents", "🚗", "#ef4444", ("ACCIDENT", "CRASH", "COLLISION", "WRECK", "MVA", "MVC")),
+    ("Accidents", "🚗", "#ef4444", ("ACCIDENT", "CRASH", "COLLISION", "WRECK", "MVA", "MVC",
+                                    "HIT AND RUN", "HIT & RUN", "HIT/RUN")),
     ("Fire", "🔥", "#f97316", ("FIRE", "SMOKE")),
     ("Hazards", "⚠️", "#eab308", ("HAZARD", "SPILL", "DEBRIS", "OBSTRUCT", "FLOOD", "TREE", "POWER LINE", "LINE DOWN", "ANIMAL")),
     ("Signals", "🚦", "#3b82f6", ("SIGNAL", "TRAFFIC CONTROL", "TRAFFIC LIGHT", "MALFUNCTION")),
@@ -140,19 +141,39 @@ def collect_digest_stats(db_path: str, now: Optional[datetime] = None) -> Dict:
             SELECT location, cause, reported, assisting, latitude, created_at,
                    geocode_attempts, hour_of_day,
                    weather_precip_prob, weather_precip_in,
-                   nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch
+                   nws_flash_flood_warning, nws_severe_thunderstorm_warning, nws_tornado_watch,
+                   incident_number
             FROM incidents
             """
         ).fetchall()
 
-        new_rows, prev_count = [], 0
+        # Fold duplicate feed listings of one real-world event (episodes.py)
+        # so the digest counts crashes, not the number of times dispatch
+        # re-listed them. Raw records stay in the archive untouched.
+        from lafayette911.episodes import find_episode_duplicates
+        episode_secondary_ids, _ = find_episode_duplicates([
+            {
+                "id": str(r[13] or ""),
+                "location": r[0],
+                "cause": r[1],
+                "reported": r[2],
+                "located": r[4] is not None,
+            }
+            for r in rows
+        ])
+
+        new_rows, prev_count, folded_24h = [], 0, 0
         for r in rows:
             dt = _parse_created_at(r[5])
             if dt is None:
                 continue
+            is_secondary = str(r[13] or "") in episode_secondary_ids
             if dt >= w_start:
-                new_rows.append(r)
-            elif dt >= p_start:
+                if is_secondary:
+                    folded_24h += 1
+                else:
+                    new_rows.append(r)
+            elif dt >= p_start and not is_secondary:
                 prev_count += 1
 
         by_cat: Dict[str, int] = {}
@@ -161,7 +182,7 @@ def collect_digest_stats(db_path: str, now: Optional[datetime] = None) -> Dict:
         agencies: Dict[str, int] = {}
         located = pending = retired = 0
         rain_flagged = nws_flagged = 0
-        for loc, cause, reported, assisting, lat, _created, attempts, hour_of_day, pprob, pin, f1, f2, f3 in new_rows:
+        for loc, cause, reported, assisting, lat, _created, attempts, hour_of_day, pprob, pin, f1, f2, f3, _inum in new_rows:
             by_cat[categorize(cause)] = by_cat.get(categorize(cause), 0) + 1
             hh = hour_of_day if isinstance(hour_of_day, int) and 0 <= hour_of_day < 24 else _reported_hour(reported)
             if hh is not None:
@@ -207,6 +228,9 @@ def collect_digest_stats(db_path: str, now: Optional[datetime] = None) -> Dict:
         "generated_at_utc": now,
         "new_total": len(new_rows),
         "prev_total": prev_count,
+        # Extra feed listings of already-counted events, folded from the 24h
+        # numbers above (e.g. a hit-and-run also logged as "accident minor").
+        "duplicates_folded_24h": folded_24h,
         "by_category": by_cat,
         "by_hour": by_hour,
         "top_corridors": sorted(corridors.items(), key=lambda e: -e[1])[:5],
@@ -459,7 +483,13 @@ def render_digest_html(stats: Dict, service_info: Optional[Dict] = None, map_url
 </td></tr></table>
 </body></html>""" % {
         "when": e(when_local),
-        "tile_new": _stat_cell("{:,}".format(n), "new incidents", "collected in the past 24 hours"),
+        "tile_new": _stat_cell(
+            "{:,}".format(n), "new incidents",
+            "collected in the past 24 hours" + (
+                " · %d duplicate feed listing%s folded" % (
+                    stats.get("duplicates_folded_24h", 0),
+                    "" if stats.get("duplicates_folded_24h", 0) == 1 else "s")
+                if stats.get("duplicates_folded_24h", 0) else "")),
         "tile_mapped": _stat_cell("{:,}".format(g["located_24h"]), "mapped", "geocoded successfully"),
         "tile_queue": _stat_cell("{:,}".format(g["queue_now"]), "in queue", "waiting for geocode budget"),
         "tile_api": _stat_cell("{:,}".format(g["api_calls_24h"]), "api calls", "Google Geocoding calls in 24h"),
