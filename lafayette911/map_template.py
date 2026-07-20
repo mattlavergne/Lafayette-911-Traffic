@@ -2269,6 +2269,19 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       next.disabled = idx >= sorted.length - 1;
       prev.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); if (idx > 0) { idx--; renderDetail(); } });
       next.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); if (idx < sorted.length - 1) { idx++; renderDetail(); } });
+      relayout();
+    }
+
+    // Content swaps (list ↔ detail, prev/next) change the card's size, but
+    // Leaflet only measures a popup when it OPENS — without a re-measure the
+    // detail card keeps the list's dimensions, overflows its bubble, and can
+    // sit clipped against a screen edge. Re-measure and re-center after
+    // every swap. The initial renderList happens before the popup exists
+    // (container not in the DOM yet), so it's skipped by the guard.
+    function relayout() {
+      if (!container.isConnected || !activePopup) return;
+      if (activePopup.update) { try { activePopup.update(); } catch (e) {} }
+      requestAnimationFrame(function () { positionActivePopup(activePopup); });
     }
 
     renderList();
