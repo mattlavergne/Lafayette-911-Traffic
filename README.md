@@ -205,27 +205,32 @@ also use for other things, put a small [Cloudflare
 Worker](scripts/cloudflare_trafficmap_worker.js) in front of it: the Worker
 reverse-proxies just that subpath to the existing GitHub Pages site, so
 GitHub Pages keeps doing the hosting and the domain just does the routing.
-Free, no server to run.
+The Worker also owns every other path on the domain, serving a plain
+"coming soon" placeholder instead of letting requests fall through to
+GitHub's origin (which would otherwise show GitHub's own 404 page). Free,
+no server to run.
 
 **One-time setup** (Cloudflare dashboard, domain already using Cloudflare
 nameservers):
 
-1. **Workers & Pages → Create → Create Worker.** Name it (e.g.
+1. **Workers & Pages → Create → Create Worker.** Pick the blank/"Hello
+   World" starting point — not "Continue with GitHub" (that's a Git build
+   pipeline, unnecessary for a script this small and static). Name it (e.g.
    `trafficmap-proxy`), deploy the default, then **Edit code** and paste in
    [`scripts/cloudflare_trafficmap_worker.js`](scripts/cloudflare_trafficmap_worker.js)
    verbatim (update the `ORIGIN` constant if your GitHub username/repo
    differ). **Save and deploy**.
-2. **DNS tab → Add record.** If the domain doesn't have a root record yet,
-   add `A`, name `@`, IPv4 `192.0.2.1`, **Proxy status: Proxied** (orange
-   cloud). This is a placeholder — the Worker intercepts the request before
-   that IP is ever contacted, so the value doesn't matter as long as the
-   record is proxied. Skip this if you already have a proxied root record
-   pointing somewhere else.
+2. **DNS tab.** Make sure the records that answer for the root domain
+   (the `A` records, and `www` if you use it) have **Proxy status: Proxied**
+   (orange cloud) — Workers Routes only intercept traffic that passes
+   through Cloudflare's proxy, so a "DNS only" (grey cloud) record bypasses
+   the Worker entirely. Leave MX/TXT/DKIM/SPF records as DNS only.
 3. **Websites → your domain → Workers Routes → Add route.** Route:
-   `mattlavergne.com/trafficmap*`, Worker: the one created in step 1.
-4. Wait a minute for propagation (and for Cloudflare's Universal SSL cert to
-   issue, usually fast on a new zone), then visit
-   `https://mattlavergne.com/trafficmap/`.
+   `mattlavergne.com/*` (the whole domain, so the Worker also serves the
+   placeholder for non-map paths — not just `/trafficmap*`), Worker: the one
+   created in step 1.
+4. Wait a minute for propagation, then visit
+   `https://mattlavergne.com/trafficmap/` and `https://mattlavergne.com/`.
 
 No changes are needed on the Pi/service side — `scripts/publish_pages.sh`
 already keeps `gh-pages` (and therefore the custom domain) fresh on
