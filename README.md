@@ -196,6 +196,41 @@ public map fresh while holding the deployment count to a handful per hour.
 (The entries are harmless — only the latest deployment is ever live — so pick
 whatever interval you prefer.)
 
+## Custom domain via Cloudflare (e.g. `mattlavergne.com/trafficmap`)
+
+GitHub Pages custom domains only serve at the **root** of a domain (or a
+subdomain) — there's no native way to make it answer at a subpath like
+`/trafficmap`. If you want the map to live under a path on a domain you'll
+also use for other things, put a small [Cloudflare
+Worker](scripts/cloudflare_trafficmap_worker.js) in front of it: the Worker
+reverse-proxies just that subpath to the existing GitHub Pages site, so
+GitHub Pages keeps doing the hosting and the domain just does the routing.
+Free, no server to run.
+
+**One-time setup** (Cloudflare dashboard, domain already using Cloudflare
+nameservers):
+
+1. **Workers & Pages → Create → Create Worker.** Name it (e.g.
+   `trafficmap-proxy`), deploy the default, then **Edit code** and paste in
+   [`scripts/cloudflare_trafficmap_worker.js`](scripts/cloudflare_trafficmap_worker.js)
+   verbatim (update the `ORIGIN` constant if your GitHub username/repo
+   differ). **Save and deploy**.
+2. **DNS tab → Add record.** If the domain doesn't have a root record yet,
+   add `A`, name `@`, IPv4 `192.0.2.1`, **Proxy status: Proxied** (orange
+   cloud). This is a placeholder — the Worker intercepts the request before
+   that IP is ever contacted, so the value doesn't matter as long as the
+   record is proxied. Skip this if you already have a proxied root record
+   pointing somewhere else.
+3. **Websites → your domain → Workers Routes → Add route.** Route:
+   `mattlavergne.com/trafficmap*`, Worker: the one created in step 1.
+4. Wait a minute for propagation (and for Cloudflare's Universal SSL cert to
+   issue, usually fast on a new zone), then visit
+   `https://mattlavergne.com/trafficmap/`.
+
+No changes are needed on the Pi/service side — `scripts/publish_pages.sh`
+already keeps `gh-pages` (and therefore the custom domain) fresh on
+whatever cron interval you've set it to.
+
 ## Daily digest email (optional)
 
 The service can email you a **daily 24-hour summary** — new incidents by
