@@ -77,6 +77,15 @@ LAF_LON_MAX = -91.90
 OSM_PAD_DEG = 0.02
 OSM_INTERSECTION_MIN_STREETS = 3
 
+# The OSM cache is keyed by a hash of the bounding box, and the bounding box is
+# derived from the min/max of every geocoded incident.  At full precision that
+# box shifts the moment a single incident lands outside the previous extent,
+# which invalidates the whole cache and re-downloads a fresh multi-megabyte
+# .graphml that the old one is never cleaned up for.  Snapping the box outward
+# to a coarse grid keeps the key stable for the life of the deployment while
+# still fully containing every point.
+OSM_BBOX_QUANTIZE_DEG = 0.05
+
 
 def _osm_cache_ttl_seconds() -> int:
     try:
@@ -234,6 +243,10 @@ def _bbox_from_points(df, lat_col, lon_col, pad_deg=OSM_PAD_DEG):
     lon_min = float(d[lon_col].min()) - pad_deg
     lon_max = float(d[lon_col].max()) + pad_deg
 
+    # Snap outward before clamping so the cache key stops moving every time an
+    # incident extends the extent by a few metres.
+    lat_min, lat_max, lon_min, lon_max = _quantize_bbox((lat_min, lat_max, lon_min, lon_max))
+
     lat_min = max(lat_min, LAF_LAT_MIN - 0.10)
     lat_max = min(lat_max, LAF_LAT_MAX + 0.10)
     lon_min = max(lon_min, LAF_LON_MIN - 0.10)
@@ -242,15 +255,202 @@ def _bbox_from_points(df, lat_col, lon_col, pad_deg=OSM_PAD_DEG):
     return (lat_min, lat_max, lon_min, lon_max)
 
 
+def _quantize_bbox(bbox, step_deg: float = OSM_BBOX_QUANTIZE_DEG):
+    """Snap a bounding box outward onto a fixed grid.
+
+    Rounding the minimums down and the maximums up guarantees the result still
+    contains every point that produced it, while making the box — and therefore
+    the OSM cache key — stable as incidents accumulate.
+    """
+    if step_deg <= 0:
+        return bbox
+    try:
+        lat_min, lat_max, lon_min, lon_max = (float(v) for v in bbox)
+    except Exception:
+        return bbox
+    # Round the ratio before floor/ceil: 30.30 / 0.05 is 605.9999999999999 in
+    # binary floating point, and without the nudge a coordinate sitting exactly
+    # on a grid line would snap a whole cell too far — a spurious new cache key.
+    def down(v):
+        return math.floor(round(v / step_deg, 9)) * step_deg
+
+    def up(v):
+        return math.ceil(round(v / step_deg, 9)) * step_deg
+
+    return (down(lat_min), up(lat_max), down(lon_min), up(lon_max))
+
+
 def _hash_bbox(bbox):
     s = f"{bbox[0]:.5f}_{bbox[1]:.5f}_{bbox[2]:.5f}_{bbox[3]:.5f}"
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
 
-def _osm_cache_paths(osm_cache_dir: str, bbox_id, n_points):
-    graphml_path = os.path.join(osm_cache_dir, f"drive_{bbox_id}.graphml")
-    cache_json = os.path.join(osm_cache_dir, f"osmctx_{bbox_id}_{n_points}.json")
-    return graphml_path, cache_json
+# Cache file kinds.  The two OSM consumers store different payload shapes, so
+# they get different prefixes — sharing one name made them clobber each other's
+# cache and recompute.
+OSM_CACHE_KIND_CONTEXT = "osmctx"
+OSM_CACHE_KIND_INTERSECTIONS = "osmhot"
+OSM_CACHE_PREFIXES = (OSM_CACHE_KIND_CONTEXT, OSM_CACHE_KIND_INTERSECTIONS)
+
+
+def _osm_graphml_path(osm_cache_dir: str, bbox_id) -> str:
+    return os.path.join(osm_cache_dir, f"drive_{bbox_id}.graphml")
+
+
+def _osm_cache_paths(osm_cache_dir: str, bbox_id, kind: str = OSM_CACHE_KIND_CONTEXT):
+    """Paths for the OSM artifacts of one bounding box.
+
+    The JSON name deliberately carries no incident count.  It used to
+    (``osmctx_<bbox>_<n>.json``), which meant every render that saw a new
+    incident wrote a *new* file and orphaned the previous one — unbounded
+    growth, since nothing ever deleted them.  The point count that the cache is
+    validated against lives inside the payload instead, so a single file is
+    simply overwritten in place.
+    """
+    return _osm_graphml_path(osm_cache_dir, bbox_id), os.path.join(
+        osm_cache_dir, f"{kind}_{bbox_id}.json"
+    )
+
+
+# ``osmctx_<bbox>_<n>.json`` — the pre-fix name, one file per distinct incident
+# count.  Nothing can read these any more, so they are always safe to delete.
+_LEGACY_OSM_CACHE_RE = re.compile(
+    r"^(?:%s)_[0-9a-f]+_\d+\.json$" % "|".join(OSM_CACHE_PREFIXES)
+)
+
+# Records which bounding box the most recent render used, so a prune running in
+# another process (or from the maintenance script) knows one id that is live.
+_ACTIVE_BBOX_MARKER = ".active_bbox"
+
+# How long an untouched cache file is kept before it is considered dead.
+# Every render touches the files it reads, and renders happen at least as often
+# as the cycle interval, so anything this stale is genuinely unreachable.  The
+# window is generous because the penalty for being wrong is re-downloading a
+# multi-megabyte road network, while the penalty for keeping it is a few MB.
+OSM_CACHE_RETENTION_SECONDS = 3 * 86400
+
+
+def _osm_cache_retention_seconds() -> int:
+    try:
+        days = float(os.getenv("LAF911_OSM_CACHE_RETENTION_DAYS", "3"))
+    except Exception:
+        return OSM_CACHE_RETENTION_SECONDS
+    return max(int(days * 86400), 0)
+
+
+def _touch_osm_cache_file(path: str) -> None:
+    """Mark a cache file as still in use.
+
+    Reading a .graphml does not update its mtime, so without this a road network
+    that every render depends on would look untouched and be pruned.  Only the
+    .graphml files get this treatment: the JSON caches are kilobytes, the live
+    one is protected by name, and their mtime also feeds the
+    ``LAF911_OSM_CACHE_TTL_SECONDS`` freshness check, which touching would
+    silently extend.
+    """
+    try:
+        os.utime(path, None)
+    except Exception:
+        pass
+
+
+def _mark_active_bbox(osm_cache_dir: str, bbox_id) -> None:
+    try:
+        with open(os.path.join(osm_cache_dir, _ACTIVE_BBOX_MARKER), "w", encoding="utf-8") as handle:
+            handle.write(str(bbox_id))
+    except Exception:
+        pass
+
+
+def _read_active_bbox(osm_cache_dir: str) -> Optional[str]:
+    try:
+        with open(os.path.join(osm_cache_dir, _ACTIVE_BBOX_MARKER), encoding="utf-8") as handle:
+            marker = handle.read().strip()
+        return marker or None
+    except Exception:
+        return None
+
+
+def _current_osm_cache_names(bbox_id) -> set:
+    """Every file name the cache is allowed to keep for ``bbox_id``."""
+    names = {f"drive_{bbox_id}.graphml"}
+    for kind in OSM_CACHE_PREFIXES:
+        names.add(f"{kind}_{bbox_id}.json")
+    return names
+
+
+def prune_osm_cache(osm_cache_dir: str, bbox_id=None, max_age_seconds=None) -> Tuple[int, int]:
+    """Delete OSM cache files that can never be read again.
+
+    Two tiers:
+
+    1. Legacy count-keyed context files (``osmctx_<bbox>_<n>.json``) — one was
+       written per distinct incident count and never removed, which is what made
+       this directory grow without bound.  No current code path can read them,
+       so they always go.
+    2. Current-format artifacts that no render has touched in
+       ``max_age_seconds``.  Deliberately time-based rather than name-based: the
+       road-type pass and the intersection pass derive their bounding boxes from
+       slightly different point sets and can legitimately land on two different
+       ids, so deleting "everything but the newest id" would make them evict
+       each other's road network on every cycle.  The file belonging to the live
+       ``bbox_id`` is never removed regardless of age.
+
+    Everything removed is a pure cache entry: it is re-derived from OSM on
+    demand and holds no incident data.
+
+    Returns ``(files_removed, bytes_reclaimed)``.
+    """
+    if bbox_id is None:
+        bbox_id = _read_active_bbox(osm_cache_dir)
+    if max_age_seconds is None:
+        max_age_seconds = _osm_cache_retention_seconds()
+    keep_names = _current_osm_cache_names(bbox_id) if bbox_id else set()
+
+    removed = 0
+    reclaimed = 0
+    now = time.time()
+    try:
+        names = os.listdir(osm_cache_dir)
+    except Exception:
+        return (0, 0)
+
+    for name in names:
+        path = os.path.join(osm_cache_dir, name)
+
+        if _LEGACY_OSM_CACHE_RE.match(name):
+            stale = True
+        elif name in keep_names:
+            continue
+        elif not max_age_seconds:
+            # Retention disabled: only the legacy files above can be judged dead.
+            continue
+        else:
+            is_graph = name.startswith("drive_") and name.endswith(".graphml")
+            is_json = name.endswith(".json") and any(
+                name.startswith(prefix + "_") for prefix in OSM_CACHE_PREFIXES
+            )
+            if not (is_graph or is_json):
+                continue
+            try:
+                stale = (now - os.path.getmtime(path)) > max_age_seconds
+            except Exception:
+                continue
+
+        if not stale:
+            continue
+
+        try:
+            if not os.path.isfile(path):
+                continue
+            size = os.path.getsize(path)
+            os.remove(path)
+        except Exception:
+            continue
+        removed += 1
+        reclaimed += size
+
+    return (removed, reclaimed)
 
 
 def _compute_osm_context_for_bbox(bbox, incidents_latlng, osm_cache_dir: str):
@@ -268,7 +468,10 @@ def _compute_osm_context_for_bbox(bbox, incidents_latlng, osm_cache_dir: str):
     bbox_id = _hash_bbox((south, north, west, east))
 
     n_points = len(incidents_latlng)
-    graphml_path, cache_json = _osm_cache_paths(osm_cache_dir, bbox_id, n_points)
+    graphml_path, cache_json = _osm_cache_paths(
+        osm_cache_dir, bbox_id, OSM_CACHE_KIND_CONTEXT
+    )
+    _mark_active_bbox(osm_cache_dir, bbox_id)
 
     if os.path.exists(cache_json):
         try:
@@ -285,6 +488,7 @@ def _compute_osm_context_for_bbox(bbox, incidents_latlng, osm_cache_dir: str):
     try:
         if os.path.exists(graphml_path):
             G = ox.load_graphml(graphml_path)
+            _touch_osm_cache_file(graphml_path)
         else:
             G = ox.graph_from_bbox(bbox=(west, south, east, north), network_type="drive", simplify=True)
             ox.save_graphml(G, graphml_path)
@@ -572,11 +776,12 @@ def _precompute_osm_road_types(db_path: str, osm_cache_dir: str) -> dict:
     bbox_id = _hash_bbox((south, north, west, east))
 
     os.makedirs(osm_cache_dir, exist_ok=True)
-    graphml_path = os.path.join(osm_cache_dir, f"drive_{bbox_id}.graphml")
+    graphml_path = _osm_graphml_path(osm_cache_dir, bbox_id)
 
     try:
         if os.path.exists(graphml_path):
             G = ox.load_graphml(graphml_path)
+            _touch_osm_cache_file(graphml_path)
         else:
             G = ox.graph_from_bbox(bbox=(west, south, east, north), network_type="drive", simplify=True)
             ox.save_graphml(G, graphml_path)
@@ -968,6 +1173,10 @@ def _compute_bbox_from_points(lat_min, lat_max, lon_min, lon_max, pad_deg=OSM_PA
     west = float(lon_min) - pad_deg
     east = float(lon_max) + pad_deg
 
+    # Same grid snap as _bbox_from_points: keeps bbox_id (and therefore the
+    # downloaded .graphml) stable as the incident extent creeps outward.
+    south, north, west, east = _quantize_bbox((south, north, west, east))
+
     south = max(south, LAF_LAT_MIN - 0.10)
     north = min(north, LAF_LAT_MAX + 0.10)
     west = max(west, LAF_LON_MIN - 0.10)
@@ -1062,7 +1271,10 @@ def _stream_osm_intersections(
 
     south, north, west, east = bbox
     bbox_id = _hash_bbox((south, north, west, east))
-    graphml_path, cache_json = _osm_cache_paths(osm_cache_dir, bbox_id, total_points)
+    graphml_path, cache_json = _osm_cache_paths(
+        osm_cache_dir, bbox_id, OSM_CACHE_KIND_INTERSECTIONS
+    )
+    _mark_active_bbox(osm_cache_dir, bbox_id)
 
     if os.path.exists(cache_json):
         try:
@@ -1080,6 +1292,7 @@ def _stream_osm_intersections(
     try:
         if os.path.exists(graphml_path):
             G = ox.load_graphml(graphml_path)
+            _touch_osm_cache_file(graphml_path)
         else:
             G = ox.graph_from_bbox(bbox=(west, south, east, north), network_type="drive", simplify=True)
             ox.save_graphml(G, graphml_path)
@@ -1745,6 +1958,7 @@ def create_map_from_csv(
     attempts_map = _load_geocode_attempts_map(db_path)
     visibility_map = _load_feed_visibility_map(db_path)
     _create_map_from_dataframe(df, output_map, output_datajs, osm_cache_dir, attempts_map, visibility_map)
+    prune_osm_cache(osm_cache_dir)
 
 
 def create_map_from_db(db_path: str, output_map: str, output_datajs: str, osm_cache_dir: str) -> None:
@@ -1755,6 +1969,9 @@ def create_map_from_db(db_path: str, output_map: str, output_datajs: str, osm_ca
     try:
         center_lat, center_lng, _ = _write_streaming_datajs(db_path, output_datajs, osm_cache_dir)
         _write_map_html(center_lat, center_lng, output_map, output_datajs)
+        # Cheap directory scan; drops anything the render just superseded so the
+        # cache stays a fixed handful of files instead of growing every cycle.
+        prune_osm_cache(osm_cache_dir)
     except Exception:
         _write_text_if_changed(output_datajs, "window.INCIDENTS_DATA=[];window.OSM_INTERSECTIONS_DATA=[];")
         _write_map_html(30.2241, -92.0198, output_map, output_datajs)
