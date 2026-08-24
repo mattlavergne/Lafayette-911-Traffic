@@ -123,7 +123,7 @@ Less common: `LAF911_FETCH_TIMEOUT`, `LAF911_GEOCODE_SLEEP`,
 `LAF911_WEATHER_LAT/LON`, `LAF911_WEATHER_CACHE_TTL_SECONDS`,
 `LAF911_ALERTS_CACHE_TTL_SECONDS`, `LAF911_TRACEMALLOC_*`,
 `LAF911_GC_COLLECT`, `LAF911_OSM_CACHE_TTL_SECONDS`,
-`LAF911_OSM_INTERSECTION_SUBPROCESS`.
+`LAF911_OSM_CACHE_RETENTION_DAYS`, `LAF911_OSM_INTERSECTION_SUBPROCESS`.
 
 ## The map
 
@@ -338,6 +338,59 @@ Alerts send at most once per route per day (SQLite-guarded), only on
 configured days, and back off after repeated failures — the same fail-safe
 rules as the digest.
 
+## Disk usage
+
+Steady-state footprint is small and bounded:
+
+| What | Path | Growth |
+| --- | --- | --- |
+| Permanent archive | `traffic_incidents.csv` | ~1 KB per incident, append-only |
+| Working store | `incident_index.sqlite` | ~1 KB per incident |
+| Website | `traffic_map.html`, `traffic_data.js`, `traffic_meta.json` | fixed + ~200 B per incident, overwritten each render |
+| OSM cache | `osm_cache/` | **bounded**: a handful of files — typically one `.graphml` plus two small `.json` |
+
+The CSV and the SQLite store deliberately hold the same incidents — the CSV is
+the durable archive, the database is the working index that makes dedupe and
+rendering fast. That duplication is the only intended redundancy, and it is
+linear in incident count.
+
+`osm_cache/` used to be the real problem. Its context file was named
+`osmctx_<bbox>_<n>.json`, where `n` was the incident count at render time, so
+every cycle that saw a new incident wrote a **new** file and orphaned the
+previous one — nothing ever deleted them, and each file grows with `n`, so the
+directory grew quadratically (easily 0.1 GB/day, accelerating). The bounding box
+was also taken from the raw min/max of every geocoded incident, so one incident
+past the old extent changed the cache key and re-downloaded a multi-megabyte
+`.graphml` that likewise stayed forever.
+
+Both are fixed: cache files are now named by bounding box only and overwritten
+in place, the bounding box snaps outward onto a 0.05° grid so the key stops
+moving, and every render prunes what it has superseded — the count-keyed
+leftovers unconditionally, plus any road network no render has touched in
+`LAF911_OSM_CACHE_RETENTION_DAYS` (default 3). The retention window is
+deliberate: two passes derive their bounding boxes from slightly different point
+sets and can legitimately use two networks at once, so pruning by "newest key
+wins" would make them evict each other every cycle.
+
+### Reclaiming space from an older install
+
+To clear the backlog those old files left behind:
+
+```bash
+python scripts/reclaim_storage.py            # report only — shows what would go
+python scripts/reclaim_storage.py --apply    # delete the dead cache files
+```
+
+Add `--vacuum` to also compact the SQLite store (it rebuilds the database, so it
+wants free space roughly equal to the current file size and takes a write lock —
+run it with the service stopped). Everything the script removes is regenerable
+cache; no incident is ever deleted.
+
+The count-keyed leftovers — almost always the bulk of it — go on the first run.
+Road networks from bounding boxes that are no longer in use are removed once
+they have gone `LAF911_OSM_CACHE_RETENTION_DAYS` untouched, so the last few MB
+may take a few days of normal operation to clear.
+
 ## External services
 
 | Service | Used for | Cost notes |
@@ -363,6 +416,6 @@ python -m pytest tests/ -q
 ```
 
 The test suite covers dedupe (including feed formatting jitter), geocode
-budgeting/blacklisting/queueing, date parsing, CSV/DB rendering, and template
-generation. When changing the web page, `map_template.py` is a plain Python
+budgeting/blacklisting/queueing, date parsing, CSV/DB rendering, OSM cache
+keying and pruning, and template generation. When changing the web page, `map_template.py` is a plain Python
 string with `__TOKEN__` substitution — no build step required.
