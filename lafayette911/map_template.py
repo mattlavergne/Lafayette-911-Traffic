@@ -8,16 +8,40 @@ embedded CSS/JS can use braces and template literals without escaping.
 Design goals:
   * Fail-safe: the page degrades gracefully when the CDN, the tile server,
     the data file, or the NWS API is unreachable.
-  * Zero paid API usage: basemaps are CARTO/OSM raster tiles, live weather
-    and alerts come from the free NWS API, and the map/street-view buttons
-    are plain Google Maps deep links (no key, no quota).
+  * Zero paid API usage: basemaps are keyless OpenStreetMap raster tiles,
+    live weather and alerts come from the free NWS API, and the
+    map/street-view buttons are plain Google Maps deep links (no key, no
+    quota).  CARTO's Positron/Dark Matter basemaps are used instead when
+    ``LAF911_CARTO_API_KEY`` is set, since CARTO now requires a key.
   * All analytics run client-side over the embedded incident array.
 """
 
+import os
+import re
 from datetime import datetime, timezone
+from typing import Optional
 
 
-def render_map_html(center_lat: float, center_lng: float, datajs_src: str) -> str:
+def _carto_api_key(explicit: Optional[str] = None) -> str:
+    """Return the CARTO basemap key, or "" when the map should stay keyless.
+
+    CARTO stopped serving basemaps.cartocdn.com anonymously: unkeyed requests
+    still return HTTP 200, but the tile image itself carries an "API KEY
+    REQUIRED" watermark.  Without a key the page uses OpenStreetMap tiles.
+    Only key-shaped values are accepted so nothing can break out of the JS
+    string literal the key is substituted into.
+    """
+    key = explicit if explicit is not None else os.environ.get("LAF911_CARTO_API_KEY", "")
+    key = (key or "").strip()
+    return key if re.fullmatch(r"[A-Za-z0-9_.\-]{1,128}", key) else ""
+
+
+def render_map_html(
+    center_lat: float,
+    center_lng: float,
+    datajs_src: str,
+    carto_api_key: Optional[str] = None,
+) -> str:
     """Render the full map page HTML with the given center and data script src."""
     current_year = datetime.now().year
     year_options = '<option value="">All</option>' + "".join(
@@ -35,6 +59,7 @@ def render_map_html(center_lat: float, center_lng: float, datajs_src: str) -> st
     html = html.replace("__YEAR_OPTIONS__", year_options)
     html = html.replace("__DAY_OPTIONS__", day_options)
     html = html.replace("__GENERATED_AT__", generated_at)
+    html = html.replace("__CARTO_API_KEY__", _carto_api_key(carto_api_key))
     return html
 
 
@@ -115,13 +140,22 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     -webkit-font-smoothing: antialiased;
   }
   #map { position: absolute; inset: 0; z-index: 1; background: var(--bg); }
-  /* CARTO Dark Matter is too low-contrast on its own — lift the street
-     network so roads stay clearly legible in dark mode. */
-  html[data-theme="dark"] #map:not(.osm-fallback) .leaflet-tile {
+  /* Keyed builds only: CARTO Dark Matter is too low-contrast on its own —
+     lift the street network so roads stay clearly legible in dark mode. */
+  html[data-theme="dark"] #map:not(.osm-tiles) .leaflet-tile {
     filter: brightness(4) contrast(1.2) saturate(0.8);
   }
-  html[data-theme="dark"] #map.osm-fallback .leaflet-tile {
-    filter: brightness(0.62) invert(1) contrast(0.88) hue-rotate(185deg) saturate(0.45) brightness(0.82);
+  /* OSM ships one light style only, so dark mode is an inversion of it. The
+     grayscale/saturate pair kills the sepia cast a plain inversion leaves
+     behind, and keeps the basemap quiet enough for the incident markers to
+     stay the loudest thing on screen. */
+  html[data-theme="dark"] #map.osm-tiles .leaflet-tile {
+    filter: grayscale(0.5) invert(1) contrast(1.2) hue-rotate(195deg) saturate(0.55) brightness(0.8);
+  }
+  /* OSM's light style is far busier than Positron was: pull the colour out of
+     it so the markers, not the basemap, carry the page. */
+  html[data-theme="light"] #map.osm-tiles .leaflet-tile {
+    filter: saturate(0.62) brightness(1.05) contrast(0.94);
   }
 
   /* ── Leaflet chrome overrides ─────────────────────────────────────── */
@@ -1488,13 +1522,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       <li>Incident reports: the public lafayette911.org feed, polled every few minutes. Locations are
       approximate (geocoded from street descriptions).</li>
       <li>Weather &amp; alerts: <a href="https://www.weather.gov/documentation/services-web-api" target="_blank" rel="noopener noreferrer">National Weather Service API</a> (live, no key).</li>
-      <li>Basemaps: <a href="https://carto.com/attribution/" target="_blank" rel="noopener noreferrer">CARTO</a> &amp; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors.</li>
+      <li>Basemaps: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors
+      (or <a href="https://carto.com/attribution/" target="_blank" rel="noopener noreferrer">CARTO</a>, when this build was given a CARTO basemap key).</li>
     </ul>
     <p id="aboutGenerated" class="facet-note"></p>
     <h3>Privacy</h3>
     <p>This page has <strong>no accounts, no advertising, no behavioral tracking, no fingerprinting, and
     no analytics</strong>. It stores only a theme preference in your browser's local storage. Your browser
-    does contact external services to work — map tiles (CARTO/OpenStreetMap), the Leaflet library CDN
+    does contact external services to work — map tiles (OpenStreetMap, or CARTO on keyed builds), the Leaflet library CDN
     (unpkg), weather/alerts (api.weather.gov), and the site host (GitHub Pages) — and those providers,
     like any web host, may keep standard technical access logs. Links out to Google Maps, Street View,
     and Waze open only when you tap them. The locate button uses your device's location only inside
@@ -1506,7 +1541,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     (<a href="https://github.com/mattlavergne/Lafayette-911-Traffic" target="_blank" rel="noopener noreferrer">source on GitHub</a>).
     Incident data, map data/tiles, and weather data belong to their providers — map data
     © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>
-    contributors, tiles by <a href="https://carto.com/attribution/" target="_blank" rel="noopener noreferrer">CARTO</a>,
+    contributors, tiles by <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>
+    or <a href="https://carto.com/attribution/" target="_blank" rel="noopener noreferrer">CARTO</a>,
     mapping by <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>,
     weather by <a href="https://www.weather.gov/" target="_blank" rel="noopener noreferrer">NWS/NOAA</a>.</p>
   </div>
@@ -1907,22 +1943,38 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* ═══════════════════════ map + tiles ═══════════════════════ */
   let map = null;
   let renderer = null;
-  let baseLayers = { light: null, dark: null, fallback: null };
+  let baseLayers = { light: null, dark: null, osm: null };
   let activeBase = null;
   let usingFallbackTiles = false;
   let tileErrorCount = 0;
 
+  // CARTO's basemaps now require an API key. An unkeyed request still comes
+  // back HTTP 200 — the "API KEY REQUIRED" notice is painted into the tile
+  // image itself — so "tileerror" never fires and the page cannot detect the
+  // breakage on its own. The basemap is therefore keyless OpenStreetMap
+  // unless a key was baked in at render time (LAF911_CARTO_API_KEY), and the
+  // tileerror fallback below only guards a key that is expired or invalid.
+  const CARTO_KEY = "__CARTO_API_KEY__";
+
   const CARTO_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
   const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
+  // Which of the three layers a theme resolves to. Without a usable CARTO key
+  // both themes share the single OSM layer (dark mode inverts it in CSS).
+  function tileKind(theme) {
+    if (!CARTO_KEY || usingFallbackTiles) return "osm";
+    return theme === "dark" ? "dark" : "light";
+  }
+
   function makeTileLayer(kind) {
-    if (kind === "fallback") {
+    if (kind === "osm") {
       return L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: OSM_ATTR });
     }
     const style = kind === "dark" ? "dark_all" : "rastertiles/voyager";
-    const layer = L.tileLayer("https://{s}.basemaps.cartocdn.com/" + style + "/{z}/{x}/{y}{r}.png", {
-      maxZoom: 20, subdomains: "abcd", attribution: CARTO_ATTR
-    });
+    const layer = L.tileLayer(
+      "https://{s}.basemaps.cartocdn.com/" + style + "/{z}/{x}/{y}{r}.png?api_key=" + encodeURIComponent(CARTO_KEY), {
+        maxZoom: 20, subdomains: "abcd", attribution: CARTO_ATTR
+      });
     layer.on("tileerror", function () {
       tileErrorCount += 1;
       if (tileErrorCount > 6 && !usingFallbackTiles) {
@@ -1935,16 +1987,14 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   function setBaseLayer(theme) {
     if (!map) return;
-    const kind = usingFallbackTiles ? "fallback" : theme;
+    const kind = tileKind(theme);
     if (!baseLayers[kind]) baseLayers[kind] = makeTileLayer(kind);
-    if (activeBase === baseLayers[kind]) {
-      $("map").classList.toggle("osm-fallback", usingFallbackTiles);
-      return;
+    if (activeBase !== baseLayers[kind]) {
+      if (activeBase) { try { map.removeLayer(activeBase); } catch (e) {} }
+      activeBase = baseLayers[kind];
+      activeBase.addTo(map);
     }
-    if (activeBase) { try { map.removeLayer(activeBase); } catch (e) {} }
-    activeBase = baseLayers[kind];
-    activeBase.addTo(map);
-    $("map").classList.toggle("osm-fallback", usingFallbackTiles);
+    $("map").classList.toggle("osm-tiles", kind === "osm");
   }
 
   if (HAS_LEAFLET) {

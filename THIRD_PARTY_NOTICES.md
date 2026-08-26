@@ -19,8 +19,8 @@ and are used under their own licenses and terms.
 
 | Provider | Used for | Terms |
 | --- | --- | --- |
-| [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors | Map data, fallback tiles, road metadata | [ODbL](https://opendatacommons.org/licenses/odbl/); attribution required and kept visible on the map |
-| [CARTO](https://carto.com/attribution/) | Light/dark basemap tiles | Free basemap tier; attribution required and kept visible on the map |
+| [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors | Map data, basemap tiles, road metadata | [ODbL](https://opendatacommons.org/licenses/odbl/); attribution required and kept visible on the map |
+| [CARTO](https://carto.com/attribution/) | Light/dark basemap tiles, only when `LAF911_CARTO_API_KEY` is configured | Free basemap tier, requires a CARTO account; attribution required and kept visible on the map |
 
 ## Data sources and services
 

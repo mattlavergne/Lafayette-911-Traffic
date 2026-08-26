@@ -116,6 +116,7 @@ Everything is an environment variable with a working default.
 | `LAF911_WEATHER_ENABLED` | `true` | Attach NWS weather snapshots to new incidents |
 | `LAF911_ALERTS_ENABLED` | `true` | Attach NWS active-alert flags (zone LAZ034) |
 | `LAF911_BASE_DIR` / `LAF911_CSV_PATH` / `LAF911_MAP_PATH` / `LAF911_DATAJS_PATH` / `LAF911_DB_PATH` / `LAF911_OSM_CACHE` | *(script dir)* | File locations |
+| `LAF911_CARTO_API_KEY` | *(empty)* | Optional CARTO basemap key; empty = keyless OpenStreetMap tiles |
 | `LAF911_LOG_LEVEL` | `INFO` | Structured JSON logs on stdout |
 
 Less common: `LAF911_FETCH_TIMEOUT`, `LAF911_GEOCODE_SLEEP`,
@@ -141,9 +142,13 @@ corridor (`cid=`), and agencies (`ag=`). The page polls a tiny
 version hash changes. An About dialog covers disclaimers, data sources,
 privacy, and licenses.
 
-Basemaps are CARTO (light/dark) with an OpenStreetMap fallback; popups link
-out to Google Maps, Street View and Waze via plain URLs. None of the map's
-runtime features consume paid API quota.
+Basemaps are keyless OpenStreetMap raster tiles (dark mode inverts them in
+CSS); popups link out to Google Maps, Street View and Waze via plain URLs.
+None of the map's runtime features consume paid API quota. CARTO's
+Positron/Dark Matter basemaps now require an account — an unkeyed request
+still returns HTTP 200 but the tile image reads "API KEY REQUIRED" — so they
+are used only when `LAF911_CARTO_API_KEY` is set at render time, with an
+automatic fall back to OpenStreetMap if the key stops working.
 
 ## Publish to GitHub Pages (free)
 
@@ -398,7 +403,8 @@ may take a few days of normal operation to clear.
 | lafayette911.org feed | Incident source | public feed, polled gently |
 | Google Geocoding API | Address → coordinates | budgeted; aggressive caching & blacklist |
 | NWS api.weather.gov | Weather snapshots, active alerts, live map weather | free, no key |
-| CARTO / OpenStreetMap tiles | Basemaps | free tiers; attribution kept |
+| OpenStreetMap tiles | Basemaps | free, no key; attribution kept |
+| CARTO tiles (optional) | Basemaps, when `LAF911_CARTO_API_KEY` is set | free basemap tier, requires a CARTO account |
 | GitHub Pages (optional) | Public hosting of the map | free for public repos |
 
 ## License
