@@ -344,6 +344,33 @@ class PublicReleaseFileTests(unittest.TestCase):
             self.assertIn(needle, html)
 
 
+class BasemapTileTests(unittest.TestCase):
+    """CARTO now watermarks unkeyed tiles with "API KEY REQUIRED" (and still
+    answers 200, so the page cannot detect it), so the default basemap must be
+    keyless OpenStreetMap."""
+
+    def test_default_build_is_keyless_openstreetmap(self):
+        saved = os.environ.pop("LAF911_CARTO_API_KEY", None)
+        try:
+            html = render_map_html(30.2241, -92.0198, "traffic_data.js")
+        finally:
+            if saved is not None:
+                os.environ["LAF911_CARTO_API_KEY"] = saved
+        self.assertNotIn("__CARTO_API_KEY__", html)
+        self.assertIn('const CARTO_KEY = "";', html)
+        self.assertIn("https://tile.openstreetmap.org/{z}/{x}/{y}.png", html)
+
+    def test_carto_key_is_used_when_configured(self):
+        html = render_map_html(30.2241, -92.0198, "traffic_data.js", carto_api_key="Key-123_x.y")
+        self.assertIn('const CARTO_KEY = "Key-123_x.y";', html)
+        self.assertIn("basemaps.cartocdn.com", html)
+
+    def test_malformed_carto_key_is_dropped_not_injected(self):
+        html = render_map_html(30.2241, -92.0198, "traffic_data.js", carto_api_key='"; alert(1); //')
+        self.assertIn('const CARTO_KEY = "";', html)
+        self.assertNotIn("alert(1)", html)
+
+
 class ConfigDefaultTests(unittest.TestCase):
     def test_geocode_defaults(self):
         from lafayette911.main import load_config
