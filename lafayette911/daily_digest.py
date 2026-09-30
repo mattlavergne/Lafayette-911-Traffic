@@ -508,7 +508,10 @@ def render_digest_html(stats: Dict, service_info: Optional[Dict] = None, map_url
 
 
 # ── sending ────────────────────────────────────────────────────────────────
-def send_digest(cfg: DigestConfig, html: str, subject: str) -> None:
+def send_digest(cfg: DigestConfig, html: str, subject: str,
+                images: Optional[Dict[str, bytes]] = None) -> None:
+    """Send an HTML email. ``images`` maps content-id → PNG bytes, attached
+    inline so the HTML can show them with ``<img src="cid:ID">``."""
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = cfg.mail_from
@@ -519,6 +522,11 @@ def send_digest(cfg: DigestConfig, html: str, subject: str) -> None:
         "open it in an HTML-capable mail client."
     )
     msg.add_alternative(html, subtype="html")
+    if images:
+        html_part = msg.get_payload()[-1]
+        for cid, png in images.items():
+            html_part.add_related(png, maintype="image", subtype="png",
+                                  cid="<%s>" % cid, filename="%s.png" % cid)
 
     if cfg.smtp_port == 465:
         with smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port, timeout=30) as smtp:

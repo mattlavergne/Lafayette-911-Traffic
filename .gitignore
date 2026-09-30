@@ -15,3 +15,4 @@ osm_cache/
 *.js
 
 *.html
+route_map_cache/

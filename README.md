@@ -311,9 +311,27 @@ ignored.
 
 **Section-precise matching.** With a drawn route, located incidents match the route you selected — an
 accident five miles down a road you only briefly touch does **not** alert. Generated emails for drawn routes use `LAF911_ROUTE_<n>_PATH` as the source of truth and do not include a `CORRIDORS` whole-road list.
-Incidents still awaiting geocoding can't be distance-tested, so drawn routes skip
-them rather than using whole-road fallback. You still get the scheduled email when
-there are no matching incidents — it just says the route looks clear.
+Incidents still awaiting geocoding can't be distance-tested. They are **not**
+dropped: the Pi learns which roads your drawn line runs *along* from past
+geocoded incidents (a cross street only touches the line at one point, so it
+never counts), and an unplaced incident on one of those roads is listed with a
+"not on the map yet — may be outside your section" note. A possible false
+alarm beats a false all-clear. You still get the scheduled email when there
+are no matching incidents — it just says the route looks clear.
+
+**Follow-ups while you drive.** For 30 minutes after the departure email
+(`LAF911_ROUTE_FOLLOWUP_MIN`, max 120, 0 disables) the route keeps being
+checked every cycle; anything new — including an earlier incident that only
+now got placed on your route — sends a 🚨 follow-up (at most 3 a day).
+
+**Route picture.** Drawn routes get a small map of the route in every email
+(OpenStreetMap tiles rendered on the Pi with Pillow and attached inline, so
+it shows even when remote images are blocked). Tiles are cached in
+`route_map_cache/`; without Pillow or network the email simply has no picture.
+
+**Different time on one day.** Add `LAF911_ROUTE_<n>_DEPART_FRI=12:00` (any of
+`MON`…`SUN`). An email that has no `PATH`/`CORRIDORS` line for an existing slot
+only edits the lines it contains, so that one line is the whole email.
 
 **What it uses — and doesn't.** There is no free, keyless source of
 Google/Waze-style live traffic *speed* data. This matches the actual 911
@@ -331,12 +349,15 @@ email-configured slots). Useful knobs and tools:
 ```bash
 LAF911_ROUTE_LEAD_MIN=10      # email this many minutes before departure
 LAF911_ROUTE_WINDOW_MIN=90    # only incidents newer than this
+LAF911_ROUTE_FOLLOWUP_MIN=30  # keep watching this long after the email
 LAF911_ROUTE_INBOX=off        # disable the mailbox config channel
 
 python -m lafayette911.route_inbox --check     # poll the mailbox once, now
 python -m lafayette911.route_inbox --list      # show email-configured routes
 python -m lafayette911.route_alerts --preview route.html --route 1
 python -m lafayette911.route_alerts --send --route 1
+# Why did (or didn't) something alert? Replays any past moment from the DB:
+python -m lafayette911.route_alerts --diagnose --route 1 --at "2026-09-28 07:10"
 ```
 
 Alerts send at most once per route per day (SQLite-guarded), only on

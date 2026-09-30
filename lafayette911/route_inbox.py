@@ -20,6 +20,11 @@ Message format (what the builder generates — plain env-style lines):
 
 A body line ``LAF911_ROUTE_1_DELETE=true`` removes slot 1 instead.
 
+An email WITHOUT a PATH or CORRIDORS line for a slot that already exists is an
+edit: only the lines it contains change. So moving Friday's departure is just
+
+        LAF911_ROUTE_2_DEPART_FRI=12:00
+
 Safety rules:
 - Only UNSEEN messages whose subject contains ``LAF911`` are considered.
 - Only messages **from the account itself** (the digest From/To address) are
@@ -42,6 +47,7 @@ from lafayette911.daily_digest import DigestConfig, load_digest_config, send_dig
 from lafayette911.route_alerts import (
     MAIL_ROUTES_META_KEY,
     ROUTE_KV_KEYS,
+    _DAY_NAMES,
     _fmt_depart,
     _route_from_kv,
 )
@@ -66,8 +72,11 @@ COMMANDS_REFERENCE_HTML = (
     'LAF911_ROUTE_&lt;n&gt;_RADIUS_M=100            match distance around the path (m)\n'
     'LAF911_ROUTE_&lt;n&gt;_CORRIDORS=Road A | Road B   whole-road matching (no path)\n'
     'LAF911_ROUTE_&lt;n&gt;_DEPART=07:20            departure, 24-hour local time\n'
+    'LAF911_ROUTE_&lt;n&gt;_DEPART_FRI=12:00        different time on one day (MON…SUN)\n'
     'LAF911_ROUTE_&lt;n&gt;_DAYS=mon-fri            or: daily, weekends, mon,wed,fri\n'
     'LAF911_ROUTE_&lt;n&gt;_DELETE=true             remove slot n entirely</pre>'
+    '<div style="font-size:12px;color:#5c6470;padding-top:8px;">An email with no PATH/CORRIDORS '
+    'line only edits the lines it includes — e.g. just a DEPART_FRI line.</div>'
     '</div>'
 )
 
@@ -132,13 +141,21 @@ def apply_route_slots(store, slots: Dict[str, Dict[str, str]]) -> List[str]:
             else:
                 summaries.append("Route %s was not set — nothing to delete" % slot)
             continue
-        clean = {k: str(kv.get(k) or "") for k in ROUTE_KV_KEYS}
+        existing = current.get(slot) if isinstance(current.get(slot), dict) else None
+        if existing and not (kv.get("PATH") or kv.get("CORRIDORS")):
+            # Settings-only edit (new time, days, name…): keep the saved route.
+            clean = {k: str(kv[k] if k in kv else existing.get(k) or "") for k in ROUTE_KV_KEYS}
+        else:
+            clean = {k: str(kv.get(k) or "") for k in ROUTE_KV_KEYS}
         route = _route_from_kv(int(slot), clean)
         if route is None:
             summaries.append("⚠️ Route %s ignored — needs a departure time plus a drawn path or road list" % slot)
             continue
         current[slot] = clean
         bits = ["departs %s" % _fmt_depart(route.depart_minutes)]
+        for day, minutes in sorted(route.depart_overrides.items()):
+            if day in route.days:
+                bits.append("%s at %s" % (_DAY_NAMES[day].title() + "s", _fmt_depart(minutes)))
         if route.path:
             bits.append("%d waypoints (section-matched within %d m)" % (len(route.path), route.radius_m))
         if route.corridor_labels:
