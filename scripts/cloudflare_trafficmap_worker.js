@@ -25,6 +25,9 @@
 //   PUT  /trafficmap/api/routes        {routes, base_version, by} → saves
 //                                      (409 if someone saved in between)
 //   POST /trafficmap/api/routes/ack    {version} — the Pi reports it applied
+//   POST /trafficmap/api/routes/test   {slot, at} — page asks for a test email
+//                                      "as if it were <at>"
+//   POST /trafficmap/api/routes/test/result {id, result} — the Pi's answer
 //
 // Every call needs "Authorization: Bearer <ROUTES_TOKEN>".
 
@@ -33,6 +36,7 @@ const PREFIX = "/trafficmap";
 const API = PREFIX + "/api/routes";
 const DOC_KEY = "routes_doc_v1";
 const STATUS_KEY = "routes_status_v1";
+const TEST_KEY = "routes_test_v1";
 const ALLOWED_ORIGINS = ["https://mattlavergne.com", "https://mattlavergne.github.io"];
 const ROUTE_KEYS = new Set([
   "NAME", "CORRIDORS", "PATH", "RADIUS_M", "DEPART", "DAYS",
@@ -106,10 +110,11 @@ async function handleApi(request, env, url) {
 
   const doc = await readJson(env.ROUTES_KV, DOC_KEY, { version: 0, routes: {} });
   const status = await readJson(env.ROUTES_KV, STATUS_KEY, {});
+  const test = await readJson(env.ROUTES_KV, TEST_KEY, null);
   const now = new Date().toISOString();
 
   if (url.pathname === API && request.method === "GET") {
-    return json(request, 200, Object.assign({}, doc, { pi: status }));
+    return json(request, 200, Object.assign({}, doc, { pi: status, test: test }));
   }
 
   const len = parseInt(request.headers.get("Content-Length") || "0", 10);
@@ -139,6 +144,29 @@ async function handleApi(request, env, url) {
       seen_at: now,
     };
     await env.ROUTES_KV.put(STATUS_KEY, JSON.stringify(next));
+    return json(request, 200, next);
+  }
+
+  if (url.pathname === API + "/test" && request.method === "POST") {
+    const slot = String(body.slot || "");
+    const at = String(body.at || "");
+    if (!/^([1-9]|1[0-9]|20)$/.test(slot) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(at)) {
+      return json(request, 400, { error: "Pick a route and a date/time." });
+    }
+    const next = { id: crypto.randomUUID(), slot: slot, at: at, requested_at: now, result: null };
+    await env.ROUTES_KV.put(TEST_KEY, JSON.stringify(next));
+    return json(request, 200, next);
+  }
+
+  if (url.pathname === API + "/test/result" && request.method === "POST") {
+    if (!test || body.id !== test.id) return json(request, 409, { error: "No such test." });
+    const result = body.result && typeof body.result === "object" ? body.result : {};
+    const clean = {};
+    for (const [k, v] of Object.entries(result).slice(0, 20)) {
+      if (["string", "number", "boolean"].includes(typeof v)) clean[k] = typeof v === "string" ? v.slice(0, 500) : v;
+    }
+    const next = Object.assign({}, test, { result: clean, done_at: now });
+    await env.ROUTES_KV.put(TEST_KEY, JSON.stringify(next));
     return json(request, 200, next);
   }
 

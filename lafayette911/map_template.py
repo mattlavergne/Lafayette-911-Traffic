@@ -635,6 +635,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .rb-item button { flex: none; }
   .rb-status { font-size: 11.5px; color: var(--text-2); margin-top: 2px; line-height: 1.5; }
   .rb-status.warn { color: #b45309; }
+  .rb-test { margin: 8px 0 4px; padding: 10px 12px; border-radius: 12px; border: 1px dashed var(--panel-border); }
   .rb-editor { margin-top: 10px; padding-top: 4px; }
   .rb-editor-title { font-size: 12px; font-weight: 800; color: var(--text-2); text-transform: uppercase;
     letter-spacing: 0.05em; margin-top: 6px; }
@@ -1492,6 +1493,17 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
           <span><button class="mini-clear" id="rbNew" type="button">+ New route</button>
           <button class="mini-clear" id="rbDisconnect" type="button" title="Forget the passcode on this device">Disconnect</button></span></div>
         <div id="rbList" aria-live="polite"></div>
+        <div class="rb-test" id="rbTest" style="display:none">
+          <div class="rb-field" style="margin-top:0" id="rbTestTitle">Test</div>
+          <div class="facet-note" style="margin:0 0 6px">Get a test email for this route <b>as if it were</b> the
+          day and time you pick — handy for checking a Friday schedule, or replaying a morning when
+          something was missed. Your real alerts aren&#39;t affected.</div>
+          <div class="rb-addrow">
+            <input class="rb-input" id="rbTestAt" type="datetime-local" aria-label="Pretend it is">
+            <button class="rb-add" id="rbTestGo" type="button">Send test</button>
+          </div>
+        </div>
+        <div class="rb-status" id="rbTestStatus" aria-live="polite"></div>
         <div class="rb-status" id="rbStatus" aria-live="polite"></div>
       </div>
     </div>
@@ -5641,7 +5653,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
      the Pi polls it every cycle. Nothing is sent without the passcode. */
   const ROUTE_SYNC_URL_INJECTED = "__ROUTE_SYNC_URL__";
   const RB_TOKEN_KEY = "laf911_route_token";
-  const rbSync = { url: "", token: "", doc: null, editing: null, busy: false, timer: null };
+  const rbSync = { url: "", token: "", doc: null, editing: null, busy: false, timer: null, testSlot: null };
 
   function rbSyncUrl() {
     if (ROUTE_SYNC_URL_INJECTED && ROUTE_SYNC_URL_INJECTED.indexOf("__") !== 0) return ROUTE_SYNC_URL_INJECTED;
@@ -5837,6 +5849,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         "<div class='txt'><div class='nm'>" + esc(kv.NAME || ("Route " + slot)) + "</div>" +
         "<div class='meta'>" + esc(rbDescribe(kv)) + "</div></div>";
       [["map", rbPiLayers[slot] ? "Hide" : "Map", function () { rbTogglePiLayer(slot); }],
+       ["test", "Test", function () { rbOpenTest(slot); }],
        ["edit", "Edit", function () { rbEditSlot(slot); }],
        ["del", "Delete", function () { rbSyncDelete(slot); }]].forEach(function (b) {
         const btn = document.createElement("button");
@@ -5848,14 +5861,38 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       list.appendChild(row);
     });
 
+    // Test mode: the last requested test and, once the Pi ran it, its result.
+    const test = doc.test || null;
+    const ts = $("rbTestStatus");
+    let testPending = false;
+    $("rbTest").style.display = rbSync.testSlot && routes[rbSync.testSlot] ? "" : "none";
+    if (test && routes[test.slot]) {
+      const when = rbFmtAt(test.at);
+      const nm = (routes[test.slot] || {}).NAME || ("Route " + test.slot);
+      const r = test.result;
+      if (!r) {
+        testPending = true;
+        ts.textContent = "🧪 Test for " + nm + " as if " + when + ": waiting for your Pi to run it (within ~5 min)…";
+      } else if (r.ok === false || r.error) {
+        ts.textContent = "🧪 Test for " + nm + " as if " + when + " failed: " + (r.error || "unknown error");
+      } else {
+        ts.textContent = "🧪 Test for " + nm + " as if " + when + ": " + (r.headline || "") +
+          (r.emailed ? " — check your email. " : ". ") + (r.schedule || "") +
+          (r.near_misses ? " Close but not matched: " + r.near_misses + "." : "");
+      }
+      ts.classList.toggle("warn", !!(r && (r.ok === false || r.error)));
+    } else {
+      ts.textContent = "";
+    }
+
     // Is the Pi keeping up?
     const pi = doc.pi || {};
     const st = $("rbStatus");
     const seenMs = Date.parse(pi.seen_at || "");
     let text, warn = false, pending = false;
     if (isNaN(seenMs)) {
-      text = "⚠️ Your Pi hasn't connected yet. Add LAF911_ROUTE_SYNC_URL and LAF911_ROUTE_SYNC_TOKEN " +
-        "to its settings and restart it (see the README).";
+      text = "⚠️ Your Pi hasn't checked in yet. It needs LAF911_ROUTE_SYNC_URL and LAF911_ROUTE_SYNC_TOKEN " +
+        "in its settings and a restart; on the Pi, \u201croute_sync --check\u201d (see the README) says what's wrong.";
       warn = true;
     } else {
       pending = (pi.applied_version || 0) < (doc.version || 0);
@@ -5867,8 +5904,50 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     st.textContent = text;
     st.classList.toggle("warn", warn);
-    rbSyncTick(pending);
+    rbSyncTick(pending || testPending);
   }
+  function rbFmtAt(at) {
+    const d = new Date(String(at || ""));   // "YYYY-MM-DDTHH:MM" parses as local time
+    return isNaN(d.getTime()) ? String(at || "") :
+      d.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+  function rbLocalIso(d) {
+    const p = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  // Default the test time to this route's next email time (departure minus
+  // the 10-minute lead) on its next scheduled day.
+  function rbOpenTest(slot) {
+    rbSync.testSlot = String(slot);
+    const kv = ((rbSync.doc || {}).routes || {})[slot] || {};
+    const days = rbParseDays(kv.DAYS);
+    const d = new Date();
+    for (let i = 0; i < 8; i++) {
+      const wd = (d.getDay() + 6) % 7;   // JS Sunday=0 → Pi Monday=0
+      if (days.has(wd)) {
+        const t = String(kv[RB_DAY_KEYS[wd]] || kv.DEPART || "07:20").split(":");
+        d.setHours(parseInt(t[0], 10), parseInt(t[1], 10) - 10, 0, 0);
+        break;
+      }
+      d.setDate(d.getDate() + 1);
+    }
+    $("rbTestAt").value = rbLocalIso(d);
+    $("rbTestTitle").textContent = "Test: " + (kv.NAME || ("Route " + slot));
+    rbSyncRender();
+    try { $("rbTest").scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (e) {}
+  }
+  function rbSendTest() {
+    const at = $("rbTestAt").value;
+    if (!rbSync.testSlot || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(at)) { toast("Pick a date and time"); return; }
+    rbApi("POST", "/test", { slot: rbSync.testSlot, at: at.slice(0, 16) }).then(function (res) {
+      if (res.status !== 200) { toast((res.body && res.body.error) || ("Couldn't request the test (" + res.status + ")")); return; }
+      rbSync.doc.test = res.body;
+      rbSync.testSlot = null;
+      toast("Test requested — your Pi emails it within about 5 minutes");
+      rbSyncRender();
+    }).catch(function () { toast("Couldn't reach the route server"); });
+  }
+
   // While a save is pending and the dialog is open, refresh so the status
   // flips to "✓" on its own.
   function rbSyncTick(on) {
@@ -6255,6 +6334,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     $("rbDisconnect").addEventListener("click", rbSyncDisconnect);
     $("rbNew").addEventListener("click", function () { rbEditSlot(null); });
     $("rbSaveBtn").addEventListener("click", rbSyncSave);
+    $("rbTestGo").addEventListener("click", rbSendTest);
     $("rbCancelEdit").addEventListener("click", function () { rbEditSlot(null); });
     els.routeModal.querySelector("#rbMail").addEventListener("click", function () {
       rbSaveCurrent();   // keep a device-local copy so it can be shown on the map

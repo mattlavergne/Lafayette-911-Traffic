@@ -20,6 +20,7 @@ from lafayette911.route_alerts import (
     find_route_incidents,
     maybe_send_route_alerts,
     render_route_email,
+    run_route_test,
 )
 from lafayette911.route_inbox import apply_route_slots
 from lafayette911.route_map_image import render_route_png
@@ -168,6 +169,43 @@ class PerDayDepartureTests(unittest.TestCase):
     def test_other_days_unchanged(self):
         self.assertEqual(self._run(datetime(2026, 10, 1, 11, 52)), [])      # Thursday noon
         self.assertEqual(len(self._run(datetime(2026, 10, 1, 16, 52))), 1)  # Thursday 5 PM
+
+
+class TestModeTests(unittest.TestCase):
+    def test_test_email_is_labelled_and_leaves_schedule_alone(self):
+        route = _route_from_kv(2, {"NAME": "Home", "PATH": "30.2,-92.02; 30.21,-92.02",
+                                   "DEPART": "17:00", "DEPART_FRI": "12:00", "DAYS": "mon-fri"})
+        rcfg = RouteConfig(enabled=True, lead_min=10, window_min=90, routes=[route])
+        sent = []
+        store = _FakeStore()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, [("Z1", "5100 SOMEWHERE RD", "TRAFFIC ACCIDENT MAJOR", _rep(datetime(2026, 10, 2, 11, 40)),
+                           "", 30.205, -92.0201, "", None, None)])
+            out = run_route_test(_Cfg(db), store, None, None, 2, datetime(2026, 10, 2, 11, 50),
+                                 route_cfg=rcfg, digest_cfg=_digest_cfg(),
+                                 send=lambda c, h, s, **kw: sent.append((h, s)))
+        self.assertTrue(out["emailed"])
+        self.assertEqual(out["incidents"], 1)
+        self.assertIn("11:50 AM for a 12:00 PM departure", out["schedule"])
+        self.assertTrue(sent[0][1].startswith("🧪 TEST"))
+        self.assertIn("Test email", sent[0][0])
+        self.assertIn("leaving ~12:00 PM", sent[0][0])
+        self.assertEqual(store.meta, {})     # no dedup/schedule state touched
+
+    def test_unknown_route_and_off_day(self):
+        route = _route_from_kv(2, {"NAME": "Home", "PATH": "30.2,-92.02; 30.21,-92.02",
+                                   "DEPART": "17:00", "DAYS": "mon-fri"})
+        rcfg = RouteConfig(enabled=True, lead_min=10, window_min=90, routes=[route])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, [])
+            missing = run_route_test(_Cfg(db), _FakeStore(), None, None, 5, datetime(2026, 10, 3, 9, 0),
+                                     route_cfg=rcfg, digest_cfg=_digest_cfg(), send=lambda *a, **k: None)
+            saturday = run_route_test(_Cfg(db), _FakeStore(), None, None, 2, datetime(2026, 10, 3, 9, 0),
+                                      route_cfg=rcfg, digest_cfg=_digest_cfg(), send=lambda *a, **k: None)
+        self.assertFalse(missing["ok"])
+        self.assertIn("isn't one of this route's days", saturday["schedule"])
 
 
 class SettingsOnlyEmailTests(unittest.TestCase):

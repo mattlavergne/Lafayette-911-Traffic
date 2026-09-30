@@ -65,10 +65,18 @@ class _FakeWorker:
         return _Resp(200, dict(self.doc))
 
     def post(self, url, headers=None, timeout=None, data=None):
+        if url.endswith("/test/result"):
+            body = json.loads(data)
+            self.doc["test"] = dict(self.doc["test"], result=body["result"])
+            return _Resp(200, self.doc["test"])
         assert url.endswith("/ack")
         self.acks.append(json.loads(data))
         self.status = {"applied_version": self.acks[-1]["version"]}
         return _Resp(200, self.status)
+
+    def request_test(self, slot, at):
+        self.test = {"id": "t-%s-%s" % (slot, at), "slot": str(slot), "at": at, "result": None}
+        self.doc["test"] = self.test
 
     def web_save(self, routes):
         self.doc = {"version": self.doc["version"] + 1, "routes": routes, "updated_by": "web"}
@@ -154,6 +162,33 @@ class RouteSyncTests(unittest.TestCase):
             self.assertEqual(route_sync.sync_routes(_Store({"1": _route("W")}), self.worker, None), "error")
         self.assertIn("blocked by Cloudflare security", logged[-1]["error"])
         self.assertIn("workers.dev", logged[-1]["error"])
+
+
+    def test_changing_settings_skips_the_old_backoff(self):
+        store = _Store({"1": _route("To work")})
+        self.worker.down = True
+        route_sync.sync_routes(store, self.worker, None)          # fails → 15-min backoff
+        self.worker.down = False
+        self.assertEqual(route_sync.sync_routes(store, self.worker, None), "")
+        with mock.patch.dict("os.environ", {"LAF911_ROUTE_SYNC_URL": URL + "?fixed"}):
+            self.assertEqual(route_sync.sync_routes(store, self.worker, None), "seeded")
+
+    def test_page_test_request_runs_once_and_reports_back(self):
+        store = _Store({"2": _route("Home", "17:00", DEPART_FRI="12:00")})
+        route_sync.sync_routes(store, self.worker, None, config=object())
+        calls = []
+
+        def fake_test(config, st, session, logger, slot, at):
+            calls.append((slot, at))
+            return {"ok": True, "emailed": True, "headline": "Route clear"}
+
+        self.worker.request_test(2, "2026-10-02T11:50")
+        route_sync.sync_routes(store, self.worker, None, config=object(), run_test=fake_test)
+        route_sync.sync_routes(store, self.worker, None, config=object(), run_test=fake_test)
+        self.assertEqual(len(calls), 1)                       # never repeated
+        self.assertEqual(calls[0][0], 2)
+        self.assertEqual(calls[0][1].strftime("%a %H:%M"), "Fri 11:50")
+        self.assertTrue(self.worker.doc["test"]["result"]["emailed"])
 
 
 if __name__ == "__main__":
