@@ -118,6 +118,23 @@ def _render_map_in_subprocess(config: Config, logger) -> None:
         raise RuntimeError(error)
 
 
+def render_at_startup(config: Config, logger) -> bool:
+    """Render the page once when the service starts. Never raises."""
+    try:
+        if config.render_in_subprocess:
+            _render_map_in_subprocess(config, logger)
+        else:
+            _render_map_from_source(config)
+        log_event(logger, "startup_render", ok=True)
+        return True
+    except Exception as exc:
+        try:
+            log_event(logger, "startup_render", ok=False, error=str(exc))
+        except Exception:
+            pass
+        return False
+
+
 def run_once(config: Config, store: StateStore, session, logger) -> bool:
     """One service cycle: collect (if enabled), then render (if warranted)."""
     has_new_incidents = False
@@ -196,9 +213,13 @@ def main(base_dir: Optional[str] = None) -> int:
             updated = backfill_road_types(config.db_path, config.osm_cache_dir)
             if updated:
                 log_event(logger, "road_type_backfill", updated=updated)
-                _render_map_from_source(config)
         except Exception:
             pass
+        # Always rebuild the page once at startup. Rendering otherwise waits
+        # for a new incident, so after a code update (new page features) or
+        # a settings change baked into the page, a restart would leave the
+        # published page stale until the next incident happened to arrive.
+        render_at_startup(config, logger)
 
     cycle = 0
     prev_snapshot = None

@@ -191,5 +191,21 @@ class RouteSyncTests(unittest.TestCase):
         self.assertTrue(self.worker.doc["test"]["result"]["emailed"])
 
 
+
+class StartupRenderTests(unittest.TestCase):
+    def test_startup_render_runs_and_never_raises(self):
+        from types import SimpleNamespace
+
+        from lafayette911 import main as main_mod
+
+        cfg = SimpleNamespace(render_in_subprocess=False)
+        with mock.patch.object(main_mod, "_render_map_from_source") as render, \
+                mock.patch.object(main_mod, "log_event"):
+            self.assertTrue(main_mod.render_at_startup(cfg, None))
+            render.assert_called_once_with(cfg)
+            render.side_effect = RuntimeError("disk full")
+            self.assertFalse(main_mod.render_at_startup(cfg, None))
+
+
 if __name__ == "__main__":
     unittest.main()
