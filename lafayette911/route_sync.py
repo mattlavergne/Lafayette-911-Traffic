@@ -77,6 +77,29 @@ def _stored_routes(store) -> Dict[str, Dict[str, str]]:
     return _clean(stored)
 
 
+def _http_error(what: str, resp) -> str:
+    """Readable reason for a failed call. The Worker itself only answers
+    200/401/409/503, so anything else — above all 403 — came from Cloudflare's
+    security layer (Bot Fight Mode, a WAF rule…) before the Worker ran."""
+    status = getattr(resp, "status_code", "?")
+    msg = "%s → HTTP %s" % (what, status)
+    if status == 401:
+        return msg + " (passcode mismatch: LAF911_ROUTE_SYNC_TOKEN must equal the Worker's ROUTES_TOKEN)"
+    if status == 503:
+        return msg + " (the Worker is missing its ROUTES_KV binding or ROUTES_TOKEN secret)"
+    headers = getattr(resp, "headers", None) or {}
+    try:
+        body = str(getattr(resp, "text", "") or "")[:2000]
+    except Exception:
+        body = ""
+    cf = headers.get("cf-mitigated") or headers.get("Cf-Mitigated") or ""
+    if status in (403, 429) or cf or "cloudflare" in body.lower():
+        return msg + (" (blocked by Cloudflare security before reaching the Worker%s — "
+                      "use the Worker's workers.dev address for LAF911_ROUTE_SYNC_URL, or "
+                      "allow it under Security → Bots; see README)" % (", cf-mitigated=" + cf if cf else ""))
+    return msg
+
+
 def sync_routes(store, session, logger) -> str:
     """One sync pass. Returns what happened ("", "applied", "pushed",
     "seeded", "error") — for tests and logs. Never raises."""
@@ -97,7 +120,7 @@ def sync_routes(store, session, logger) -> str:
     try:
         resp = session.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
-            raise RuntimeError("GET %s → HTTP %s" % (url, resp.status_code))
+            raise RuntimeError(_http_error("GET " + url, resp))
         doc = resp.json()
         remote_version = int(doc.get("version") or 0)
         remote = _clean(doc.get("routes") or {})
@@ -109,7 +132,7 @@ def sync_routes(store, session, logger) -> str:
             if r.status_code == 409:
                 return None   # the page saved in between; apply it next cycle
             if r.status_code != 200:
-                raise RuntimeError("PUT → HTTP %s" % r.status_code)
+                raise RuntimeError(_http_error("PUT", r))
             return int(r.json().get("version") or 0)
 
         if remote_version == 0:

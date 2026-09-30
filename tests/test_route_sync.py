@@ -28,9 +28,11 @@ class _Store:
 
 
 class _Resp:
-    def __init__(self, status, body):
+    def __init__(self, status, body, headers=None, text=""):
         self.status_code = status
         self._body = body
+        self.headers = headers or {}
+        self.text = text
 
     def json(self):
         return self._body
@@ -142,6 +144,16 @@ class RouteSyncTests(unittest.TestCase):
     def test_wrong_token_is_an_error_not_a_crash(self):
         with mock.patch.dict("os.environ", {"LAF911_ROUTE_SYNC_TOKEN": "nope"}):
             self.assertEqual(route_sync.sync_routes(_Store({"1": _route("W")}), self.worker, None), "error")
+
+
+    def test_cloudflare_block_is_explained_in_the_log(self):
+        blocked = _Resp(403, {}, {"cf-mitigated": "challenge"}, "<title>Just a moment...</title>")
+        self.worker.get = lambda *a, **kw: blocked
+        logged = []
+        with mock.patch("lafayette911.utils.log_event", lambda lg, ev, **f: logged.append(f)):
+            self.assertEqual(route_sync.sync_routes(_Store({"1": _route("W")}), self.worker, None), "error")
+        self.assertIn("blocked by Cloudflare security", logged[-1]["error"])
+        self.assertIn("workers.dev", logged[-1]["error"])
 
 
 if __name__ == "__main__":
