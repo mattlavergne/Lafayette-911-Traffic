@@ -120,5 +120,17 @@ class CorridorIdsTests(unittest.TestCase):
         self.assertEqual(corridor_ids(None), [])
 
 
+class BroussardRoadTests(unittest.TestCase):
+    def test_e_broussard_is_a_road_not_the_town(self):
+        self.assertEqual(corridor_ids("600 E BROUSSARD/DUHON RD"), ["E BROUSSARD RD", "DUHON RD"])
+        self.assertEqual(corridor_ids("EAST BROUSSARD ROAD"), ["E BROUSSARD RD"])
+        self.assertEqual(corridor_ids("W BROUSSARD"), ["W BROUSSARD RD"])
+
+    def test_town_tags_are_still_stripped(self):
+        self.assertEqual(corridor_ids("BROUSSARD"), [])
+        self.assertEqual(corridor_ids("123 MAIN ST BROUSSARD LA"), ["MAIN ST"])
+        self.assertEqual(corridor_ids("200 W SCOTT"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

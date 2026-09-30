@@ -51,6 +51,7 @@ CLI:  python -m lafayette911.route_alerts --preview out.html [--route 1]
 
 import html as _html
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
@@ -343,6 +344,19 @@ class _PathIndex:
         return best
 
 
+# Dispatch often writes a crash at an intersection as "block number + cross
+# street" ("600 E BROUSSARD/DUHON RD"), which geocodes to that block of the
+# FIRST road — up to a block or two from the intersection itself. When such a
+# location names a road the route runs along, it matches within this wider
+# distance instead of the route's own radius.
+_CROSS_STREET_RADIUS_M = 400
+_INTERSECTION_TEXT = re.compile(r"/|&|@|\bAT\b|\bNEAR\b")
+
+
+def _is_intersection(location: str) -> bool:
+    return bool(_INTERSECTION_TEXT.search(str(location or "").upper()))
+
+
 # A road counts as "driven" when past incidents on it line up along at least
 # this much of the drawn line. A cross street only touches the line at one
 # point (span ≈ 0), so it never qualifies.
@@ -480,14 +494,18 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
             continue
         located = lat is not None and lng is not None
         approx = False
+        cross_street = False
         dist_m = None
         loc_roads = corridor_ids(loc)
         if drawn:
             if located:
                 dist_m = dist_to_path_m(float(lat), float(lng), route.path)
                 if dist_m > route.radius_m:
-                    note(loc, cause, dt, "skipped", "%d m from your line (limit %d m)" % (dist_m, route.radius_m), dist_m)
-                    continue
+                    cross = sorted(set(loc_roads) & roads) if _is_intersection(loc) else []
+                    if not cross or dist_m > max(_CROSS_STREET_RADIUS_M, 2 * route.radius_m):
+                        note(loc, cause, dt, "skipped", "%d m from your line (limit %d m)" % (dist_m, route.radius_m), dist_m)
+                        continue
+                    cross_street = True
                 matched = sorted(set(loc_roads) & roads) or loc_roads[:1]
             else:
                 matched = sorted(set(loc_roads) & roads)
@@ -500,9 +518,16 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
             if not matched:
                 note(loc, cause, dt, "skipped", "not on one of your roads")
                 continue
-        note(loc, cause, dt, "ALERT",
-             "not located yet — on %s" % ", ".join(matched) if approx else
-             ("%d m from your line" % dist_m if dist_m is not None else "on %s" % ", ".join(matched)))
+        if approx:
+            reason = "not located yet — on %s" % ", ".join(matched)
+        elif cross_street:
+            reason = ("intersection with %s, placed %d m from your line (intersection addresses "
+                      "are placed approximately)" % (", ".join(matched), dist_m))
+        elif dist_m is not None:
+            reason = "%d m from your line" % dist_m
+        else:
+            reason = "on %s" % ", ".join(matched)
+        note(loc, cause, dt, "ALERT", reason, dist_m)
         cat = categorize(cause)
         emoji, rank = _CAT_META.get(cat, ("📋", 5))
         extras = extras_by_primary.get(str(inum or ""), [])
@@ -517,6 +542,7 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
             "matched": matched,
             "located": located,
             "approx": approx,
+            "cross_street": cross_street,
             "dist_m": None if dist_m is None else int(dist_m),
             "lat": float(lat) if located else None,
             "lng": float(lng) if located else None,
@@ -606,6 +632,9 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
             if inc.get("approx"):
                 badges += (' <span style="font-size:10.5px;color:#b45309;">(not on the map yet — '
                            'somewhere on this road, may be outside your section)</span>')
+            elif inc.get("cross_street"):
+                badges += (' <span style="font-size:10.5px;color:#b45309;">(reported at an intersection '
+                           'with your road — the map pin for these is approximate)</span>')
             elif not inc["located"]:
                 badges += ' <span style="font-size:10.5px;color:#8a919e;">(locating…)</span>'
             if inc["rain"]:
