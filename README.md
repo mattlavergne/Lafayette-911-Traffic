@@ -338,6 +338,33 @@ dialog shows "✓ Your Pi has these settings" once they have). One-time setup:
 3. **In the page** (open it via mattlavergne.com/trafficmap/), tap the route
    button, enter the passcode once — it's remembered on that device.
 
+**Test mode.** Each route in the dialog has a **Test** button: pick any day
+and time and the Pi emails that route's alert *as if it were then* (marked
+🧪 TEST, using the incidents on record for that moment), and the dialog shows
+what it found and when that day's real email would go out. Handy for checking
+a Friday schedule or replaying a morning when something was missed. Real
+alerts and their once-a-day bookkeeping are untouched.
+
+**Is the Pi connected?** Run this on the Pi (read-only; `sudo -v` first so
+the password prompt doesn't collide with the command):
+```bash
+cd ~/Lafayette-911-Traffic && sudo -v
+.venv/bin/python -m lafayette911.route_sync --check --env-file <(sudo cat /etc/laf911-secrets.env)
+```
+It prints whether the Worker is reachable, whether the passcode matches, the
+routes on each side, and what the service will do on its next check. A
+failed sync backs off for 15 minutes, but changing the URL or passcode ends
+the back-off immediately.
+
+**If the Pi logs `route_sync_error … HTTP 403`**, Cloudflare's security layer
+(usually Bot Fight Mode, which challenges non-browser clients and can't be
+exempted on the free plan) is blocking the Pi before the Worker runs. Point
+the Pi at the Worker's own `workers.dev` address instead, which that layer
+doesn't cover — same path, same passcode:
+`LAF911_ROUTE_SYNC_URL=https://<worker-name>.<account>.workers.dev/trafficmap/api/routes`
+(find it in the Worker's **Settings → Domains & Routes**; make sure the
+workers.dev route is enabled).
+
 Email still works alongside it; an emailed change shows up in the page too.
 Anyone without the passcode gets "Wrong passcode" and sees nothing.
 

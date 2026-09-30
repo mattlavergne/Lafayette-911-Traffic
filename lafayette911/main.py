@@ -267,7 +267,7 @@ def main(base_dir: Optional[str] = None) -> int:
             # alert due in the lead-time window before a departure. None of
             # these ever raises.
             poll_route_inbox(store, logger)
-            sync_routes(store, session, logger)
+            sync_routes(store, session, logger, config)
             maybe_send_route_alerts(config, store, session, logger)
 
             time.sleep(config.sleep_seconds)

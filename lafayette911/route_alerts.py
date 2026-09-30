@@ -51,7 +51,6 @@ CLI:  python -m lafayette911.route_alerts --preview out.html [--route 1]
 
 import html as _html
 import os
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
@@ -559,7 +558,7 @@ def _fmt_depart(minutes: int) -> str:
 def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                        window_min: int, alerts: Optional[Dict] = None,
                        map_url: str = "", followup: bool = False,
-                       map_cid: str = "") -> str:
+                       map_cid: str = "", test_note: str = "") -> str:
     e = _html.escape
     if route.corridor_labels:
         route_line = " → ".join(e(c.title()) for c in route.corridor_labels)
@@ -582,6 +581,12 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
         header_emoji = "✅"
         headline = "Your route looks clear"
         head_bg = "#047857"
+
+    test_html = ""
+    if test_note:
+        test_html = ('<div style="background:#fef9c3;border:1px solid #facc15;border-radius:12px;'
+                     'padding:10px 14px;margin:0 0 12px 0;font-size:12.5px;color:#713f12;line-height:1.5;">'
+                     '🧪 <b>Test email</b> — ' + e(test_note) + '</div>')
 
     alert_html = ""
     if alerts:
@@ -664,13 +669,14 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
   </td></tr>
   <tr><td style="background:#f9fafb;border:1px solid #e7e9ee;border-top:none;border-radius:0 0 20px 20px;padding:16px 18px 20px 18px;">
     <div style="font-size:12px;color:#8a919e;padding-bottom:10px;">🧭 __ROUTE_LINE__</div>
+    __TEST__
     __ROUTE_IMG__
     __ALERTS__
     __BODY__
     __MAP_BTN__
     <div style="font-size:10.5px;color:#8a919e;text-align:center;line-height:1.5;padding-top:12px;">
-      Personal commute alert from your Raspberry Pi. To change or delete this route, use the
-      command reference in any "route settings saved" email (or re-draw it in the map app).<br>
+      Personal commute alert from your Raspberry Pi. To change, test or delete this route,
+      tap the route button on the map page.<br>
       Unofficial — not affiliated with any agency.<br>
       Not for navigation or emergencies. In an emergency, call 911.
     </div>
@@ -686,6 +692,7 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
         "__DEPART__": e(_fmt_depart(route.depart_for(now.weekday()))),
         "__WHEN__": e(when),
         "__ROUTE_LINE__": route_line,
+        "__TEST__": test_html,
         "__ROUTE_IMG__": route_img,
         "__ALERTS__": alert_html,
         "__BODY__": body,
@@ -696,14 +703,15 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
     return tmpl
 
 
-def _subject_for(route: Route, incidents: List[Dict], followup: bool = False) -> str:
+def _subject_for(route: Route, incidents: List[Dict], followup: bool = False,
+                 now: Optional[datetime] = None) -> str:
     if followup:
         top = incidents[0]
         return "🚨 %s: NEW on your route — %s %s (%s)" % (
             route.name, top["emoji"],
             (top["cause"] or top["category"]).title(), _fmt_ago(top["minutes_ago"]))
     if not incidents:
-        return "✅ %s: route clear (%s)" % (route.name, time.strftime("%-I:%M %p"))
+        return "✅ %s: route clear (%s)" % (route.name, (now or datetime.now()).strftime("%-I:%M %p"))
     top = incidents[0]
     return "🚧 %s: %d on your route — %s %s (%s)" % (
         route.name, len(incidents), top["emoji"],
@@ -745,17 +753,72 @@ def _route_map_images(config, route: Route, incidents: List[Dict], session) -> D
 
 
 def _send_route_email(send, cfg, config, route, incidents, now, rcfg, session, logger,
-                      followup: bool = False) -> None:
+                      followup: bool = False, test_note: str = "") -> None:
     images = _route_map_images(config, route, incidents, session)
     html = render_route_email(route, incidents, now, rcfg.window_min,
-                              alerts=_fetch_alerts_best_effort(session, logger),
+                              # Live NWS alerts would be misleading in a replay.
+                              alerts=None if test_note else _fetch_alerts_best_effort(session, logger),
                               map_url=cfg.map_url, followup=followup,
-                              map_cid=ROUTE_MAP_CID if images else "")
-    subject = _subject_for(route, incidents, followup=followup)
+                              map_cid=ROUTE_MAP_CID if images else "", test_note=test_note)
+    subject = _subject_for(route, incidents, followup=followup, now=now)
+    if test_note:
+        subject = "🧪 TEST · " + subject
     if images:
         send(cfg, html, subject, images=images)
     else:
         send(cfg, html, subject)
+
+
+def schedule_note(route: Route, lead_min: int, at: datetime) -> str:
+    """Plain-English answer to "would an email go out around this time?"."""
+    day = at.strftime("%A")
+    if at.weekday() not in route.days:
+        return "%s isn't one of this route's days, so no email would be sent." % day
+    depart = route.depart_for(at.weekday())
+    return "On %ss the email goes out at %s for a %s departure, then watches the route." % (
+        day, _fmt_depart(max(0, depart - lead_min)), _fmt_depart(depart))
+
+
+def run_route_test(config, store, session, logger, slot: int, at: datetime,
+                   route_cfg: Optional[RouteConfig] = None,
+                   digest_cfg: Optional[DigestConfig] = None, send=send_digest) -> Dict:
+    """Test mode: email the departure alert for one route AS IF it were
+    ``at`` — using the incidents in the database for that moment — clearly
+    labelled as a test. Does not touch the real schedule or dedup state.
+    Returns a small summary for the page. Never raises."""
+    rcfg = route_cfg or load_route_config(store)
+    route = next((r for r in rcfg.routes if r.index == int(slot)), None)
+    if route is None:
+        return {"ok": False, "error": "Route %s isn't on the Pi (yet) — save it, wait a few minutes, retry." % slot}
+    summary = {"ok": True, "route": route.name, "at": at.strftime("%a %b %-d, %-I:%M %p"),
+               "schedule": schedule_note(route, rcfg.lead_min, at)}
+    try:
+        diag: List[Dict] = []
+        incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=at, diagnostics=diag)
+        summary["incidents"] = len(incidents)
+        summary["headline"] = ("%d incident%s on the route" % (len(incidents), "" if len(incidents) == 1 else "s")
+                               if incidents else "Route clear")
+        skipped_near = [d for d in diag if d["verdict"] == "skipped" and d.get("dist_m") is not None
+                        and d["dist_m"] <= 3 * route.radius_m]
+        if skipped_near:
+            summary["near_misses"] = "; ".join("%s at %s (%s)" % (d["cause"].title(), d["location"].title(), d["reason"])
+                                               for d in skipped_near[:3])
+        cfg = digest_cfg or load_digest_config()
+        if not (cfg.smtp_host and cfg.smtp_user and cfg.smtp_pass and cfg.mail_to):
+            summary["emailed"] = False
+            summary["error"] = "Email isn't configured on the Pi."
+            return summary
+        note = ("as if it were %s. %s Uses the incidents on record for that time%s. "
+                "Your real alerts are unaffected." % (
+                    summary["at"], summary["schedule"],
+                    " (a past time shows the map positions known NOW, which may be better than "
+                    "what was known then)" if at < datetime.now() - timedelta(minutes=30) else ""))
+        _send_route_email(send, cfg, config, route, incidents, at, rcfg, session, logger, test_note=note)
+        summary["emailed"] = True
+    except Exception as exc:
+        summary["ok"] = False
+        summary["error"] = str(exc)[:300]
+    return summary
 
 
 def maybe_send_route_alerts(config, store, session, logger,
