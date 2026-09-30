@@ -30,9 +30,9 @@ the published map. The SMTP settings are shared with the daily digest
     LAF911_ROUTE_ENABLED=true
     LAF911_ROUTE_LEAD_MIN=10           # email this many minutes before departure
     LAF911_ROUTE_WINDOW_MIN=90         # only incidents newer than this
-    LAF911_ROUTE_FOLLOWUP_MIN=15       # keep watching this long after the email;
+    LAF911_ROUTE_FOLLOWUP_MIN=30       # keep watching this long after the email;
                                        # NEW incidents trigger a follow-up alert
-                                       # (0 disables; raise it for longer drives)
+                                       # (0 disables; max 120)
     LAF911_ROUTE_1_NAME=To work
     LAF911_ROUTE_1_CORRIDORS=Ambassador Caffery | Kaliste Saloom | I-10
     LAF911_ROUTE_1_DEPART=07:20
@@ -40,10 +40,13 @@ the published map. The SMTP settings are shared with the daily digest
     LAF911_ROUTE_2_NAME=Home
     LAF911_ROUTE_2_CORRIDORS=I-10 | Ambassador Caffery | Johnston St
     LAF911_ROUTE_2_DEPART=17:00
+    LAF911_ROUTE_2_DEPART_FRI=12:00    # optional per-day departure override
     LAF911_ROUTE_2_DAYS=mon-fri
 
 CLI:  python -m lafayette911.route_alerts --preview out.html [--route 1]
       python -m lafayette911.route_alerts --send   [--route 1]   # send now
+      python -m lafayette911.route_alerts --diagnose [--route 1] [--at "2026-09-28 07:10"]
+            # explain which incidents matched / were skipped, and why
 """
 
 import html as _html
@@ -90,6 +93,12 @@ class Route:
     # cannot be proven to be on the selected road section.
     path: List = field(default_factory=list)
     radius_m: int = 100
+    # Per-weekday departure overrides ({4: 720} = Fridays at 12:00), from
+    # DEPART_MON … DEPART_SUN. Days without one use depart_minutes.
+    depart_overrides: Dict[int, int] = field(default_factory=dict)
+
+    def depart_for(self, weekday: int) -> int:
+        return self.depart_overrides.get(weekday, self.depart_minutes)
 
 
 @dataclass
@@ -100,7 +109,7 @@ class RouteConfig:
     # After the departure email goes out, keep watching the route for this
     # many minutes; anything NEW that appears gets a follow-up alert (you may
     # already be driving). 0 disables. LAF911_ROUTE_FOLLOWUP_MIN overrides.
-    followup_min: int = 15
+    followup_min: int = 30
     routes: List[Route] = field(default_factory=list)
 
 
@@ -194,7 +203,8 @@ def dist_to_path_m(lat: float, lng: float, path: List) -> float:
     )
 
 
-ROUTE_KV_KEYS = ("NAME", "CORRIDORS", "PATH", "RADIUS_M", "DEPART", "DAYS")
+_DEPART_DAY_KEYS = tuple("DEPART_" + d.upper() for d in _DAY_NAMES)
+ROUTE_KV_KEYS = ("NAME", "CORRIDORS", "PATH", "RADIUS_M", "DEPART", "DAYS") + _DEPART_DAY_KEYS
 
 # app_meta key holding routes configured BY EMAIL (see route_inbox.py) — the
 # zero-Pi-configuration path. Slots stored here override the same env slot.
@@ -222,6 +232,11 @@ def _route_from_kv(i: int, kv: Dict[str, str]) -> Optional[Route]:
     depart = _parse_hhmm(kv.get("DEPART") or "")
     if depart is None or (not canon and len(path) < 2):
         return None
+    overrides = {}
+    for day_idx, key in enumerate(_DEPART_DAY_KEYS):
+        t = _parse_hhmm(kv.get(key) or "")
+        if t is not None:
+            overrides[day_idx] = t
     return Route(
         index=i,
         name=name or ("Route %d" % i),
@@ -231,6 +246,7 @@ def _route_from_kv(i: int, kv: Dict[str, str]) -> Optional[Route]:
         days=_parse_days(kv.get("DAYS") or "mon-fri"),
         path=path,
         radius_m=max(50, min(2000, radius_m)),
+        depart_overrides=overrides,
     )
 
 
@@ -255,9 +271,9 @@ def load_route_config(store=None) -> RouteConfig:
     lead = int(os.getenv("LAF911_ROUTE_LEAD_MIN", "10") or 10)
     window = int(os.getenv("LAF911_ROUTE_WINDOW_MIN", "90") or 90)
     try:
-        followup = max(0, min(120, int(os.getenv("LAF911_ROUTE_FOLLOWUP_MIN", "15") or 15)))
+        followup = max(0, min(120, int(os.getenv("LAF911_ROUTE_FOLLOWUP_MIN", "30") or 30)))
     except ValueError:
-        followup = 15
+        followup = 30
     mail_routes = _load_mail_routes(store)
     routes: List[Route] = []
     for i in range(1, 21):
@@ -288,17 +304,137 @@ def _parse_reported_local(reported: str) -> Optional[datetime]:
         return None
 
 
+class _PathIndex:
+    """A drawn line in local meters with a coarse grid over its segments, so
+    projecting thousands of historical incidents onto it stays cheap on a Pi."""
+
+    def __init__(self, path: List, near_m: float, cell_m: float = 250.0):
+        import math
+        self.lat0 = math.radians(sum(p[0] for p in path) / len(path))
+        self.kx = 111320.0 * math.cos(self.lat0)
+        self.ky = 110540.0
+        self.pts = [(p[1] * self.kx, p[0] * self.ky) for p in path]
+        self.cell = cell_m
+        self.near = near_m
+        self.segs = []      # (ax, ay, dx, dy, len2, along_at_a)
+        self.grid: Dict = {}
+        along = 0.0
+        for i, ((ax, ay), (bx, by)) in enumerate(zip(self.pts, self.pts[1:])):
+            dx, dy = bx - ax, by - ay
+            self.segs.append((ax, ay, dx, dy, dx * dx + dy * dy, along))
+            along += (dx * dx + dy * dy) ** 0.5
+            x0, x1 = int((min(ax, bx) - near_m) // cell_m), int((max(ax, bx) + near_m) // cell_m)
+            y0, y1 = int((min(ay, by) - near_m) // cell_m), int((max(ay, by) + near_m) // cell_m)
+            for cx in range(x0, x1 + 1):
+                for cy in range(y0, y1 + 1):
+                    self.grid.setdefault((cx, cy), []).append(i)
+        self.length = along
+
+    def project(self, lat: float, lng: float):
+        """(distance to line, distance along line) in meters, or None when
+        the point is farther than ``near_m`` from every segment."""
+        px, py = lng * self.kx, lat * self.ky
+        best = None
+        for i in self.grid.get((int(px // self.cell), int(py // self.cell)), ()):
+            ax, ay, dx, dy, len2, along = self.segs[i]
+            t = 0.0 if len2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2))
+            d = ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5
+            if d <= self.near and (best is None or d < best[0]):
+                best = (d, along + t * len2 ** 0.5)
+        return best
+
+
+# A road counts as "driven" when past incidents on it line up along at least
+# this much of the drawn line. A cross street only touches the line at one
+# point (span ≈ 0), so it never qualifies.
+_ROAD_MIN_SPAN_M = 400.0
+_path_roads_cache: Dict = {}
+
+
+def derive_path_corridors(db_path: str, path: List, radius_m: int) -> Set[str]:
+    """Roads a drawn route actually runs ALONG, learned from history.
+
+    Drawn routes carry no road names, so an incident that has not been placed
+    on the map yet (geocoding pending, budget spent, intersection-only
+    address) cannot be distance-tested. Without road names it used to vanish
+    silently — the "route clear" email went out with a crash on your road.
+
+    Every previously geocoded incident near the line is projected onto it; a
+    road whose incidents spread along >= ``_ROAD_MIN_SPAN_M`` of the line (or
+    a third of a short route) is one you drive. No map download needed — the
+    incident history is the gazetteer. Cached per path for the day.
+    """
+    import sqlite3
+
+    if len(path) < 2:
+        return set()
+    key = (db_path, tuple(path), int(radius_m), datetime.now().strftime("%Y-%m-%d"))
+    if key in _path_roads_cache:
+        return _path_roads_cache[key]
+    near_m = max(150, int(radius_m))
+    pad = near_m / 100000.0 * 1.5   # degrees, generous
+    lats = [p[0] for p in path]
+    lngs = [p[1] for p in path]
+    index = _PathIndex(path, near_m)
+    min_span = min(_ROAD_MIN_SPAN_M, index.length / 3.0)
+    spans: Dict[str, List[float]] = {}
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT location, latitude, longitude FROM incidents"
+                " WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?",
+                (min(lats) - pad, max(lats) + pad, min(lngs) - pad, max(lngs) + pad),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return set()
+    for loc, lat, lng in rows:
+        if lat is None or lng is None:
+            continue
+        hit = index.project(float(lat), float(lng))
+        if hit is None:
+            continue
+        along = hit[1]
+        for cid in corridor_ids(loc):
+            lo_hi = spans.setdefault(cid, [along, along])
+            lo_hi[0] = min(lo_hi[0], along)
+            lo_hi[1] = max(lo_hi[1], along)
+    roads = {cid for cid, (lo, hi) in spans.items() if hi - lo >= min_span}
+    if len(_path_roads_cache) > 32:
+        _path_roads_cache.clear()
+    _path_roads_cache[key] = roads
+    return roads
+
+
+def route_roads(db_path: str, route: Route) -> Set[str]:
+    """Road names that identify this route: typed corridors, plus (for a
+    drawn route) the roads derived from its path."""
+    roads = set(route.corridors)
+    if route.path and len(route.path) >= 2:
+        roads |= derive_path_corridors(db_path, route.path, route.radius_m)
+    return roads
+
+
 def find_route_incidents(db_path: str, route: Route, window_min: int,
-                         now: Optional[datetime] = None) -> List[Dict]:
+                         now: Optional[datetime] = None,
+                         diagnostics: Optional[List[Dict]] = None) -> List[Dict]:
     """Current incidents on the route, within the freshness window.
 
-    Section-precise when the route carries a traced ``path``: incidents must
-    be geocoded and match by distance to the line (within ``route.radius_m``),
-    so an accident five miles down a road you only briefly use does NOT match.
-    Incidents still awaiting geocoding can't be distance-tested, so drawn-path
-    routes skip them rather than falling back to whole-road corridor matching.
-    Without a path (roads-only config), everything matches by corridor as
-    before. Sorted by severity, then most-recent first.
+    Section-precise when the route carries a traced ``path``: located
+    incidents must be within ``route.radius_m`` of the line, so an accident
+    five miles down a road you only briefly use does NOT match.
+
+    Incidents not yet placed on the map can't be distance-tested. For a drawn
+    route they still match when their road is one the route runs along (see
+    :func:`route_roads`) and are flagged ``approx`` so the email says "may be
+    outside your section" — a possible false alarm beats a false all-clear.
+    Without a path (roads-only config), everything matches by corridor.
+    Sorted by severity, then most-recent first.
+
+    ``diagnostics``, when given, collects one entry per fresh incident with
+    the verdict and reason (used by ``--diagnose``).
     """
     import sqlite3
 
@@ -326,27 +462,48 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
         for r in fresh
     ])
 
+    drawn = bool(route.path and len(route.path) >= 2)
+    roads = route_roads(db_path, route) if drawn else route.corridors
+
+    def note(loc, cause, dt, verdict, reason, dist=None):
+        if diagnostics is not None:
+            diagnostics.append({"location": str(loc or "").strip(), "cause": str(cause or "").strip(),
+                                "reported_dt": dt, "verdict": verdict, "reason": reason,
+                                "dist_m": dist})
+
     out: List[Dict] = []
     for loc, cause, reported, lat, lng, pprob, pin, inum in rows:
-        if str(inum or "") in secondary_ids:
-            continue
         dt = _parse_reported_local(reported)
         if dt is None or dt < cutoff or dt > now + timedelta(minutes=5):
+            continue
+        if str(inum or "") in secondary_ids:
+            note(loc, cause, dt, "merged", "duplicate listing of another incident")
             continue
         located = lat is not None and lng is not None
         approx = False
         dist_m = None
-        if route.path and len(route.path) >= 2:
-            if not located:
-                continue
-            dist_m = dist_to_path_m(float(lat), float(lng), route.path)
-            if dist_m > route.radius_m:
-                continue
-            matched = sorted(set(corridor_ids(loc)) & route.corridors) or corridor_ids(loc)[:1]
+        loc_roads = corridor_ids(loc)
+        if drawn:
+            if located:
+                dist_m = dist_to_path_m(float(lat), float(lng), route.path)
+                if dist_m > route.radius_m:
+                    note(loc, cause, dt, "skipped", "%d m from your line (limit %d m)" % (dist_m, route.radius_m), dist_m)
+                    continue
+                matched = sorted(set(loc_roads) & roads) or loc_roads[:1]
+            else:
+                matched = sorted(set(loc_roads) & roads)
+                if not matched:
+                    note(loc, cause, dt, "skipped", "not located yet, and not on a road this route runs along")
+                    continue
+                approx = True
         else:
-            matched = sorted(set(corridor_ids(loc)) & route.corridors)
+            matched = sorted(set(loc_roads) & route.corridors)
             if not matched:
+                note(loc, cause, dt, "skipped", "not on one of your roads")
                 continue
+        note(loc, cause, dt, "ALERT",
+             "not located yet — on %s" % ", ".join(matched) if approx else
+             ("%d m from your line" % dist_m if dist_m is not None else "on %s" % ", ".join(matched)))
         cat = categorize(cause)
         emoji, rank = _CAT_META.get(cat, ("📋", 5))
         extras = extras_by_primary.get(str(inum or ""), [])
@@ -362,6 +519,8 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
             "located": located,
             "approx": approx,
             "dist_m": None if dist_m is None else int(dist_m),
+            "lat": float(lat) if located else None,
+            "lng": float(lng) if located else None,
             "rain": (pprob is not None and pprob >= 20) or (pin is not None and pin > 0.005),
             # Duplicate feed listings folded into this line, and the full id
             # set of the episode — the follow-up watcher keys on these so a
@@ -399,7 +558,8 @@ def _fmt_depart(minutes: int) -> str:
 
 def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                        window_min: int, alerts: Optional[Dict] = None,
-                       map_url: str = "", followup: bool = False) -> str:
+                       map_url: str = "", followup: bool = False,
+                       map_cid: str = "") -> str:
     e = _html.escape
     if route.corridor_labels:
         route_line = " → ".join(e(c.title()) for c in route.corridor_labels)
@@ -439,7 +599,7 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
             on_roads = ", ".join(c.title() for c in inc["matched"])
             badges = ""
             if inc.get("approx"):
-                badges += (' <span style="font-size:10.5px;color:#b45309;">(not yet located — '
+                badges += (' <span style="font-size:10.5px;color:#b45309;">(not on the map yet — '
                            'somewhere on this road, may be outside your section)</span>')
             elif not inc["located"]:
                 badges += ' <span style="font-size:10.5px;color:#8a919e;">(locating…)</span>'
@@ -476,6 +636,15 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                 '<div style="font-size:11px;color:#8a919e;padding-top:6px;">'
                 'Absence of a report isn&#39;t a guarantee the road is clear — drive safely.</div></div>')
 
+    route_img = ""
+    if map_cid:
+        route_img = ('<div style="padding:0 0 12px 0;">'
+                     '<img src="cid:' + e(map_cid) + '" width="560" alt="Map of your route" '
+                     'style="display:block;width:100%;max-width:560px;height:auto;border-radius:12px;'
+                     'border:1px solid #e7e9ee;"></div>'
+                     '<div style="font-size:11px;color:#8a919e;padding:0 0 12px 0;margin-top:-6px;">'
+                     '🟢 start · 🏁 end · 🔴 reported incident (not-yet-located ones are listed but not drawn)</div>')
+
     map_btn = ""
     if map_url:
         map_btn = ('<div style="text-align:center;padding:16px 0 2px 0;">'
@@ -495,6 +664,7 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
   </td></tr>
   <tr><td style="background:#f9fafb;border:1px solid #e7e9ee;border-top:none;border-radius:0 0 20px 20px;padding:16px 18px 20px 18px;">
     <div style="font-size:12px;color:#8a919e;padding-bottom:10px;">🧭 __ROUTE_LINE__</div>
+    __ROUTE_IMG__
     __ALERTS__
     __BODY__
     __MAP_BTN__
@@ -513,9 +683,10 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
         "__HEMOJI__": header_emoji,
         "__HEADLINE__": e(headline),
         "__ROUTE_NAME__": e(route.name),
-        "__DEPART__": e(_fmt_depart(route.depart_minutes)),
+        "__DEPART__": e(_fmt_depart(route.depart_for(now.weekday()))),
         "__WHEN__": e(when),
         "__ROUTE_LINE__": route_line,
+        "__ROUTE_IMG__": route_img,
         "__ALERTS__": alert_html,
         "__BODY__": body,
         "__MAP_BTN__": map_btn,
@@ -556,6 +727,37 @@ def _fetch_alerts_best_effort(session, logger) -> Optional[Dict]:
         return None
 
 
+ROUTE_MAP_CID = "laf911-route-map"
+
+
+def _route_map_images(config, route: Route, incidents: List[Dict], session) -> Dict[str, bytes]:
+    """{cid: png} with a picture of a drawn route, or {} (never raises)."""
+    if not (route.path and len(route.path) >= 2):
+        return {}
+    try:
+        from lafayette911.route_map_image import render_route_png
+        base = getattr(config, "base_dir", None) or os.path.dirname(os.path.abspath(config.db_path))
+        png = render_route_png(route.path, incidents,
+                               cache_dir=os.path.join(base, "route_map_cache"), session=session)
+        return {ROUTE_MAP_CID: png} if png else {}
+    except Exception:
+        return {}
+
+
+def _send_route_email(send, cfg, config, route, incidents, now, rcfg, session, logger,
+                      followup: bool = False) -> None:
+    images = _route_map_images(config, route, incidents, session)
+    html = render_route_email(route, incidents, now, rcfg.window_min,
+                              alerts=_fetch_alerts_best_effort(session, logger),
+                              map_url=cfg.map_url, followup=followup,
+                              map_cid=ROUTE_MAP_CID if images else "")
+    subject = _subject_for(route, incidents, followup=followup)
+    if images:
+        send(cfg, html, subject, images=images)
+    else:
+        send(cfg, html, subject)
+
+
 def maybe_send_route_alerts(config, store, session, logger,
                             route_cfg: Optional[RouteConfig] = None,
                             digest_cfg: Optional[DigestConfig] = None,
@@ -589,16 +791,14 @@ def maybe_send_route_alerts(config, store, session, logger,
                 and int(store._meta_get(fail_key + "_count") or 0) >= 3):
             continue
 
-        target = route.depart_minutes - rcfg.lead_min
+        depart = route.depart_for(now.weekday())
+        target = depart - rcfg.lead_min
         # Departure email: fire in the window [target, depart) — up to
         # lead_min minutes, several cycles — but never after departure.
-        if not sent_today and target <= now_min < route.depart_minutes:
+        if not sent_today and target <= now_min < depart:
             try:
                 incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=now)
-                alerts = _fetch_alerts_best_effort(session, logger)
-                html = render_route_email(route, incidents, now, rcfg.window_min,
-                                          alerts=alerts, map_url=cfg.map_url)
-                send(cfg, html, _subject_for(route, incidents))
+                _send_route_email(send, cfg, config, route, incidents, now, rcfg, session, logger)
                 store._meta_set(sent_key, today)
                 store._meta_set(fail_key + "_count", "0")
                 # Arm the post-departure watch: remember when we sent and
@@ -624,9 +824,10 @@ def maybe_send_route_alerts(config, store, session, logger,
                     pass
             continue
 
-        # Post-departure watch: for followup_min minutes after the departure
-        # email, alert on incidents that appear on the route — you may
-        # already be driving. Each event alerts at most once (episode ids),
+        # Post-departure watch: for followup_min minutes (default 30) after
+        # the departure email, alert on incidents that appear on the route —
+        # you may already be driving. This includes an incident that was
+        # already in the feed but only now got placed on the map. Each event alerts at most once (episode ids),
         # and follow-ups cap at 3 per day as a spam fail-safe.
         if sent_today and rcfg.followup_min > 0:
             try:
@@ -644,10 +845,8 @@ def maybe_send_route_alerts(config, store, session, logger,
                          if not (set(inc.get("episode_ids", [])) & known)]
                 if not fresh:
                     continue
-                html = render_route_email(route, fresh, now, rcfg.window_min,
-                                          alerts=_fetch_alerts_best_effort(session, logger),
-                                          map_url=cfg.map_url, followup=True)
-                send(cfg, html, _subject_for(route, fresh, followup=True))
+                _send_route_email(send, cfg, config, route, fresh, now, rcfg, session, logger,
+                                  followup=True)
                 for inc in fresh:
                     known.update(inc.get("episode_ids", []))
                 store._meta_set("route_%d_reported_ids" % route.index, _json.dumps(sorted(known)))
@@ -669,39 +868,96 @@ def maybe_send_route_alerts(config, store, session, logger,
     return sent
 
 
+def _print_diagnosis(db_path: str, route: Route, window_min: int, at: datetime) -> None:
+    """Human-readable explanation of what the matcher saw for one route."""
+    diag: List[Dict] = []
+    found = find_route_incidents(db_path, route, window_min, now=at, diagnostics=diag)
+    drawn = bool(route.path and len(route.path) >= 2)
+    print("=" * 72)
+    print("Route %d '%s' — as of %s (window %d min)" % (route.index, route.name,
+                                                       at.strftime("%a %Y-%m-%d %H:%M"), window_min))
+    print("  departs %s on %s; email %s" % (
+        _fmt_depart(route.depart_for(at.weekday())),
+        at.strftime("%A"), "scheduled today" if at.weekday() in route.days else "NOT scheduled today"))
+    if drawn:
+        roads = route_roads(db_path, route)
+        print("  drawn line: %d points, match radius %d m" % (len(route.path), route.radius_m))
+        print("  roads it runs along (used for not-yet-located incidents): %s" % (
+            ", ".join(sorted(roads)) or "NONE FOUND — only located incidents can match"))
+    else:
+        print("  roads: %s" % ", ".join(sorted(route.corridors)))
+    print("  → email would say: %s" % (
+        "%d incident(s) on your route" % len(found) if found else "route clear"))
+    # Everything except located incidents clearly elsewhere in the parish.
+    near = [d for d in diag if d["dist_m"] is None or d["dist_m"] <= 2000]
+    far = len(diag) - len(near)
+    for d in sorted(near, key=lambda d: d["reported_dt"]):
+        print("  [%-7s] %s  %-28s %-40s %s" % (
+            d["verdict"], d["reported_dt"].strftime("%H:%M"), d["cause"][:28], d["location"][:40], d["reason"]))
+    print("  (%d other incident(s) in the window were far from this route)" % far)
+
+
 if __name__ == "__main__":
     import argparse
 
     from lafayette911.config import load_config
+    from lafayette911.state_store import StateStore
 
     parser = argparse.ArgumentParser(description="Lafayette 911 personal route alerts")
     parser.add_argument("--preview", metavar="FILE", help="write a route email to FILE (no send)")
     parser.add_argument("--send", action="store_true", help="send route alert(s) NOW (ignores schedule)")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="explain which incidents match each route and why others don't")
+    parser.add_argument("--at", metavar="'YYYY-MM-DD HH:MM'", default=None,
+                        help="evaluate as of this local time (replay a past morning)")
     parser.add_argument("--route", type=int, default=None, help="only this route index (1-based)")
     args = parser.parse_args()
 
     app_cfg = load_config()
-    rcfg = load_route_config()
+    store = StateStore(app_cfg.db_path, app_cfg.csv_path)
+    try:
+        rcfg = load_route_config(store)   # includes routes configured by email
+    finally:
+        store.close()
     dcfg = load_digest_config()
     if not rcfg.routes:
-        raise SystemExit("No routes configured. Set LAF911_ROUTE_1_NAME / _CORRIDORS / _DEPART.")
+        raise SystemExit("No routes configured (by email or LAF911_ROUTE_1_* env vars).")
 
     chosen = [r for r in rcfg.routes if args.route is None or r.index == args.route]
     if not chosen:
         raise SystemExit("No route with index %s." % args.route)
+    at = datetime.strptime(args.at, "%Y-%m-%d %H:%M") if args.at else datetime.now()
+
+    session = None
+    if args.preview or args.send:
+        from lafayette911.fetch_incidents import build_session
+        session = build_session()
 
     for route in chosen:
-        incidents = find_route_incidents(app_cfg.db_path, route, rcfg.window_min)
-        html = render_route_email(route, incidents, datetime.now(), rcfg.window_min, map_url=dcfg.map_url)
+        if args.diagnose:
+            _print_diagnosis(app_cfg.db_path, route, rcfg.window_min, at)
+        if not (args.preview or args.send):
+            continue
+        incidents = find_route_incidents(app_cfg.db_path, route, rcfg.window_min, now=at)
+        images = _route_map_images(app_cfg, route, incidents, session)
         if args.preview:
             path = args.preview if len(chosen) == 1 else args.preview.replace(".html", "_%d.html" % route.index)
+            html = render_route_email(route, incidents, at, rcfg.window_min, map_url=dcfg.map_url,
+                                      map_cid=ROUTE_MAP_CID if images else "")
+            if images:
+                png_path = os.path.splitext(path)[0] + "_map.png"
+                with open(png_path, "wb") as handle:
+                    handle.write(images[ROUTE_MAP_CID])
+                html = html.replace("cid:" + ROUTE_MAP_CID, os.path.basename(png_path))
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(html)
             print("wrote %s — %s: %d incident(s) on route" % (path, route.name, len(incidents)))
         if args.send:
             if not (dcfg.smtp_user and dcfg.smtp_pass and dcfg.mail_to):
                 raise SystemExit("Set LAF911_DIGEST_SMTP_USER / _PASS / LAF911_DIGEST_TO first.")
-            send_digest(dcfg, html, _subject_for(route, incidents))
+            html = render_route_email(route, incidents, at, rcfg.window_min, map_url=dcfg.map_url,
+                                      map_cid=ROUTE_MAP_CID if images else "")
+            send_digest(dcfg, html, _subject_for(route, incidents), images=images or None)
             print("sent %s to %s" % (route.name, dcfg.mail_to))
-    if not args.preview and not args.send:
+    if not (args.preview or args.send or args.diagnose):
         parser.print_help()

@@ -79,7 +79,7 @@ class SectionMatchingTests(unittest.TestCase):
             # driven section geographically — road names don't gate located
             # incidents).
             ("C", "SETTLERS TRACE BLVD", "STALLED VEHICLE", rep(now - timedelta(minutes=20)), "", 30.207, -92.0205, "", None, None),
-            # On-road but NOT YET GEOCODED → skipped; section cannot be proven.
+            # On-road but NOT YET GEOCODED → reported, flagged approximate.
             ("D", "AMBASSADOR CAFFERY PKWY", "ROAD HAZARD", rep(now - timedelta(minutes=5)), "", None, None, "", None, None),
             # Unlocated and NOT on a listed corridor → excluded.
             ("E", "JOHNSTON ST", "ACCIDENT", rep(now - timedelta(minutes=5)), "", None, None, "", None, None),
@@ -100,9 +100,12 @@ class SectionMatchingTests(unittest.TestCase):
         self.assertIn("3500 AMBASSADOR CAFFERY PKWY", ids)     # in-section
         self.assertNotIn("8000 AMBASSADOR CAFFERY PKWY", ids)  # same road, off-section!
         self.assertIn("SETTLERS TRACE BLVD", ids)              # geographically on the line
-        self.assertNotIn("AMBASSADOR CAFFERY PKWY", ids)       # unlocated; no whole-road fallback
+        # Not located yet, but on a road the route runs along: reported and
+        # flagged approximate rather than silently dropped.
+        self.assertIn("AMBASSADOR CAFFERY PKWY", ids)
         self.assertNotIn("JOHNSTON ST", ids)
         by_loc = {f["location"]: f for f in found}
+        self.assertTrue(by_loc["AMBASSADOR CAFFERY PKWY"]["approx"])
         self.assertFalse(by_loc["3500 AMBASSADOR CAFFERY PKWY"]["approx"])
         self.assertIsNotNone(by_loc["3500 AMBASSADOR CAFFERY PKWY"]["dist_m"])
 
