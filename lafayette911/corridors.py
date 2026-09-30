@@ -84,6 +84,10 @@ _UNIT_QUALIFIERS = {
 # LAST so all spelling variants funnel through normalization first. Add
 # entries here as data reveals more variants.
 _ALIASES = {
+    # Dispatch often drops the suffix; bare "E BROUSSARD" would otherwise
+    # split from "E BROUSSARD RD" into its own corridor.
+    "E BROUSSARD": "E BROUSSARD RD",
+    "W BROUSSARD": "W BROUSSARD RD",
     "AMBASSADOR CAFFERY": "AMBASSADOR CAFFERY PKWY",
     "AMB CAFFERY": "AMBASSADOR CAFFERY PKWY",
     "AMB CAFFERY PKWY": "AMBASSADOR CAFFERY PKWY",
@@ -115,6 +119,8 @@ _CITY_TOKENS = {
     "DUSON", "MILTON", "MAURICE",
 }
 _STATE_TOKENS = {"LA", "LOUISIANA", "USA", "PARISH"}
+# Town names that, after a direction, are a road: E/W Broussard Rd.
+_DIRECTIONAL_TOWN_ROADS = {"BROUSSARD"}
 
 # Intersection separators: "X AT Y", "X & Y", "X / Y", "X @ Y", "X NEAR Y".
 _INTERSECTION_SPLIT = re.compile(
@@ -199,6 +205,11 @@ def normalize_corridor(road: str) -> str:
     # Strip trailing municipality/state tags ("MOSS ST LAFAYETTE LA" →
     # "MOSS ST"); a location that was ONLY a city/state is not a corridor.
     while tokens and (tokens[-1] in _STATE_TOKENS or tokens[-1] in _CITY_TOKENS):
+        # "E BROUSSARD" is a road (E Broussard Rd), not "E" + the town of
+        # Broussard. Only towns that also name a local road qualify, so
+        # "W SCOTT" still reads as the town of Scott.
+        if len(tokens) == 2 and tokens[0] in _DIRECTIONS and tokens[1] in _DIRECTIONAL_TOWN_ROADS:
+            break
         tokens.pop()
     if not tokens:
         return ""

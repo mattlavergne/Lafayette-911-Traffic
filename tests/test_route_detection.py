@@ -147,6 +147,50 @@ class MissedAlertRegressionTests(unittest.TestCase):
         self.assertTrue(sent[-1].startswith("🚨"))
 
 
+class CrossStreetAddressTests(unittest.TestCase):
+    """The real miss: a crash at E Broussard & Duhon logged as
+    "600 E BROUSSARD/DUHON RD" and geocoded to the 600 block of E Broussard,
+    a block away from a route that runs down Duhon and only crosses it."""
+
+    def _find(self, rows):
+        now = datetime(2026, 9, 28, 7, 10)
+        history = [
+            ("H%d" % i, "%d DUHON RD" % (1000 + 100 * i), "ACCIDENT", _rep(datetime(2026, 8, 1)), "",
+             30.2005 + 0.001 * i, -92.0201, "", None, None)
+            for i in range(9)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "t.sqlite")
+            _make_db(db, history + [
+                (num, loc, "TRAFFIC ACCIDENT MAJOR", _rep(now - timedelta(minutes=15)), "", lat, lng, "", None, None)
+                for num, loc, lat, lng in rows
+            ])
+            diag = []
+            found = find_route_incidents(db, _drawn_route(), 90, now=now, diagnostics=diag)
+        return found, {d["location"]: d for d in diag}
+
+    def test_block_plus_cross_street_near_the_line_alerts(self):
+        # ~240 m east of the line along E Broussard.
+        found, diag = self._find([("C1", "600 E BROUSSARD/DUHON RD", 30.2050, -92.0175)])
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0]["cross_street"])
+        self.assertIn("DUHON RD", found[0]["matched"])
+        self.assertIn("intersection with DUHON RD", diag["600 E BROUSSARD/DUHON RD"]["reason"])
+        html = render_route_email(_drawn_route(), found, datetime(2026, 9, 28, 7, 10), 90)
+        self.assertIn("intersection with your road", html)
+
+    def test_same_spot_without_the_cross_street_does_not(self):
+        found, _ = self._find([("C2", "600 E BROUSSARD RD", 30.2050, -92.0175)])
+        self.assertEqual(found, [])
+
+    def test_far_away_or_unrelated_intersections_do_not(self):
+        found, _ = self._find([
+            ("C3", "2400 E BROUSSARD/DUHON RD", 30.2050, -92.0110),   # ~870 m away
+            ("C4", "600 E BROUSSARD/ZZ ST", 30.2050, -92.0175),       # not a route road
+        ])
+        self.assertEqual(found, [])
+
+
 class PerDayDepartureTests(unittest.TestCase):
     def _run(self, now):
         route = _route_from_kv(2, {"NAME": "Home", "PATH": "30.2,-92.02; 30.21,-92.02",
