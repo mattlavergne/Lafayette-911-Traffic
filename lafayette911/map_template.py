@@ -36,6 +36,15 @@ def _carto_api_key(explicit: Optional[str] = None) -> str:
     return key if re.fullmatch(r"[A-Za-z0-9_.\-]{1,128}", key) else ""
 
 
+def _route_sync_url() -> str:
+    """The route-settings API the page's route builder talks to, from
+    ``LAF911_ROUTE_SYNC_URL`` (the same value the Pi polls). Empty → the page
+    uses ``api/routes`` beside itself when served through the Worker. Only a
+    plain https URL is accepted, since it lands inside a JS string literal."""
+    url = os.environ.get("LAF911_ROUTE_SYNC_URL", "").strip()
+    return url if re.fullmatch(r"https://[A-Za-z0-9.\-]+(:\d+)?(/[A-Za-z0-9._~/\-]*)?", url) else ""
+
+
 def render_map_html(
     center_lat: float,
     center_lng: float,
@@ -60,6 +69,7 @@ def render_map_html(
     html = html.replace("__DAY_OPTIONS__", day_options)
     html = html.replace("__GENERATED_AT__", generated_at)
     html = html.replace("__CARTO_API_KEY__", _carto_api_key(carto_api_key))
+    html = html.replace("__ROUTE_SYNC_URL__", _route_sync_url())
     return html
 
 
@@ -613,6 +623,27 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-size: 11px; line-height: 1.5; color: var(--text); background: var(--chip); border: 1px solid var(--panel-border);
     border-radius: 10px; padding: 10px 12px; white-space: pre; overflow-x: auto; }
   .rb-copy { margin-top: 8px; }
+  .rb-sync { margin: 10px 0 4px; }
+  .rb-list-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 10px 0 6px; }
+  .rb-item { display: flex; align-items: center; gap: 8px; padding: 9px 10px; margin-bottom: 6px;
+    border: 1px solid var(--panel-border); border-radius: 12px; background: var(--chip); }
+  .rb-item.editing { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .rb-item .sw { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+  .rb-item .txt { flex: 1; min-width: 0; }
+  .rb-item .nm { font-size: 13px; font-weight: 700; color: var(--text); }
+  .rb-item .meta { font-size: 11.5px; color: var(--text-2); }
+  .rb-item button { flex: none; }
+  .rb-status { font-size: 11.5px; color: var(--text-2); margin-top: 2px; line-height: 1.5; }
+  .rb-status.warn { color: #b45309; }
+  .rb-editor { margin-top: 10px; padding-top: 4px; }
+  .rb-editor-title { font-size: 12px; font-weight: 800; color: var(--text-2); text-transform: uppercase;
+    letter-spacing: 0.05em; margin-top: 6px; }
+  .rb-days { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+  .rb-day { font: inherit; font-size: 12px; font-weight: 700; padding: 6px 10px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--panel-border); background: transparent; color: var(--text-3); }
+  .rb-day[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .rb-email { margin-top: 12px; }
+  .rb-email summary { cursor: pointer; font-size: 12.5px; font-weight: 700; color: var(--text-2); }
   .rb-mail {
     display: inline-flex; align-items: center; gap: 7px; margin: 10px 8px 0 0;
     padding: 10px 20px; border-radius: 999px; border: none; cursor: pointer;
@@ -1441,30 +1472,59 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="modal-overlay" id="routeModal" role="dialog" aria-modal="true" aria-labelledby="routeTitle" aria-hidden="true">
   <div class="modal-card">
-    <h2 id="routeTitle">Build a commute alert <button class="modal-close" id="routeClose" type="button" aria-label="Close">×</button></h2>
+    <h2 id="routeTitle">Commute alerts <button class="modal-close" id="routeClose" type="button" aria-label="Close">×</button></h2>
     <p>Get an email shortly before you leave, listing the <strong>current</strong> 911 incidents on the
-    exact stretches of road you drive (plus active NWS alerts). Draw your route, then
-    <strong>email it to the same Gmail account your collector uses</strong> — it spots the message, saves
-    the route, and replies to confirm. Nothing to configure on the Pi, and nothing you enter here is
-    sent anywhere by this page.</p>
+    exact stretches of road you drive (plus active NWS alerts), and a follow-up if something new
+    happens while you&#39;re on the road.</p>
+
+    <div class="rb-sync" id="rbSync" style="display:none">
+      <div id="rbSyncConnect">
+        <label class="rb-field" for="rbToken">Connect to your Pi — passcode</label>
+        <div class="rb-addrow">
+          <input class="rb-input" id="rbToken" type="password" placeholder="Route passcode" autocomplete="current-password">
+          <button class="rb-add" id="rbConnect" type="button">Connect</button>
+        </div>
+        <div class="facet-note">Enter it once; it&#39;s remembered on this device. Then you can see, edit
+        and delete your routes right here — no emails or commands.</div>
+      </div>
+      <div id="rbSyncPanel" style="display:none">
+        <div class="rb-list-head"><span class="rb-field" style="margin:0">Your routes</span>
+          <span><button class="mini-clear" id="rbNew" type="button">+ New route</button>
+          <button class="mini-clear" id="rbDisconnect" type="button" title="Forget the passcode on this device">Disconnect</button></span></div>
+        <div id="rbList" aria-live="polite"></div>
+        <div class="rb-status" id="rbStatus" aria-live="polite"></div>
+      </div>
+    </div>
+
     <div id="rbSavedWrap" style="display:none">
       <label class="rb-field">My saved routes (stored only in this browser)</label>
       <div class="rb-roads" id="rbSaved" aria-live="polite"></div>
       <div class="facet-note">Tap <b>map</b> to see a route on the map — it renders only on this device
-      and is never uploaded. Removing a route here only forgets it on this device; to remove it from the
-      Pi, email <code>LAF911_ROUTE_&lt;n&gt;_DELETE=true</code>.</div>
+      and is never uploaded. Removing a route here only forgets it on this device.</div>
     </div>
+
+    <div class="rb-editor" id="rbEditor">
+    <div class="rb-editor-title" id="rbEditorTitle">New route</div>
     <div class="rb-row">
-      <div><label class="rb-field" for="rbSlot">Route slot</label>
-        <select class="rb-select" id="rbSlot"><option value="1">1 (e.g. to work)</option><option value="2">2 (e.g. home)</option><option value="3">3</option></select></div>
       <div><label class="rb-field" for="rbName">Name</label>
         <input class="rb-input" id="rbName" type="text" placeholder="To work" maxlength="40"></div>
+      <div><label class="rb-field" for="rbSlot">Slot</label>
+        <select class="rb-select" id="rbSlot"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option></select></div>
     </div>
     <div class="rb-row">
       <div><label class="rb-field" for="rbDepart">Usual departure</label>
         <input class="rb-input" id="rbDepart" type="time" value="07:20"></div>
-      <div><label class="rb-field" for="rbDays">Days</label>
-        <select class="rb-select" id="rbDays"><option value="mon-fri">Weekdays</option><option value="daily">Every day</option><option value="weekends">Weekends</option><option value="mon,wed,fri">Mon/Wed/Fri</option></select></div>
+      <div><label class="rb-field" for="rbRadius">Match distance</label>
+        <select class="rb-select" id="rbRadius"><option value="100">100 m (tight)</option><option value="150">150 m</option><option value="250">250 m</option><option value="400">400 m (loose)</option></select></div>
+    </div>
+    <label class="rb-field">Days</label>
+    <div class="rb-days" id="rbDayChips" role="group" aria-label="Days this route runs"></div>
+    <label class="rb-field">Different time on some days <span style="font-weight:500;color:var(--text-3)">(e.g. leave early Fridays)</span></label>
+    <div class="rb-roads" id="rbExceptions" aria-live="polite"></div>
+    <div class="rb-addrow">
+      <select class="rb-select" id="rbExDay" style="flex:1" aria-label="Day"></select>
+      <input class="rb-input" id="rbExTime" type="time" style="flex:1" aria-label="Departure that day">
+      <button class="rb-add" id="rbExAdd" type="button">Add</button>
     </div>
     <label class="rb-field">Your route — the sections you actually drive</label>
     <button class="rb-draw" id="rbDraw" type="button">✏️ Draw route on the map</button>
@@ -1478,17 +1538,26 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
     <datalist id="rbRoadList"></datalist>
     <div class="rb-roads" id="rbRoads" aria-live="polite"></div>
+    <div id="rbSaveWrap" style="display:none">
+      <button class="rb-mail" id="rbSaveBtn" type="button">💾 Save to Pi</button>
+      <button class="mini-clear rb-copy" id="rbCancelEdit" type="button">Cancel</button>
+    </div>
+    </div>
+    <details class="rb-email" id="rbEmailWrap" open>
+    <summary id="rbEmailSummary">Send by email</summary>
     <label class="rb-field" for="rbPiEmail">Your collector&#39;s Gmail (optional — remembered only on this device)</label>
     <input class="rb-input" id="rbPiEmail" type="email" placeholder="yourname@gmail.com" autocomplete="off">
     <a class="rb-mail" id="rbMail" href="#" rel="noopener">📧 Email this route to your Pi</a>
     <button class="mini-clear rb-copy" id="rbCopy" type="button">Copy instead</button>
     <p class="facet-note">Send it <strong>from and to the same Gmail address</strong> the collector uses —
     it only trusts messages from itself. You&#39;ll get a &ldquo;route saved&rdquo; reply within a few
-    minutes. Repeat per slot (to-work and home can differ); to remove one, email
-    <code>LAF911_ROUTE_1_DELETE=true</code>. While drawing, your tapped points are sent to the public
-    <a href="https://project-osrm.org/" target="_blank" rel="noopener noreferrer">OSRM</a> router to snap the
-    line to real roads — the only time this page sends anything, and only while you draw.</p>
+    minutes.</p>
     <div class="rb-out" id="rbOut" aria-live="polite"></div>
+    </details>
+    <p class="facet-note">While drawing, your tapped points are sent to the public
+    <a href="https://project-osrm.org/" target="_blank" rel="noopener noreferrer">OSRM</a> router to snap the
+    line to real roads. When connected to your Pi, route settings are stored on this site&#39;s server
+    (Cloudflare), readable only with your passcode.</p>
   </div>
 </div>
 
@@ -1535,7 +1604,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     and Waze open only when you tap them. The locate button uses your device's location only inside
     your browser to move the map — it is never transmitted or stored. If you draw a commute route in the
     route builder, the points you tap are sent to the public OSRM demo router
-    (router.project-osrm.org) to snap the line to real roads — only while drawing, never otherwise.</p>
+    (router.project-osrm.org) to snap the line to real roads — only while drawing, never otherwise.
+    If you connect the route builder to your Pi with a passcode, your route settings are stored on
+    this site&#39;s Cloudflare Worker, readable only with that passcode, and the passcode is remembered in
+    this browser.</p>
     <h3>Licenses</h3>
     <p>Original code is MIT-licensed
     (<a href="https://github.com/mattlavergne/Lafayette-911-Traffic" target="_blank" rel="noopener noreferrer">source on GitHub</a>).
@@ -5096,7 +5168,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   /* ═══════════ commute-alert builder ═══════════ */
-  const rbRoads = [];  // {label, cid}
+  let rbRoads = [];  // {label, cid}
   let rbKnown = null;  // canonical corridor ids seen in the data (Python-normalized)
   function rbKnownCorridors() {
     if (rbKnown) return rbKnown;
@@ -5162,32 +5234,170 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       status.textContent = "No route drawn yet. Tap along your route (each tap adds a point); " +
         "only incidents on your drawn route will alert.";
     }
-    // Generated route config (env-line format the Pi's inbox reader parses)
+    rbRenderDays();
+    const kv = rbCurrentKV();
     const slot = els.routeModal.querySelector("#rbSlot").value;
-    const name = (els.routeModal.querySelector("#rbName").value || "Route " + slot).trim();
-    const depart = els.routeModal.querySelector("#rbDepart").value || "07:20";
-    const days = els.routeModal.querySelector("#rbDays").value;
-    const roadSet = [];
-    rbRoads.forEach(function (r) { if (roadSet.indexOf(titleCase(r.cid)) === -1) roadSet.push(titleCase(r.cid)); });
-    let out =
-      "LAF911_ROUTE_" + slot + "_NAME=" + name + "\n" +
-      "LAF911_ROUTE_" + slot + "_DEPART=" + depart + "\n" +
-      "LAF911_ROUTE_" + slot + "_DAYS=" + days;
-    if (rbPath.length >= 2) {
-      out += "\nLAF911_ROUTE_" + slot + "_PATH=" +
-        rbPath.map(function (pt) { return pt[0].toFixed(5) + "," + pt[1].toFixed(5); }).join("; ");
-    }
-    // A drawn route is section-precise by PATH; do not add CORRIDORS,
-    // because a corridor name means whole-road matching for non-drawn routes.
-    if (roadSet.length && rbPath.length < 2) {
-      out += "\nLAF911_ROUTE_" + slot + "_CORRIDORS=" + roadSet.join(" | ");
-    }
+    // Generated route config (env-line format the Pi's inbox reader parses)
+    let out = "";
+    ["NAME", "DEPART", "DAYS", "PATH", "RADIUS_M", "CORRIDORS"].concat(RB_DAY_KEYS).forEach(function (k) {
+      if (kv[k]) out += (out ? "\n" : "") + "LAF911_ROUTE_" + slot + "_" + k + "=" + kv[k];
+    });
     els.routeModal.querySelector("#rbOut").textContent = out;
     els.routeModal.__config = out;
     const mail = els.routeModal.querySelector("#rbMail");
     const piAddr = (els.routeModal.querySelector("#rbPiEmail").value || "").trim();
     mail.href = "mailto:" + piAddr + "?subject=" + encodeURIComponent("LAF911 route") +
       "&body=" + encodeURIComponent(out);
+  }
+
+  /* Days + per-day departure exceptions (DEPART_FRI=12:00 …) */
+  const RB_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  const RB_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const RB_DAY_KEYS = RB_DAYS.map(function (d) { return "DEPART_" + d.toUpperCase(); });
+  let rbDaySet = new Set([0, 1, 2, 3, 4]);
+  let rbOverrides = {};   // {4: "12:00"}
+
+  // Mirrors route_alerts._parse_days on the Pi.
+  function rbParseDays(value) {
+    const s = String(value || "").trim().toLowerCase();
+    if (["daily", "everyday", "all"].indexOf(s) !== -1) return new Set([0, 1, 2, 3, 4, 5, 6]);
+    if (!s || s === "weekdays" || s === "weekday") return new Set([0, 1, 2, 3, 4]);
+    if (s === "weekends" || s === "weekend") return new Set([5, 6]);
+    const out = new Set();
+    s.replace(/\s+/g, "").split(",").forEach(function (part) {
+      if (part.indexOf("-") !== -1) {
+        const ab = part.split("-");
+        let a = RB_DAYS.indexOf(ab[0]), b = RB_DAYS.indexOf(ab[1]);
+        if (a === -1 || b === -1) return;
+        for (let i = a; ; i = (i + 1) % 7) { out.add(i); if (i === b) break; }
+      } else if (RB_DAYS.indexOf(part) !== -1) out.add(RB_DAYS.indexOf(part));
+    });
+    return out.size ? out : new Set([0, 1, 2, 3, 4]);
+  }
+  function rbDaysString(set) {
+    const on = Array.from(set).sort();
+    if (on.length === 7) return "daily";
+    if (on.join() === "0,1,2,3,4") return "mon-fri";
+    if (on.join() === "5,6") return "weekends";
+    return on.map(function (i) { return RB_DAYS[i]; }).join(",");
+  }
+  function rbFmtTime(hhmm) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ""));
+    if (!m) return hhmm || "";
+    const h = parseInt(m[1], 10);
+    return (h % 12 || 12) + ":" + m[2] + " " + (h < 12 ? "AM" : "PM");
+  }
+  function rbRenderDays() {
+    const chips = $("rbDayChips");
+    chips.innerHTML = "";
+    RB_DAY_LABELS.forEach(function (label, i) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "rb-day";
+      b.textContent = label;
+      b.setAttribute("aria-pressed", rbDaySet.has(i) ? "true" : "false");
+      b.addEventListener("click", function () {
+        if (rbDaySet.has(i)) { if (rbDaySet.size > 1) rbDaySet.delete(i); } else rbDaySet.add(i);
+        rbRender();
+      });
+      chips.appendChild(b);
+    });
+    const ex = $("rbExceptions");
+    ex.innerHTML = "";
+    Object.keys(rbOverrides).sort().forEach(function (d) {
+      const i = parseInt(d, 10);
+      const chip = document.createElement("span");
+      chip.className = "rb-road";
+      chip.innerHTML = "<span>" + RB_DAY_LABELS[i] + "s at " + esc(rbFmtTime(rbOverrides[d])) +
+        (rbDaySet.has(i) ? "" : " <span style='color:var(--text-3);font-weight:500'>(day is off)</span>") + "</span>";
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "x"; x.textContent = "\u00d7";
+      x.setAttribute("aria-label", "Remove the " + RB_DAY_LABELS[i] + " time");
+      x.addEventListener("click", function () { delete rbOverrides[d]; rbRender(); });
+      chip.appendChild(x);
+      ex.appendChild(chip);
+    });
+    const sel = $("rbExDay");
+    const keep = sel.value;
+    sel.innerHTML = "";
+    Array.from(rbDaySet).sort().forEach(function (i) {
+      const o = document.createElement("option");
+      o.value = String(i); o.textContent = RB_DAY_LABELS[i] + "s";
+      sel.appendChild(o);
+    });
+    if (keep && rbDaySet.has(parseInt(keep, 10))) sel.value = keep;
+  }
+  // The full settings for the route in the editor, in the Pi's key format.
+  function rbCurrentKV() {
+    const slot = els.routeModal.querySelector("#rbSlot").value;
+    const roadSet = [];
+    rbRoads.forEach(function (r) { if (roadSet.indexOf(titleCase(r.cid)) === -1) roadSet.push(titleCase(r.cid)); });
+    const radius = els.routeModal.querySelector("#rbRadius").value || "100";
+    const kv = {
+      NAME: (els.routeModal.querySelector("#rbName").value || "Route " + slot).trim(),
+      DEPART: els.routeModal.querySelector("#rbDepart").value || "07:20",
+      DAYS: rbDaysString(rbDaySet),
+      PATH: rbPath.length >= 2
+        ? rbPath.map(function (pt) { return pt[0].toFixed(5) + "," + pt[1].toFixed(5); }).join("; ") : "",
+      RADIUS_M: rbPath.length >= 2 && radius !== "100" ? radius : "",
+      // A drawn route is section-precise by PATH; road labels are only for
+      // routes without one (a corridor name means whole-road matching).
+      CORRIDORS: roadSet.length && rbPath.length < 2 ? roadSet.join(" | ") : "",
+    };
+    RB_DAY_KEYS.forEach(function (k, i) { kv[k] = rbOverrides[i] || ""; });
+    return kv;
+  }
+  function rbDescribe(kv) {
+    const days = rbParseDays(kv.DAYS);
+    let d = rbDaysString(days);
+    d = d === "daily" ? "Every day" : d === "mon-fri" ? "Weekdays" : d === "weekends" ? "Weekends" :
+      Array.from(days).sort().map(function (i) { return RB_DAY_LABELS[i]; }).join(", ");
+    let out = d + " · " + rbFmtTime(kv.DEPART);
+    RB_DAY_KEYS.forEach(function (k, i) {
+      if (kv[k] && days.has(i)) out += " · " + RB_DAY_LABELS[i] + " " + rbFmtTime(kv[k]);
+    });
+    return out;
+  }
+  function rbParsePath(text) {
+    const out = [];
+    String(text || "").split(";").forEach(function (part) {
+      const b = part.trim().split(",");
+      if (b.length !== 2) return;
+      const lat = parseFloat(b[0]), lng = parseFloat(b[1]);
+      if (isFinite(lat) && isFinite(lng)) out.push([lat, lng]);
+    });
+    return out;
+  }
+  // Put a saved route (or a blank one) into the editor.
+  function rbLoadEditor(slot, kv) {
+    kv = kv || {};
+    const slotSel = els.routeModal.querySelector("#rbSlot");
+    if (!slotSel.querySelector("option[value='" + slot + "']")) {
+      const o = document.createElement("option"); o.value = slot; o.textContent = slot; slotSel.appendChild(o);
+    }
+    slotSel.value = String(slot);
+    els.routeModal.querySelector("#rbName").value = kv.NAME || "";
+    els.routeModal.querySelector("#rbDepart").value = kv.DEPART || "07:20";
+    const radSel = els.routeModal.querySelector("#rbRadius");
+    const rad = String(kv.RADIUS_M || "100");
+    if (!radSel.querySelector("option[value='" + rad + "']")) {
+      const o = document.createElement("option"); o.value = rad; o.textContent = rad + " m"; radSel.appendChild(o);
+    }
+    radSel.value = rad;
+    rbDaySet = rbParseDays(kv.DAYS || "mon-fri");
+    rbOverrides = {};
+    RB_DAY_KEYS.forEach(function (k, i) { if (kv[k]) rbOverrides[i] = kv[k]; });
+    rbPath = rbParsePath(kv.PATH);
+    rbAnchors = rbPath.length ? [rbPath[rbPath.length - 1]] : [];
+    rbLegs = rbPath.length ? [rbPath.slice()] : [];
+    rbRoads = [];
+    String(kv.CORRIDORS || "").split("|").forEach(function (label) {
+      const cid = rbNormalize(label.trim());
+      if (cid && !rbRoads.some(function (r) { return r.cid === cid; })) rbRoads.push({ label: label.trim(), cid: cid });
+    });
+    rbUpdateLine();
+    if (rbLine && rbPath.length >= 2) { try { map.fitBounds(rbLine.getBounds(), { padding: [60, 60] }); } catch (e) {} }
+    rbRender();
   }
 
   /* draw mode: modal hides, a floating pill guides the tracing */
@@ -5365,7 +5575,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     saved[slot] = {
       name: (els.routeModal.querySelector("#rbName").value || "Route " + slot).trim(),
       depart: els.routeModal.querySelector("#rbDepart").value || "",
-      days: els.routeModal.querySelector("#rbDays").value || "",
+      days: rbDaysString(rbDaySet),
       path: rbPath.map(function (pt) { return [Number(pt[0].toFixed(5)), Number(pt[1].toFixed(5))]; }),
       ts: Date.now()
     };
@@ -5426,6 +5636,251 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     });
   }
 
+  /* ═══ Route sync with the Pi (via the Cloudflare Worker) ═══
+     The page saves route settings to the Worker's passcode-protected store;
+     the Pi polls it every cycle. Nothing is sent without the passcode. */
+  const ROUTE_SYNC_URL_INJECTED = "__ROUTE_SYNC_URL__";
+  const RB_TOKEN_KEY = "laf911_route_token";
+  const rbSync = { url: "", token: "", doc: null, editing: null, busy: false, timer: null };
+
+  function rbSyncUrl() {
+    if (ROUTE_SYNC_URL_INJECTED && ROUTE_SYNC_URL_INJECTED.indexOf("__") !== 0) return ROUTE_SYNC_URL_INJECTED;
+    // Served through the Worker (e.g. mattlavergne.com/trafficmap/): the API
+    // sits beside the page. GitHub Pages or a local file can't host it.
+    if (!/^https?:$/.test(location.protocol) || /github\.io$/.test(location.hostname)) return "";
+    return location.origin + location.pathname.replace(/[^/]*$/, "") + "api/routes";
+  }
+  function rbApi(method, suffix, body) {
+    const opts = { method: method, headers: { "Authorization": "Bearer " + rbSync.token }, cache: "no-store" };
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(rbSync.url + (suffix || ""), opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; });
+    });
+  }
+  function rbSyncConnected() { return !!(rbSync.doc && rbSync.token); }
+
+  function rbSyncConnect(token, quiet) {
+    if (!token) { if (!quiet) toast("Enter your route passcode"); return; }
+    rbSync.token = token;
+    rbApi("GET").then(function (res) {
+      if (res.status === 200) {
+        rbSync.doc = res.body;
+        try { localStorage.setItem(RB_TOKEN_KEY, token); } catch (e) {}
+        if (!quiet) toast("Connected to your Pi's routes");
+        if (rbSync.editing === null) rbEditSlot(null, true);
+      } else {
+        rbSync.doc = null;
+        if (res.status === 401) {
+          try { localStorage.removeItem(RB_TOKEN_KEY); } catch (e) {}
+          toast("Wrong passcode");
+        } else if (res.status === 503) {
+          toast("Route sync isn't set up on the server yet — see the README");
+        } else if (!quiet) toast("Couldn't reach the route server (" + res.status + ")");
+      }
+      rbSyncRender();
+    }).catch(function () {
+      if (!quiet) toast("Couldn't reach the route server");
+      rbSyncRender();
+    });
+  }
+  function rbSyncDisconnect() {
+    try { localStorage.removeItem(RB_TOKEN_KEY); } catch (e) {}
+    rbSync.token = ""; rbSync.doc = null; rbSync.editing = null;
+    rbClearPiLayers();
+    rbSyncRender();
+  }
+  function rbSyncRefresh() {
+    if (!rbSync.token || rbSync.busy) return;
+    rbApi("GET").then(function (res) {
+      if (res.status === 200) { rbSync.doc = res.body; rbSyncRender(); }
+    }).catch(function () {});
+  }
+  function rbAgo(iso) {
+    const t = Date.parse(iso || "");
+    return isNaN(t) ? "" : agoShort(Date.now() - t);
+  }
+  let rbPiLayers = {};
+  function rbClearPiLayers() {
+    Object.keys(rbPiLayers).forEach(function (k) { try { map.removeLayer(rbPiLayers[k]); } catch (e) {} });
+    rbPiLayers = {};
+  }
+  function rbTogglePiLayer(slot) {
+    if (rbPiLayers[slot]) {
+      try { map.removeLayer(rbPiLayers[slot]); } catch (e) {}
+      delete rbPiLayers[slot];
+    } else {
+      const kv = ((rbSync.doc || {}).routes || {})[slot] || {};
+      const path = rbParsePath(kv.PATH);
+      if (path.length < 2 || !map) { toast("This route has no drawn line"); return; }
+      rbPiLayers[slot] = L.polyline(path, {
+        color: RB_ROUTE_COLORS[(parseInt(slot, 10) - 1 || 0) % RB_ROUTE_COLORS.length], weight: 5, opacity: 0.85
+      }).addTo(map);
+      // Close the dialog so the route is actually visible; it stays drawn
+      // until "Hide" (reopen the dialog from the route button).
+      closeRoute();
+      try { map.fitBounds(rbPiLayers[slot].getBounds(), { padding: [60, 60] }); } catch (e) {}
+      toast("Showing " + (kv.NAME || ("route " + slot)) + " — tap the route button to hide it");
+    }
+    rbSyncRender();
+  }
+  function rbSlotsInUse() { return Object.keys(((rbSync.doc || {}).routes) || {}); }
+  // slot === null → a new route in the first free slot.
+  function rbEditSlot(slot, quiet) {
+    if (slot === null) {
+      const used = rbSlotsInUse();
+      let free = 1;
+      while (used.indexOf(String(free)) !== -1 && free < 20) free++;
+      rbSync.editing = "new";
+      rbLoadEditor(String(free), { DAYS: "mon-fri", DEPART: "07:20" });
+    } else {
+      rbSync.editing = String(slot);
+      rbLoadEditor(String(slot), ((rbSync.doc || {}).routes || {})[slot]);
+      if (!quiet) { try { $("rbEditor").scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) {} }
+    }
+    rbSyncRender();
+  }
+  function rbPutRoutes(routes, retried) {
+    rbSync.busy = true;
+    return rbApi("PUT", "", { routes: routes, base_version: (rbSync.doc || {}).version || 0, by: "web" })
+      .then(function (res) {
+        rbSync.busy = false;
+        if (res.status === 200) { rbSync.doc = res.body; rbSyncRender(); return true; }
+        if (res.status === 409 && !retried) {
+          // Someone (the Pi, after a config email) saved in between: take
+          // theirs, re-apply just this change, and try once more.
+          rbSync.doc = res.body;
+          return null;
+        }
+        toast((res.body && res.body.error) || ("Save failed (" + res.status + ")"));
+        return false;
+      })
+      .catch(function () { rbSync.busy = false; toast("Couldn't reach the route server"); return false; });
+  }
+  function rbSyncSave() {
+    if (!rbSyncConnected()) return;
+    const kv = rbCurrentKV();
+    if (rbPath.length < 2 && !kv.CORRIDORS) { toast("Draw your route first"); return; }
+    const slot = els.routeModal.querySelector("#rbSlot").value;
+    const prevSlot = rbSync.editing;
+    const build = function () {
+      const routes = JSON.parse(JSON.stringify((rbSync.doc || {}).routes || {}));
+      if (prevSlot && prevSlot !== "new" && prevSlot !== slot) delete routes[prevSlot];   // slot changed
+      routes[slot] = kv;
+      return routes;
+    };
+    if (rbSync.editing === "new" && rbSlotsInUse().indexOf(slot) !== -1 &&
+        !confirm("Slot " + slot + " already holds \u201c" + (rbSync.doc.routes[slot].NAME || "a route") + "\u201d. Replace it?")) return;
+    rbPutRoutes(build()).then(function (ok) {
+      if (ok === null) return rbPutRoutes(build(), true);
+      return ok;
+    }).then(function (ok) {
+      if (ok) {
+        toast("Saved — your Pi picks it up within about 5 minutes");
+        rbSync.editing = slot;
+        if (rbPiLayers[slot]) { rbTogglePiLayer(slot); rbTogglePiLayer(slot); }
+        rbSyncRender();
+      }
+    });
+  }
+  function rbSyncDelete(slot) {
+    const kv = ((rbSync.doc || {}).routes || {})[slot] || {};
+    if (!confirm("Delete \u201c" + (kv.NAME || "Route " + slot) + "\u201d? Its alerts stop once the Pi picks this up.")) return;
+    const build = function () {
+      const routes = JSON.parse(JSON.stringify((rbSync.doc || {}).routes || {}));
+      delete routes[slot];
+      return routes;
+    };
+    rbPutRoutes(build()).then(function (ok) {
+      if (ok === null) return rbPutRoutes(build(), true);
+      return ok;
+    }).then(function (ok) {
+      if (!ok) return;
+      if (rbPiLayers[slot]) { try { map.removeLayer(rbPiLayers[slot]); } catch (e) {} delete rbPiLayers[slot]; }
+      if (rbSync.editing === String(slot)) rbEditSlot(null, true);
+      toast("Deleted");
+      rbSyncRender();
+    });
+  }
+  function rbSyncRender() {
+    const wrap = $("rbSync");
+    wrap.style.display = rbSync.url ? "" : "none";
+    const connected = rbSyncConnected();
+    $("rbSyncConnect").style.display = connected ? "none" : "";
+    $("rbSyncPanel").style.display = connected ? "" : "none";
+    $("rbSaveWrap").style.display = connected ? "" : "none";
+    $("rbCancelEdit").style.display = connected && rbSync.editing && rbSync.editing !== "new" ? "" : "none";
+    $("rbSavedWrap").style.display = connected ? "none" : $("rbSavedWrap").style.display;
+    // Email becomes the fallback once the page can save directly.
+    const email = $("rbEmailWrap");
+    if (connected && !email.__autoClosed) { email.open = false; email.__autoClosed = true; }
+    $("rbEmailSummary").textContent = connected ? "Other ways: email or copy the settings" : "Send by email";
+    $("rbEditorTitle").textContent = !connected ? "Route" :
+      rbSync.editing && rbSync.editing !== "new" ? "Editing route" : "New route";
+    if (!connected) { rbSyncTick(false); return; }
+
+    const doc = rbSync.doc, routes = doc.routes || {};
+    const list = $("rbList");
+    list.innerHTML = "";
+    const slots = Object.keys(routes).sort(function (a, b) { return a - b; });
+    if (!slots.length) {
+      list.innerHTML = "<div class='facet-note'>No routes yet — draw one below and tap <b>Save to Pi</b>.</div>";
+    }
+    slots.forEach(function (slot) {
+      const kv = routes[slot] || {};
+      const row = document.createElement("div");
+      row.className = "rb-item" + (rbSync.editing === slot ? " editing" : "");
+      const color = RB_ROUTE_COLORS[(parseInt(slot, 10) - 1 || 0) % RB_ROUTE_COLORS.length];
+      row.innerHTML = "<span class='sw' style='background:" + color + "'></span>" +
+        "<div class='txt'><div class='nm'>" + esc(kv.NAME || ("Route " + slot)) + "</div>" +
+        "<div class='meta'>" + esc(rbDescribe(kv)) + "</div></div>";
+      [["map", rbPiLayers[slot] ? "Hide" : "Map", function () { rbTogglePiLayer(slot); }],
+       ["edit", "Edit", function () { rbEditSlot(slot); }],
+       ["del", "Delete", function () { rbSyncDelete(slot); }]].forEach(function (b) {
+        const btn = document.createElement("button");
+        btn.type = "button"; btn.className = "mini-clear"; btn.textContent = b[1];
+        btn.setAttribute("aria-label", b[1] + " " + (kv.NAME || ("route " + slot)));
+        btn.addEventListener("click", b[2]);
+        row.appendChild(btn);
+      });
+      list.appendChild(row);
+    });
+
+    // Is the Pi keeping up?
+    const pi = doc.pi || {};
+    const st = $("rbStatus");
+    const seenMs = Date.parse(pi.seen_at || "");
+    let text, warn = false, pending = false;
+    if (isNaN(seenMs)) {
+      text = "⚠️ Your Pi hasn't connected yet. Add LAF911_ROUTE_SYNC_URL and LAF911_ROUTE_SYNC_TOKEN " +
+        "to its settings and restart it (see the README).";
+      warn = true;
+    } else {
+      pending = (pi.applied_version || 0) < (doc.version || 0);
+      text = pending ? "⏳ Saved. Waiting for your Pi to pick it up (it checks about every 5 minutes)…"
+                     : "✓ Your Pi has these settings.";
+      const staleMin = (Date.now() - seenMs) / 60000;
+      text += " Pi last checked in " + rbAgo(pi.seen_at) + ".";
+      if (staleMin > 45) { warn = true; text += " That's a while — is it running?"; }
+    }
+    st.textContent = text;
+    st.classList.toggle("warn", warn);
+    rbSyncTick(pending);
+  }
+  // While a save is pending and the dialog is open, refresh so the status
+  // flips to "✓" on its own.
+  function rbSyncTick(on) {
+    const open = els.routeModal.classList.contains("open");
+    if (on && open && !rbSync.timer) {
+      rbSync.timer = setInterval(rbSyncRefresh, 20000);
+    } else if ((!on || !open) && rbSync.timer) {
+      clearInterval(rbSync.timer);
+      rbSync.timer = null;
+    }
+  }
+
   let routePrevFocus = null;
   function openRoute() {
     routePrevFocus = document.activeElement;
@@ -5438,10 +5893,20 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     rbRender();
     els.routeModal.classList.add("open");
     els.routeModal.setAttribute("aria-hidden", "false");
+    rbSync.url = rbSyncUrl();
+    if (rbSync.url && !rbSync.token) {
+      let saved = "";
+      try { saved = localStorage.getItem(RB_TOKEN_KEY) || ""; } catch (e) {}
+      if (saved) rbSyncConnect(saved, true);
+    } else if (rbSync.token) {
+      rbSyncRefresh();
+    }
+    rbSyncRender();
     els.routeModal.querySelector("#rbName").focus();
   }
   function closeRoute() {
     els.routeModal.classList.remove("open");
+    rbSyncTick(false);
     els.routeModal.setAttribute("aria-hidden", "true");
     if (routePrevFocus && routePrevFocus.focus) { try { routePrevFocus.focus(); } catch (e) {} }
   }
@@ -5773,9 +6238,24 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     els.routeModal.querySelector("#rbRoad").addEventListener("keydown", function (e) {
       if (e.key === "Enter") { e.preventDefault(); rbAdd(); }
     });
-    ["#rbSlot", "#rbName", "#rbDepart", "#rbDays"].forEach(function (sel) {
+    ["#rbSlot", "#rbName", "#rbDepart", "#rbRadius"].forEach(function (sel) {
       els.routeModal.querySelector(sel).addEventListener("input", rbRender);
     });
+    $("rbExAdd").addEventListener("click", function () {
+      const d = $("rbExDay").value, t = $("rbExTime").value;
+      if (d === "" || !t) { toast("Pick a day and a time"); return; }
+      rbOverrides[parseInt(d, 10)] = t;
+      $("rbExTime").value = "";
+      rbRender();
+    });
+    $("rbConnect").addEventListener("click", function () { rbSyncConnect($("rbToken").value.trim()); });
+    $("rbToken").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); rbSyncConnect(this.value.trim()); }
+    });
+    $("rbDisconnect").addEventListener("click", rbSyncDisconnect);
+    $("rbNew").addEventListener("click", function () { rbEditSlot(null); });
+    $("rbSaveBtn").addEventListener("click", rbSyncSave);
+    $("rbCancelEdit").addEventListener("click", function () { rbEditSlot(null); });
     els.routeModal.querySelector("#rbMail").addEventListener("click", function () {
       rbSaveCurrent();   // keep a device-local copy so it can be shown on the map
     });

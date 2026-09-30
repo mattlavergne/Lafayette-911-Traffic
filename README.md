@@ -76,6 +76,11 @@ Outputs land next to the script: `traffic_incidents.csv` (the permanent
 archive), `incident_index.sqlite` (working store), `traffic_map.html` +
 `traffic_data.js` (the website — serve these two files).
 
+On Raspberry Pi OS (Bookworm and later) a bare `pip install` fails with
+`externally-managed-environment` — that's the OS protecting its own Python.
+Always use the virtualenv's pip: `.venv/bin/pip install -r requirements.txt`
+(no need to activate it first). Never use `--break-system-packages`.
+
 Optional: `pip install osmnx` enables OSM-derived road classifications and
 intersection hotspots.
 
@@ -308,6 +313,33 @@ Replace a route by sending a new email for the same slot; remove one with a
 body line `LAF911_ROUTE_1_DELETE=true`. Only messages **from the account
 itself** with `LAF911` in the subject are honored; everything else is
 ignored.
+
+**Edit routes from the map page (no emails).** If the map is served through
+the Cloudflare Worker (`scripts/cloudflare_trafficmap_worker.js`), the route
+dialog can list, draw, edit and delete your routes directly — including
+per-day times like "Fridays at 12:00". The Pi still accepts no inbound
+connections: the page saves to a small passcode-protected store on the Worker,
+and the Pi checks it every cycle (so changes land within ~5 minutes; the
+dialog shows "✓ Your Pi has these settings" once they have). One-time setup:
+
+1. **Cloudflare dashboard → Workers → your trafficmap Worker:**
+   paste the current `scripts/cloudflare_trafficmap_worker.js` and deploy.
+   Under **Settings → Bindings** add a **KV namespace** binding named
+   `ROUTES_KV` (create a namespace, e.g. `laf911-routes`). Under
+   **Settings → Variables and Secrets** add a **Secret** named `ROUTES_TOKEN`
+   — a long random passcode (`openssl rand -hex 24` makes one).
+2. **On the Pi**, add to `/etc/laf911-secrets.env`, then restart the service:
+   ```
+   LAF911_ROUTE_SYNC_URL=https://mattlavergne.com/trafficmap/api/routes
+   LAF911_ROUTE_SYNC_TOKEN=<the same passcode>
+   ```
+   On its first check the Pi uploads the routes it already has, so they
+   appear in the page without redrawing.
+3. **In the page** (open it via mattlavergne.com/trafficmap/), tap the route
+   button, enter the passcode once — it's remembered on that device.
+
+Email still works alongside it; an emailed change shows up in the page too.
+Anyone without the passcode gets "Wrong passcode" and sees nothing.
 
 **Section-precise matching.** With a drawn route, located incidents match the route you selected — an
 accident five miles down a road you only briefly touch does **not** alert. Generated emails for drawn routes use `LAF911_ROUTE_<n>_PATH` as the source of truth and do not include a `CORRIDORS` whole-road list.
