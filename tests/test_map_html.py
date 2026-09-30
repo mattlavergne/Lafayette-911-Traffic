@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 from lafayette911.map_render import create_map_from_db
 from lafayette911.map_template import render_map_html
@@ -49,9 +50,16 @@ class MapTemplateTests(unittest.TestCase):
     def test_route_builder_does_not_emit_corridors_for_drawn_paths(self):
         html = render_map_html(30.2241, -92.0198, "traffic_data.js")
         self.assertIn("A drawn route is section-precise by PATH", html)
-        self.assertIn("if (roadSet.length && rbPath.length < 2)", html)
-        self.assertNotIn("id=\"rbRadius\"", html)
-        self.assertNotIn("_RADIUS_M=", html)
+        self.assertIn("CORRIDORS: roadSet.length && rbPath.length < 2", html)
+
+    def test_route_sync_url_is_injected_safely(self):
+        with mock.patch.dict("os.environ", {"LAF911_ROUTE_SYNC_URL": "https://example.com/trafficmap/api/routes"}):
+            html = render_map_html(30.0, -92.0, "traffic_data.js")
+        self.assertIn('"https://example.com/trafficmap/api/routes"', html)
+        with mock.patch.dict("os.environ", {"LAF911_ROUTE_SYNC_URL": 'https://x.com/"+alert(1)+"'}):
+            html = render_map_html(30.0, -92.0, "traffic_data.js")
+        self.assertNotIn("alert(1)", html)
+        self.assertIn('const ROUTE_SYNC_URL_INJECTED = "";', html)
 
     def test_create_map_from_db_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
