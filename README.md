@@ -60,6 +60,7 @@ three hard guarantees:
 | `lafayette911/weather.py` | NWS weather snapshots and active-alert flags |
 | `lafayette911/map_render.py` | Builds `traffic_data.js` + `traffic_map.html` from stored data |
 | `lafayette911/map_template.py` | The self-contained interactive web page (Leaflet, no build step) |
+| `lafayette911/insights_view.py` | The page's full-screen crash-insights view (CSS/HTML/JS injected into the template) |
 | `lafayette911/main.py` | Service loop wiring collector + renderer |
 
 ## Quick start
@@ -146,6 +147,25 @@ corridor (`cid=`), and agencies (`ag=`). The page polls a tiny
 `traffic_meta.json` first and only re-downloads the full data file when its
 version hash changes. An About dialog covers disclaimers, data sources,
 privacy, and licenses.
+
+**Crash insights.** The bar-chart button (or <kbd>I</kbd>, or the card at the
+top of the Analytics tab) opens a full-screen view of the whole archive,
+independent of the map's filters: crashes per day, the worst hour of the week,
+an hour × weekday heatmap, a calendar of every day on record, the most
+crash-prone blocks and roads, how serious crashes are by hour, hit-and-run
+share by hour, and how long each kind of incident stays on the 911 feed. Days,
+roads and blocks are tappable and jump back to the map. Its rules:
+
+- **Rates only count days the collector was running.** A day with no incident
+  of any kind is treated as "not collected", and the first/last day of each
+  stretch is left out of per-day averages. (The sidebar's normalized rates use
+  the same rule; before, a long outage silently diluted every all-time rate.)
+- **Each crash counts once**, on the road dispatch logged it on. The feed
+  writes every location as `<block> <road>/<nearest cross street>`, and the
+  cross street is a locator, not where the crash was.
+- **Time on the feed is not clearance time**, and the only weather comparison
+  offered is whole wet days against whole dry days, because the archive has
+  forecast values at report time and no record of dry hours.
 
 Basemaps are keyless OpenStreetMap raster tiles (dark mode inverts them in
 CSS); popups link out to Google Maps, Street View and Waze via plain URLs.
@@ -394,10 +414,23 @@ only edits the lines it contains, so that one line is the whole email.
 
 **What it uses — and doesn't.** There is no free, keyless source of
 Google/Waze-style live traffic *speed* data. This matches the actual 911
-incident feed against a freshness window (default 90 min), plus the NWS
-alerts already collected. The feed reports when an incident *started*, not
-when it cleared, so each item shows how long ago it was reported — minor
-accidents are often already gone. A paid traffic-flow provider can be added
+incident feed, plus the NWS alerts already collected. An incident is
+"current" when it was reported inside the freshness window (default 90 min)
+**or is still listed in the feed** — the collector records every sweep, so a
+closure reported three hours ago that dispatch has not closed still alerts
+(up to 12 hours). An incident inside the window that has already dropped out
+of the feed is shown separately as "likely cleared" and does not count toward
+the headline or trigger a follow-up.
+
+**When the feed is unreachable.** If the last successful sweep of
+lafayette911.org is more than 20 minutes old, the email says "Couldn't check
+your route" instead of "route clear" — no data is not the same as no
+incidents.
+
+**Timestamps.** The feed reports 24-hour times with no AM/PM
+(`11/13/2026 08:32`). Tests for anything that reads a report time must use
+that form; an earlier matcher only understood `8:32 AM`, discarded every real
+incident, and reported every route clear. A paid traffic-flow provider can be added
 later (`fetch_traffic_flow` in `route_alerts.py`) without changing the free
 path.
 
@@ -433,6 +466,11 @@ Steady-state footprint is small and bounded:
 | Working store | `incident_index.sqlite` | ~1 KB per incident |
 | Website | `traffic_map.html`, `traffic_data.js`, `traffic_meta.json` | fixed + ~200 B per incident, overwritten each render |
 | OSM cache | `osm_cache/` | **bounded**: a handful of files — typically one `.graphml` plus two small `.json` |
+| Route map tiles | `route_map_cache/` | bounded: the few tiles covering your routes |
+
+In practice the incident data is tiny: about 0.7 KB per incident across both
+files, roughly **20 MB a year** at ~75 incidents a day. If a disk is filling
+up, it is not the archive — run the report below to see what is.
 
 The CSV and the SQLite store deliberately hold the same incidents — the CSV is
 the durable archive, the database is the working index that makes dedupe and
@@ -459,12 +497,26 @@ wins" would make them evict each other every cycle.
 
 ### Reclaiming space from an older install
 
-To clear the backlog those old files left behind:
+`osmnx` (optional) had a second leak: by default it saves every raw Overpass
+download as JSON under `./cache/` in the service's working directory and never
+deletes one. Nothing here reads those files back, so the service now loads
+osmnx with that cache switched off, and the reclaim script removes what is
+already there (only files named like osmnx's own — 40 hex characters +
+`.json`).
+
+To see where the space is going and clear what is safe to clear:
 
 ```bash
 python scripts/reclaim_storage.py            # report only — shows what would go
-python scripts/reclaim_storage.py --apply    # delete the dead cache files
+python scripts/reclaim_storage.py --apply    # delete dead cache and temp files
 ```
+
+The report covers the data and its real growth rate, everything the script can
+remove (dead OSM cache, osmnx raw downloads, working copies left by an
+interrupted publish), anything else large in the project folder, and the usual
+Raspberry Pi space hogs outside the project — the systemd journal, the apt
+cache, logs, pip's cache — each with the command to clear it. Those need
+`sudo`, so the script only reports them.
 
 Add `--vacuum` to also compact the SQLite store (it rebuilds the database, so it
 wants free space roughly equal to the current file size and takes a write lock —
@@ -503,5 +555,6 @@ python -m pytest tests/ -q
 
 The test suite covers dedupe (including feed formatting jitter), geocode
 budgeting/blacklisting/queueing, date parsing, CSV/DB rendering, OSM cache
-keying and pruning, and template generation. When changing the web page, `map_template.py` is a plain Python
+keying and pruning, route alerts against the feed's real timestamp and
+location formats, storage reclaim, and template generation. When changing the web page, `map_template.py` is a plain Python
 string with `__TOKEN__` substitution — no build step required.

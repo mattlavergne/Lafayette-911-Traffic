@@ -48,7 +48,13 @@ if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$NEW_HASH" ]; then
   exit 0
 fi
 
-WORK="$(mktemp -d)"
+# A run that was killed outright (power cut, OOM) never reaches its cleanup
+# trap and leaves a full copy of the site behind. Sweep those up; anything
+# older than an hour cannot belong to a publish that is still running.
+find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'laf911-pages.*' -mmin +60 \
+  -exec rm -rf {} + 2>/dev/null || true
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/laf911-pages.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # GitHub Pages serves index.html at the site root; keep the data file beside it

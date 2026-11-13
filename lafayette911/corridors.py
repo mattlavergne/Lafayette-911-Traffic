@@ -118,7 +118,9 @@ _CITY_TOKENS = {
     "LAFAYETTE", "BROUSSARD", "YOUNGSVILLE", "SCOTT", "CARENCRO",
     "DUSON", "MILTON", "MAURICE",
 }
-_STATE_TOKENS = {"LA", "LOUISIANA", "USA", "PARISH"}
+# "LAF" is how the feed abbreviates the unincorporated parish ("LAF PARISH,
+# LA"); left in, it became a 300-crash corridor of its own.
+_STATE_TOKENS = {"LA", "LOUISIANA", "USA", "PARISH", "LAF"}
 # Town names that, after a direction, are a road: E/W Broussard Rd.
 _DIRECTIONAL_TOWN_ROADS = {"BROUSSARD"}
 
@@ -143,6 +145,12 @@ _MILE_MARKER = re.compile(r"^(?:MM|MILE\s+MARKER|MILEMARKER)\s*\d*$")
 def _canonical_highway(text: str):
     """Return 'I-10' / 'US 90' / 'LA 182' for highway phrasings, else None."""
     compact = re.sub(r"\s+", " ", text.strip())
+    # The feed tags a highway with the direction of travel on either side:
+    # "W I-10", "S I-49", "US HWY 90 EAST". All one road.
+    tokens = compact.split(" ")
+    bare = [t for t in tokens if t not in _DIRECTIONS]
+    if bare and len(bare) < len(tokens):
+        compact = " ".join(bare)
     m = _INTERSTATE.match(compact)
     if m:
         return "I-" + m.group(1)
@@ -260,3 +268,27 @@ def corridor_ids(location: str) -> List[str]:
         if cid and cid not in seen:
             seen.append(cid)
     return seen
+
+
+_BLOCK_AND_CROSS = re.compile(r"^\s*\d+[A-Z]?\s+[^/]+/")
+
+
+def incident_corridors(location: str) -> List[str]:
+    """The corridor(s) an incident is counted under in analytics.
+
+    The live feed writes every location as ``<block> <road>/<nearest cross
+    street>`` — "3142 AMBASSADOR CAFFERY PKWY/CURRAN PKWY". The incident is ON
+    the first road; the second only says whereabouts, and dispatch dresses it
+    in the first road's prefix and suffix ("W PINHOOK RD/W BENDEL RD" for
+    Bendel Rd, "AMBASSADOR CAFFERY PKWY/AMBASSADOR CAFFERY BLVD"), so counting
+    it produced phantom corridors and credited roads with crashes that
+    happened beside them. Such locations count once, under the road they are
+    on. A genuine "X AT Y" intersection with no block number still counts
+    toward both roads.
+    """
+    raw = str(location or "").strip().upper()
+    if _BLOCK_AND_CROSS.match(raw):
+        cid = normalize_corridor(raw.split("/", 1)[0])
+        if cid:
+            return [cid]
+    return corridor_ids(raw)

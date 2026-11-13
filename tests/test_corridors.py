@@ -134,3 +134,34 @@ class BroussardRoadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveFeedFormatTests(unittest.TestCase):
+    """The feed's real shape: '<block> <road>/<cross street>\\n <city>, LA'."""
+
+    def test_parish_abbreviation_is_not_a_road(self):
+        from lafayette911.corridors import corridor_ids
+        ids = corridor_ids("1400 YOUNG ST/YOUNG\n                        LAF PARISH, LA")
+        self.assertEqual(ids, ["YOUNG ST", "YOUNG"])
+        self.assertEqual(corridor_ids("100 MAIN ST/\n   LAF PARISH, LA"), ["MAIN ST"])
+
+    def test_highway_direction_tags_collapse(self):
+        from lafayette911.corridors import normalize_corridor
+        self.assertEqual(normalize_corridor("10300 W I-10"), "I-10")
+        self.assertEqual(normalize_corridor("S I-49"), "I-49")
+        self.assertEqual(normalize_corridor("5100 US HWY 90 EAST"), "US 90")
+        self.assertEqual(normalize_corridor("I-10 SOUTH FRONTAGE RD"), "I-10 SOUTH FRONTAGE RD")
+
+    def test_block_address_counts_once_on_its_own_road(self):
+        from lafayette911.corridors import incident_corridors
+        self.assertEqual(
+            incident_corridors("1400 W PINHOOK RD/W BENDEL RD\n      LAFAYETTE, LA"), ["PINHOOK RD"])
+        self.assertEqual(
+            incident_corridors("3232 AMBASSADOR CAFFERY PKWY/AMBASSADOR CAFFERY BLVD\n LAFAYETTE, LA"),
+            ["AMBASSADOR CAFFERY PKWY"])
+
+    def test_true_intersection_still_counts_both_roads(self):
+        from lafayette911.corridors import incident_corridors
+        self.assertEqual(
+            incident_corridors("AMBASSADOR CAFFERY PKWY AT KALISTE SALOOM RD"),
+            ["AMBASSADOR CAFFERY PKWY", "KALISTE SALOOM RD"])
