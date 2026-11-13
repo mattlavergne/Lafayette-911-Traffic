@@ -14,7 +14,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
-from lafayette911.corridors import corridor_ids
+from lafayette911.corridors import corridor_ids, incident_corridors
 from lafayette911.episodes import find_episode_duplicates
 from lafayette911.map_template import render_map_html
 from lafayette911.utils import atomic_write_text
@@ -85,6 +85,24 @@ OSM_INTERSECTION_MIN_STREETS = 3
 # to a coarse grid keeps the key stable for the life of the deployment while
 # still fully containing every point.
 OSM_BBOX_QUANTIZE_DEG = 0.05
+
+
+def _load_osmnx():
+    """Import osmnx with its own HTTP cache switched off.
+
+    By default osmnx saves every raw Overpass response as JSON under
+    ``./cache`` (relative to the service's working directory) and never
+    deletes any of it. A road-network download for the parish is tens of
+    megabytes, and nothing here ever reads those files back: the parsed
+    network is already kept as one ``.graphml`` in ``osm_cache/``. Left on,
+    that folder is pure dead weight that grows with every re-download.
+    """
+    ox = importlib.import_module("osmnx")
+    try:
+        ox.settings.use_cache = False
+    except Exception:
+        pass
+    return ox
 
 
 def _osm_cache_ttl_seconds() -> int:
@@ -457,7 +475,7 @@ def _compute_osm_context_for_bbox(bbox, incidents_latlng, osm_cache_dir: str):
     if not importlib.util.find_spec("osmnx"):
         return {}, [], []
 
-    ox = importlib.import_module("osmnx")
+    ox = _load_osmnx()
 
     if not incidents_latlng:
         return {}, [], []
@@ -742,7 +760,7 @@ def _precompute_osm_road_types(db_path: str, osm_cache_dir: str) -> dict:
     if not importlib.util.find_spec("osmnx"):
         return {}
 
-    ox = importlib.import_module("osmnx")
+    ox = _load_osmnx()
 
     conn = sqlite3.connect(db_path)
     try:
@@ -1266,7 +1284,7 @@ def _stream_osm_intersections(
     if not importlib.util.find_spec("osmnx"):
         return []
 
-    ox = importlib.import_module("osmnx")
+    ox = _load_osmnx()
     os.makedirs(osm_cache_dir, exist_ok=True)
 
     south, north, west, east = bbox
@@ -1593,7 +1611,9 @@ def _write_streaming_datajs(
                 if not _in_lafayette_bounds(lat, lon):
                     continue
 
-                loc = str(location or "").strip()
+                # The feed pads its two-line locations with ~25 spaces of HTML
+                # indentation; collapsed, the data file is ~10% smaller.
+                loc = re.sub(r"\s+", " ", str(location or "")).strip()
                 assist = str(assisting or "").strip()
                 reported_str = str(reported or "").strip()
                 lat_r = round(float(lat), 6)
@@ -1641,7 +1661,7 @@ def _write_streaming_datajs(
                     _safe_int(is_holiday),
                     # canonical corridor ids (index 26) — an intersection
                     # legitimately lists both roads
-                    corridor_ids(loc),
+                    incident_corridors(loc),
                     # v4 fields — geocode confidence (27), minutes visible in
                     # the public feed (28, NOT clearance time), currently
                     # listed in the feed (29), feed checks that listed it (30)
@@ -1690,7 +1710,7 @@ def _write_streaming_datajs(
                     round(float(lat), 6),
                     round(float(lon), 6),
                     reported_parts,
-                    str(entry.get("location") or "").strip(),
+                    re.sub(r"\s+", " ", str(entry.get("location") or "")).strip(),
                     "TRAFFIC CONTROL",
                     str(entry.get("assisting") or "").strip(),
                     1.0,
@@ -1713,7 +1733,7 @@ def _write_streaming_datajs(
                     None,   # highway_type
                     "",     # created_at
                     None,   # is_holiday
-                    corridor_ids(str(entry.get("location") or "")),  # index 26
+                    incident_corridors(str(entry.get("location") or "")),  # index 26
                     None,   # geocode_confidence (27): mixed group, not meaningful
                     None,   # visible_minutes (28): aggregate spans days, not one listing
                     1 if entry.get("active") else 0,  # any member in current feed (29)
@@ -2148,7 +2168,7 @@ def _create_map_from_dataframe(
                 _safe_text(r.get("road_type")) or _infer_road_type(loc) or None,
                 "",  # created_at (index 24): not tracked in the CSV
                 _safe_int(r.get("is_holiday")),  # index 25
-                corridor_ids(loc),  # canonical corridor ids (index 26)
+                incident_corridors(loc),  # canonical corridor ids (index 26)
             ]
         )
         # v4 fields (indices 27-30): geocode confidence, minutes visible in

@@ -16,3 +16,4 @@ osm_cache/
 
 *.html
 route_map_cache/
+cache/

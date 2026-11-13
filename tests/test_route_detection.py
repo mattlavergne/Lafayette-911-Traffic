@@ -175,9 +175,9 @@ class CrossStreetAddressTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertTrue(found[0]["cross_street"])
         self.assertIn("DUHON RD", found[0]["matched"])
-        self.assertIn("intersection with DUHON RD", diag["600 E BROUSSARD/DUHON RD"]["reason"])
+        self.assertIn("on DUHON RD, map pin", diag["600 E BROUSSARD/DUHON RD"]["reason"])
         html = render_route_email(_drawn_route(), found, datetime(2026, 9, 28, 7, 10), 90)
-        self.assertIn("intersection with your road", html)
+        self.assertIn("on your road — the map pin", html)
 
     def test_same_spot_without_the_cross_street_does_not(self):
         found, _ = self._find([("C2", "600 E BROUSSARD RD", 30.2050, -92.0175)])

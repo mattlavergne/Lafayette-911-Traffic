@@ -21,6 +21,8 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+from lafayette911.insights_view import INSIGHTS_CSS, INSIGHTS_HTML, INSIGHTS_JS
+
 
 def _carto_api_key(explicit: Optional[str] = None) -> str:
     """Return the CARTO basemap key, or "" when the map should stay keyless.
@@ -62,6 +64,10 @@ def render_map_html(
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     html = MAP_HTML_TEMPLATE
+    # First, so the page-wide tokens below also apply inside these blocks.
+    html = html.replace("/*__INSIGHTS_CSS__*/", INSIGHTS_CSS)
+    html = html.replace("<!--__INSIGHTS_HTML__-->", INSIGHTS_HTML)
+    html = html.replace("/*__INSIGHTS_JS__*/", INSIGHTS_JS)
     html = html.replace("__CENTER_LAT__", f"{float(center_lat):.6f}")
     html = html.replace("__CENTER_LNG__", f"{float(center_lng):.6f}")
     html = html.replace("__DATAJS_SRC__", datajs_src)
@@ -360,9 +366,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .brand-text { flex: 1; min-width: 0; }
   .brand-title { font-size: 15.5px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.15; }
   .brand-sub { font-size: 11px; color: var(--text-2); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sb-actions { display: flex; gap: 6px; }
+  .sb-actions { display: flex; gap: 4px; flex: none; }
   .icon-btn {
-    width: 34px; height: 34px; border-radius: 999px; border: 1px solid var(--panel-border);
+    width: 32px; height: 32px; border-radius: 999px; border: 1px solid var(--panel-border);
     background: var(--chip); color: var(--text); cursor: pointer;
     display: flex; align-items: center; justify-content: center; padding: 0;
     box-shadow: var(--edge);
@@ -951,6 +957,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   /* Keep bottom-left Leaflet controls clear of the sidebar on desktop. */
+/*__INSIGHTS_CSS__*/
   @media (min-width: 701px) {
     .leaflet-bottom.leaflet-left { left: 430px; }
   }
@@ -1064,6 +1071,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
           <path d="M5.5 10v9.5a.5.5 0 0 0 .5.5h4V15a2 2 0 0 1 4 0v5h4a.5.5 0 0 0 .5-.5V10"/>
         </svg>
       </a>
+      <button class="icon-btn" id="insightsBtn" type="button" title="Crash insights across the whole archive (I)" aria-label="Open crash insights" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 20V10m6 10V4m6 16v-7m4 7H2"/>
+        </svg>
+      </button>
       <button class="icon-btn" id="themeBtn" type="button" title="Toggle theme (auto / light / dark)" aria-label="Toggle color theme">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <circle cx="12" cy="12" r="4"/>
@@ -1360,11 +1372,16 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         </div>
       </div>
 
-      <div class="kbd-hint"><kbd>/</kbd> search &nbsp; <kbd>Esc</kbd> close &nbsp; <kbd>T</kbd> theme</div>
+      <div class="kbd-hint"><kbd>/</kbd> search &nbsp; <kbd>Esc</kbd> close &nbsp; <kbd>T</kbd> theme &nbsp; <kbd>I</kbd> insights</div>
     </div>
 
     <!-- ═══ ANALYTICS ═══ -->
     <div class="panel" id="panelAnalytics">
+      <button type="button" class="iv-cta" id="insightsCta" aria-haspopup="dialog">
+        <span><b>Crash insights</b><span class="s">Worst hours, roads and blocks across the whole archive</span></span>
+        <span class="go" aria-hidden="true">›</span>
+      </button>
+      <div class="an-scope" id="anScope" style="display:none"></div>
       <div class="an-summary" id="analyticsSummary"></div>
       <div id="anClearRow" style="display:none;margin:0 0 8px 0">
         <button id="anClearBtn" type="button" class="mini-clear">Clear analytics selections</button>
@@ -1632,6 +1649,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!--__INSIGHTS_HTML__-->
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script src="__DATAJS_SRC__"></script>
@@ -1672,9 +1690,9 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ═══════════════════════ categories ═══════════════════════ */
   const CATEGORIES = [
-    { id: "accident", label: "Accidents",  color: "#e5484d", fill: "#fca5a5", kw: ["ACCIDENT", "CRASH", "COLLISION", "WRECK", "MVA", "MVC", "HIT AND RUN", "HIT & RUN"] },
+    { id: "accident", label: "Accidents",  color: "#e5484d", fill: "#fca5a5", kw: ["ACCIDENT", "TRAFF ACC", "CRASH", "COLLISION", "WRECK", "MVA", "MVC", "HIT AND RUN", "HIT & RUN", "HIT/RUN"] },
     { id: "fire",     label: "Fire",       color: "#ea580c", fill: "#fdba74", kw: ["FIRE", "SMOKE"] },
-    { id: "hazard",   label: "Hazards",    color: "#ca8a04", fill: "#fde047", kw: ["HAZARD", "DEBRIS", "SPILL", "FLOOD", "WATER", "TREE", "OBSTRUCT", "DOWN", "ANIMAL", "ICE"] },
+    { id: "hazard",   label: "Hazards",    color: "#ca8a04", fill: "#fde047", kw: ["HAZARD", "DEBRIS", "SPILL", "FLOOD", "WATER", "TREE", "OBSTRUCT", "DOWN", "ANIMAL", "ICE ON", "ICY"] },
     { id: "control",  label: "Signals",    color: "#2563eb", fill: "#93c5fd", kw: ["TRAFFIC CONTROL", "SIGNAL", "TRAFFIC LIGHT", "LIGHT OUT", "MALFUNCTION"] },
     { id: "vehicle",  label: "Stalled",    color: "#9333ea", fill: "#d8b4fe", kw: ["STALL", "DISABLED", "ABANDON"] },
     { id: "medical",  label: "Medical",    color: "#0d9488", fill: "#5eead4", kw: ["MEDICAL", "INJURY", "PEDESTRIAN"] },
@@ -3408,6 +3426,17 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   function renderCharts(rows, f) {
     f = f || currentFilterObj();
+    // A day or a week of data cannot show weekly or seasonal patterns; say
+    // so, and offer the range that can, instead of drawing one-bar charts.
+    const scopeEl = document.getElementById("anScope");
+    if (scopeEl) {
+      const shortRange = { "24h": "the past 24 hours", "today": "today", "7d": "the past 7 days" }[f.range];
+      scopeEl.style.display = shortRange ? "" : "none";
+      if (shortRange) {
+        scopeEl.innerHTML = "These charts follow the map's filters \u2014 right now only <b>" + shortRange +
+          "</b>, too short for weekly or seasonal patterns. <button type=\"button\" data-all>Analyze all time</button>";
+      }
+    }
     // Facet-aware sources: each chart is computed WITHOUT its own
     // dimension's filter, so all 24 bars / 7 days / 168 cells stay visible
     // while every other filter still applies. When no time selection is
@@ -3750,7 +3779,12 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     d.setHours(0, 0, 0, 0);
     const end = new Date(maxMs);
     end.setHours(23, 59, 59, 999);
+    // Only days the collector was running count as exposure. The archive has
+    // a months-long hole; dividing by those empty days understated every
+    // per-day and per-hour rate over long ranges.
+    const covered = dataCoverage().days;
     while (d <= end) {
+      if (covered.size && !covered.has(ivKey(d))) { d.setDate(d.getDate() + 1); continue; }
       const dow = d.getDay();
       totalDays += 1;
       perDow[dow] += 1;
@@ -4009,8 +4043,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         if (dt > recentStart) recent++;
         else if (dt > priorStart) prior++;
       }
-      if (prior === 0 && recent > 0) {
-        trendText = "Recent 7 days show activity, but the prior 7-day window had none.";
+      if (end.getTime() - dated[0].getTime() < 13 * 86400000) {
+        trendText = "Pick a range of two weeks or more to see a week-over-week trend.";
       } else if (prior > 0) {
         const pct = ((recent - prior) / prior) * 100;
         trendText = "Recent 7 days are <strong>" + (pct >= 0 ? "up" : "down") + " " + Math.abs(pct).toFixed(0) + "%</strong> vs the prior 7-day window.";
@@ -4031,6 +4065,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       '<li>Top corridor: <strong>' + esc(titleCase(topCorridor[0])) + '</strong> (' + topCorridor[1] + ' incidents).</li>' +
       '<li>' + trendText + '</li></ul>';
   }
+
+/*__INSIGHTS_JS__*/
 
   /* ═══════════════════════ feed ═══════════════════════ */
   let feedLimit = 30;
@@ -4995,6 +5031,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   let lastRefreshMs = Date.now();  // page load counts as the first refresh
 
   function onDataReplaced() {
+    insightsDataReplaced();
     _dataSpanCache.clear();
     _catCache.clear();
     buildLocHistory();
@@ -6282,6 +6319,7 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     $("locBtn").addEventListener("click", locateMe);
 
+    wireInsights();
     els.aboutBtn.addEventListener("click", openAbout);
     els.aboutClose.addEventListener("click", closeAbout);
     els.aboutModal.addEventListener("click", function (e) {
@@ -6564,6 +6602,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
         els.roadSearch.focus();
       } else if (e.key === "t" || e.key === "T") {
         cycleTheme();
+      } else if (e.key === "i" || e.key === "I") {
+        openInsights();
       }
     });
 

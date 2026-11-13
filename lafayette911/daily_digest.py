@@ -43,7 +43,7 @@ from lafayette911.corridors import corridor_ids
 # ── categories (mirrors the web page's grouping, with emoji) ──────────────
 _CATEGORIES: List[Tuple[str, str, str, Tuple[str, ...]]] = [
     # (label, emoji, bar color, keywords)
-    ("Accidents", "🚗", "#ef4444", ("ACCIDENT", "CRASH", "COLLISION", "WRECK", "MVA", "MVC",
+    ("Accidents", "🚗", "#ef4444", ("ACCIDENT", "TRAFF ACC", "CRASH", "COLLISION", "WRECK", "MVA", "MVC",
                                     "HIT AND RUN", "HIT & RUN", "HIT/RUN")),
     ("Fire", "🔥", "#f97316", ("FIRE", "SMOKE")),
     ("Hazards", "⚠️", "#eab308", ("HAZARD", "SPILL", "DEBRIS", "OBSTRUCT", "FLOOD", "TREE", "POWER LINE", "LINE DOWN", "ANIMAL")),
@@ -61,7 +61,10 @@ _AGENCIES: List[Tuple[str, str, str]] = [
 
 _SPARK = "▁▂▃▄▅▆▇█"
 
-_REPORTED_RE = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)", re.I)
+# The feed's reported time. The live feed is 24-hour with no AM/PM
+# ("11/13/2026 08:32"); AM/PM and seconds are accepted for older exports.
+_REPORTED_RE = re.compile(
+    r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?", re.I)
 
 
 def categorize(cause: str) -> str:
@@ -88,10 +91,11 @@ def _reported_hour(reported: str) -> Optional[int]:
     m = _REPORTED_RE.search(str(reported or ""))
     if not m:
         return None
-    hh = int(m.group(4)) % 12
-    if m.group(6).upper() == "PM":
-        hh += 12
-    return hh
+    hh = int(m.group(4))
+    ampm = (m.group(6) or "").upper()
+    if ampm:
+        hh = hh % 12 + (12 if ampm == "PM" else 0)
+    return hh if 0 <= hh < 24 else None
 
 
 # ── configuration ──────────────────────────────────────────────────────────
