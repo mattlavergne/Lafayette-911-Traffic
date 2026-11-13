@@ -58,6 +58,8 @@ three hard guarantees:
 | `lafayette911/state_store.py` | SQLite + CSV persistence, dedupe indexes, geocode budget & blacklist |
 | `lafayette911/enrichment.py` | Pure derived fields: time context, holidays, school days, road type |
 | `lafayette911/weather.py` | NWS weather snapshots and active-alert flags |
+| `lafayette911/weather_log.py` | Hourly log of observed weather (live from NWS, history from the IEM archive) |
+| `lafayette911/data/road_stats.json` | Length and traffic volume of every parish road (built by `scripts/build_road_stats.py`) |
 | `lafayette911/map_render.py` | Builds `traffic_data.js` + `traffic_map.html` from stored data |
 | `lafayette911/map_template.py` | The self-contained interactive web page (Leaflet, no build step) |
 | `lafayette911/insights_view.py` | The page's full-screen crash-insights view (CSS/HTML/JS injected into the template) |
@@ -121,6 +123,8 @@ Everything is an environment variable with a working default.
 | `LAF911_GEOCODE_FAILURE_RETRY_DAYS` | `7` | Blacklist expiry |
 | `LAF911_WEATHER_ENABLED` | `true` | Attach NWS weather snapshots to new incidents |
 | `LAF911_ALERTS_ENABLED` | `true` | Attach NWS active-alert flags (zone LAZ034) |
+| `LAF911_WEATHER_LOG` | `true` | Keep the hourly observed-weather log |
+| `LAF911_WEATHER_STATION` | `KLFT` | Observing station for that log (Lafayette Regional Airport) |
 | `LAF911_BASE_DIR` / `LAF911_CSV_PATH` / `LAF911_MAP_PATH` / `LAF911_DATAJS_PATH` / `LAF911_DB_PATH` / `LAF911_OSM_CACHE` | *(script dir)* | File locations |
 | `LAF911_CARTO_API_KEY` | *(empty)* | Optional CARTO basemap key; empty = keyless OpenStreetMap tiles |
 | `LAF911_LOG_LEVEL` | `INFO` | Structured JSON logs on stdout |
@@ -166,6 +170,47 @@ roads and blocks are tappable and jump back to the map. Its rules:
 - **Time on the feed is not clearance time**, and the only weather comparison
   offered is whole wet days against whole dry days, because the archive has
   forecast values at report time and no record of dry hours.
+
+It also covers: rain, heavy rain and fog against the same hour of the week
+when dry; darkness against daylight in the clock hours that are both; crashes
+that follow another crash nearby (with the rate the same spots produce by
+coincidence); crashes first logged as minor and upgraded; holidays, festivals
+and school days against a normal day of that weekday; the signals, stalls and
+hazards that recur most; and which agency responds by hour and by town. Tap a
+road for its own profile of all of the above. The sidebar shows how today is
+running against the same weekday's history ("Busier than usual").
+
+**Counts versus risk.** A road's crash total mostly reflects how busy it is.
+"Most dangerous for the traffic they carry" divides by vehicle-miles driven,
+using each road's length and average daily traffic from Louisiana DOTD's open
+data. That table ships in the repository; refresh it when DOTD publishes new
+counts:
+
+```bash
+python scripts/build_road_stats.py
+```
+
+## What gets collected beyond the incident itself
+
+| What | Why | Size |
+| --- | --- | --- |
+| **Observed weather, every hour** (`weather_hourly`) | The snapshot on each incident is a forecast taken only when something happened, so it cannot say how many hours were wet. The log is what makes a rain effect measurable. | ~0.4 MB / year |
+| **Feed checks, per hour** (`feed_checks`) | How many sweeps of the feed succeeded and failed. Tells the analysis exactly which days were fully collected instead of inferring it. | ~0.3 MB / year |
+| **Agency changes** (`incident_changes`) | The feed adds agencies to an incident as units are sent. Stored agencies now accumulate, and each addition is logged with its time. | a few MB / year |
+
+The weather log fills itself: on first start it downloads every hour since
+your first incident from the Iowa Environmental Mesonet's archive of airport
+observations (one request per four months of history), then polls the
+National Weather Service once an hour and re-checks the archive daily to heal
+any hours missed while the Pi was off. To run or inspect it by hand:
+
+```bash
+python -m lafayette911.weather_log --backfill
+```
+
+```bash
+python -m lafayette911.weather_log --status
+```
 
 Basemaps are keyless OpenStreetMap raster tiles (dark mode inverts them in
 CSS); popups link out to Google Maps, Street View and Waze via plain URLs.
@@ -534,7 +579,9 @@ may take a few days of normal operation to clear.
 | --- | --- | --- |
 | lafayette911.org feed | Incident source | public feed, polled gently |
 | Google Geocoding API | Address → coordinates | budgeted; aggressive caching & blacklist |
-| NWS api.weather.gov | Weather snapshots, active alerts, live map weather | free, no key |
+| NWS api.weather.gov | Weather snapshots, active alerts, live map weather, hourly observation log | free, no key |
+| Iowa Environmental Mesonet | Historical airport observations for the weather log | free, no key; one small request a day |
+| Louisiana DOTD open data | Road lengths and traffic counts (one-off import, shipped in the repo) | free, no key |
 | OpenStreetMap tiles | Basemaps | free, no key; attribution kept |
 | CARTO tiles (optional) | Basemaps, when `LAF911_CARTO_API_KEY` is set | free basemap tier, requires a CARTO account |
 | GitHub Pages (optional) | Public hosting of the map | free for public repos |

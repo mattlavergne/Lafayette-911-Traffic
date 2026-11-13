@@ -33,3 +33,16 @@ and are used under their own licenses and terms.
 
 All product names, logos, and brands are property of their respective owners
 and are used for identification purposes only.
+
+## Road length and traffic volume
+
+`lafayette911/data/road_stats.json` is derived from the Louisiana Department
+of Transportation and Development's public Roads & Highways open-data service
+(the "Louisiana Roadways" and "AADT" layers). Traffic volumes are DOTD's
+annual average daily traffic figures, some of them modelled estimates.
+
+## Historical weather observations
+
+Hourly airport observations used to backfill the weather log come from the
+Iowa Environmental Mesonet (Iowa State University) ASOS archive; live
+observations come from the National Weather Service.

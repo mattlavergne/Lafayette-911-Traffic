@@ -128,6 +128,19 @@ INSIGHTS_CSS = r"""
   .iv-hbar .v small { color: var(--text-3); font-weight: 500; }
   .iv-hbar .l { color: var(--text-2); }
 
+  .iv-h4 { font-size: 12.5px; margin: 0 0 2px 0; }
+  .iv-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px 28px; }
+  .iv-rank { grid-template-columns: minmax(110px, 1.3fr) 1fr auto; }
+  .iv-rank .loc-sub { display: block; font-size: 10.5px; color: var(--text-3); }
+  .iv-hbar .t.ref { overflow: visible; }
+  .iv-hbar .t.ref::after { content: ""; position: absolute; top: -2px; bottom: -2px; left: var(--ref); width: 2px; background: var(--text); opacity: 0.55; }
+  .iv-roadbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 14px 0; font-size: 12.5px; color: var(--text-2); }
+  .today-norm { font-size: 11.5px; color: var(--text-2); margin: 0 14px 8px 16px; padding: 7px 10px; border-radius: 10px; background: var(--chip); line-height: 1.4; }
+  .today-norm b { color: var(--text); }
+  .today-norm.above { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  .today-norm.above b { color: var(--bad); }
+  .today-norm.below b { color: var(--good); }
+
   #ivTip {
     position: fixed; z-index: 3600; pointer-events: none; display: none; max-width: 240px;
     background: var(--text); color: var(--bg); font: 500 11.5px/1.4 var(--font);
@@ -167,7 +180,7 @@ INSIGHTS_HTML = r"""
 <div id="insightsView" role="dialog" aria-modal="true" aria-labelledby="ivTitle" aria-hidden="true">
   <div class="iv-wrap">
     <div class="iv-head">
-      <h2 id="ivTitle">Crash insights<small id="ivSubtitle">Lafayette Parish</small></h2>
+      <h2 id="ivTitle"><span id="ivTitleText">Crash insights</span><small id="ivSubtitle">Lafayette Parish</small></h2>
       <div class="iv-seg" id="ivPeriod" role="group" aria-label="Period analysed">
         <button type="button" data-p="all" aria-pressed="true">All data</button>
         <button type="button" data-p="90" aria-pressed="false">Last 90 days</button>
@@ -183,7 +196,7 @@ INSIGHTS_HTML = r"""
 
 INSIGHTS_JS = r"""
   /* ═══════════════════════ insights view ═══════════════════════ */
-  const IV = { period: "all", prevFocus: null, prep: null, actions: [] };
+  const IV = { period: "all", road: null, prevFocus: null, prep: null, actions: [] };
   const IV_DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const IV_DOW3 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const IV_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -253,7 +266,13 @@ INSIGHTS_JS = r"""
     }
     closeSeg();
     partial.add(ivKey(new Date()));                    // today is still filling in
-    const full = new Set(keys.filter(function (k) { return !partial.has(k); }));
+    // Where the feed-check log covers a day it is exact: a day is full only
+    // when the feed was reached in at least 22 of its hours.
+    const full = new Set(keys.filter(function (k) {
+      const iso = Math.floor(k / 10000) + "-" + String(Math.floor(k / 100) % 100).padStart(2, "0") + "-" + String(k % 100).padStart(2, "0");
+      if (Object.prototype.hasOwnProperty.call(FEED_HOURS, iso)) return FEED_HOURS[iso] >= 22 && k !== ivKey(new Date());
+      return !partial.has(k);
+    }));
     const gaps = [];
     for (let i = 1; i < segments.length; i++) {
       const a = ivKeyDate(segments[i - 1].to), b = ivKeyDate(segments[i].from);
@@ -266,7 +285,7 @@ INSIGHTS_JS = r"""
   const IV_SEVERE = /FATAL|W\/\s*INJ|INJURIE|RESCUE|MAJOR/;
   function ivPrep() {
     if (IV.prep) return IV.prep;
-    const crashes = [], feed = [];
+    const crashes = [], feed = [], others = [];
     let maxMs = 0;
     for (const row of INCIDENTS) {
       if (incidentCount(row) > 1) continue;
@@ -281,16 +300,20 @@ INSIGHTS_JS = r"""
       if (cat === "accident") {
         const hitrun = cause.indexOf("HIT") !== -1;
         const severe = IV_SEVERE.test(cause) && cause.indexOf("NO INJ") === -1;
-        crashes.push({ row: row, ms: ms, key: ivKey(pr.dt), hh: pr.hh, dow: pr.dt.getDay(),
-                       severe: severe, hitrun: hitrun, vis: done ? vis : null });
+        crashes.push({ row: row, ms: ms, key: ivKey(pr.dt), hh: pr.hh, dow: pr.dt.getDay(), min: pr.hh * 60 + pr.mi,
+                       severe: severe, hitrun: hitrun, vis: done ? vis : null, cids: corridorsOf(row),
+                       lat: row[IDX_LAT], lng: row[IDX_LNG], mask: agencyMaskOf(row) });
         if (done) feed.push({ ms: ms, vis: vis, g: hitrun ? "Hit-and-run" : (severe ? "Major / injury crash" : "Minor crash") });
       } else if (done) {
         const g = cat === "vehicle" ? "Stalled vehicle" : cat === "hazard" ? "Road hazard"
                 : cat === "control" ? "Signal problem" : cat === "fire" ? "Fire call" : null;
         if (g) feed.push({ ms: ms, vis: vis, g: g });
       }
+      if (cat !== "accident") {
+        others.push({ row: row, ms: ms, key: ivKey(pr.dt), hh: pr.hh, cat: cat, cause: cause, cids: corridorsOf(row), mask: agencyMaskOf(row) });
+      }
     }
-    IV.prep = { crashes: crashes, feed: feed, maxMs: maxMs };
+    IV.prep = { crashes: crashes, feed: feed, others: others, maxMs: maxMs };
     return IV.prep;
   }
 
@@ -397,6 +420,185 @@ INSIGHTS_JS = r"""
            max + ' · <i class="nd"></i> no data collected</div>';
   }
 
+  /* ── shared analysis helpers ── */
+  // Sunrise / sunset in minutes of local (Central) wall-clock time, NOAA's
+  // short solar formula — good to a couple of minutes, with US DST rules.
+  const IV_LAT = 30.22, IV_LNG = -92.02;
+  const _sunCache = new Map();
+  function ivSun(d) {
+    const key = ivKey(d);
+    let s = _sunCache.get(key);
+    if (s) return s;
+    const y = d.getFullYear();
+    const n = Math.round((Date.UTC(y, d.getMonth(), d.getDate()) - Date.UTC(y, 0, 0)) / DAY_MS);
+    const g = 2 * Math.PI / 365 * (n - 1);
+    const eq = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
+    const decl = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g);
+    const lat = IV_LAT * Math.PI / 180;
+    const ha = Math.acos(Math.cos(90.833 * Math.PI / 180) / (Math.cos(lat) * Math.cos(decl)) - Math.tan(lat) * Math.tan(decl)) * 180 / Math.PI;
+    const dstStart = new Date(y, 2, nthWeekdayDay(y, 2, 0, 2)), dstEnd = new Date(y, 10, nthWeekdayDay(y, 10, 0, 1));
+    const off = (d >= dstStart && d < dstEnd) ? -300 : -360;
+    s = { rise: 720 - 4 * (IV_LNG + ha) - eq + off, set: 720 - 4 * (IV_LNG - ha) - eq + off };
+    _sunCache.set(key, s);
+    return s;
+  }
+  // 1 = dark, 0 = daylight, -1 = twilight (left out of comparisons).
+  function ivDarkness(d, hh) {
+    const s = ivSun(d), t = hh * 60 + 30;
+    if (t >= s.rise && t <= s.set) return 0;
+    if (t < s.rise - 25 || t > s.set + 25) return 1;
+    return -1;
+  }
+  function ivEaster(y) {
+    const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4,
+          f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30,
+          i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451),
+          mo = Math.floor((h + l - 7 * m + 114) / 31), da = (h + l - 7 * m + 114) % 31 + 1;
+    return new Date(y, mo - 1, da);
+  }
+  function ivAddDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
+  function ivEventsFor(y) {
+    const mg = ivAddDays(ivEaster(y), -47);
+    const lastSunApr = new Date(y, 3, lastWeekdayDay(y, 3, 0));
+    const tg = new Date(y, 10, nthWeekdayDay(y, 10, 4, 4));
+    function span(from, n) { const o = []; for (let i = 0; i < n; i++) o.push(ivAddDays(from, i)); return o; }
+    return [
+      ["Mardi Gras Day", [mg]],
+      ["Mardi Gras weekend (Fri–Mon)", span(ivAddDays(mg, -4), 4)],
+      ["Festival International (Wed–Sun)", span(ivAddDays(lastSunApr, -4), 5)],
+      ["Super Bowl Sunday", [new Date(y, 1, nthWeekdayDay(y, 1, 0, 2))]],
+      ["Fourth of July", [new Date(y, 6, 4)]],
+      ["Halloween", [new Date(y, 9, 31)]],
+      ["Day before Thanksgiving", [ivAddDays(tg, -1)]],
+      ["Thanksgiving Day", [tg]],
+      ["Black Friday", [ivAddDays(tg, 1)]],
+      ["Christmas Eve", [new Date(y, 11, 24)]],
+      ["Christmas Day", [new Date(y, 11, 25)]],
+      ["New Year’s Eve", [new Date(y, 11, 31)]],
+      ["New Year’s Day", [new Date(y, 0, 1)]]
+    ];
+  }
+  function ivDistM(a, b) {
+    const ky = 110540, kx = 111320 * Math.cos(IV_LAT * Math.PI / 180);
+    const dx = (a.lng - b.lng) * kx, dy = (a.lat - b.lat) * ky;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  // Crashes that follow another crash nearby within 45 minutes — and how
+  // often the same test fires against the crashes of exactly one week
+  // earlier, which is what busy spots at busy hours produce by coincidence.
+  function ivSecondary(rows) {
+    const s = rows.slice().sort(function (a, b) { return a.ms - b.ms; });
+    const WIN = 45 * 60000, MINGAP = 3 * 60000, R = 500, WEEK = 7 * DAY_MS;
+    let real = 0, chance = 0, j = 0, k = 0, eligible = 0;
+    const firstMs = s.length ? s[0].ms : 0;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      while (j < i && c.ms - s[j].ms > WIN) j++;
+      let hit = false;
+      for (let q = j; q < i && !hit; q++) if (c.ms - s[q].ms >= MINGAP && ivDistM(c, s[q]) <= R) hit = true;
+      if (hit) real++;
+      if (c.ms - WEEK - WIN < firstMs) continue;
+      eligible++;
+      while (k < s.length && c.ms - WEEK - s[k].ms > WIN) k++;
+      for (let q = k; q < s.length && s[q].ms <= c.ms - WEEK - MINGAP; q++) {
+        if (ivDistM(c, s[q]) <= R) { chance++; break; }
+      }
+    }
+    return { real: real, n: s.length, chance: chance, eligible: eligible };
+  }
+  // Observed-weather effect: crashes in wet (or foggy) hours against what the
+  // same hour of the same weekday produces when dry. Returns null without
+  // enough logged hours.
+  function ivWeatherEffect(rows, cov, fromMs) {
+    if (!WEATHER_HOURS || !WEATHER_HOURS.codes) return null;
+    const m = String(WEATHER_HOURS.start).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/);
+    if (!m) return null;
+    const t0 = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4]), codes = WEATHER_HOURS.codes;
+    function idxOf(d, hh) { return Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), hh) - t0) / 3600000); }
+    const crashAt = new Map();
+    for (const c of rows) {
+      if (!cov.full.has(c.key)) continue;
+      const i = idxOf(ivKeyDate(c.key), c.hh);
+      crashAt.set(i, (crashAt.get(i) || 0) + 1);
+    }
+    const kinds = { dry: [], wet: [], heavy: [], fog: [] };
+    Object.keys(kinds).forEach(function (k) { for (let i = 0; i < 168; i++) kinds[k].push([0, 0]); });
+    let logged = 0;
+    cov.full.forEach(function (key) {
+      const d = ivKeyDate(key);
+      if (d.getTime() + DAY_MS / 2 <= fromMs) return;
+      for (let hh = 0; hh < 24; hh++) {
+        const i = idxOf(d, hh), code = i >= 0 && i < codes.length ? codes[i] : "-";
+        if (code === "-") continue;
+        logged++;
+        const how = d.getDay() * 24 + hh, n = crashAt.get(i) || 0;
+        const add = function (k) { kinds[k][how][0]++; kinds[k][how][1] += n; };
+        if (code === "d") add("dry");
+        else if (code === "f") add("fog");
+        else { add("wet"); if (code === "h") add("heavy"); }
+      }
+    });
+    function effect(k) {
+      let obs = 0, exp = 0, hrs = 0;
+      for (let how = 0; how < 168; how++) {
+        const w = kinds[k][how], d = kinds.dry[how];
+        if (!w[0] || d[0] < 5) continue;
+        obs += w[1]; exp += w[0] * d[1] / d[0]; hrs += w[0];
+      }
+      return { hours: hrs, obs: obs, exp: exp, ratio: exp > 0 ? obs / exp : null };
+    }
+    if (logged < 500) return null;
+    return { logged: logged, wet: effect("wet"), heavy: effect("heavy"), fog: effect("fog") };
+  }
+  function ivTown(location) {
+    const m = String(location || "").replace(/\s+/g, " ").trim().match(/([A-Z ]+?),\s*LA$/);
+    if (!m) return "Other";
+    const t = m[1].trim().split(" ").slice(-2).join(" ");
+    if (/LAF PARISH$/.test(t)) return "Unincorporated parish";
+    return titleCase(t.split(" ").pop()) || "Other";
+  }
+  function ivRankList(title, sub, items, unit) {
+    if (!items.length) return "";
+    const max = items[0].n;
+    return '<div><h4 class="iv-h4">' + title + '</h4><p class="iv-sub">' + sub + '</p><div class="iv-hbar iv-rank">' + items.map(function (it) {
+      const act = it.act != null ? ' data-act="' + it.act + '"' : "";
+      return '<span class="l">' + (it.act != null ? '<button type="button" class="iv-link"' + act + ">" + esc(it.label) + "</button>" : esc(it.label)) +
+             (it.sub ? '<span class="loc-sub">' + esc(it.sub) + "</span>" : "") + '</span><span class="t"><i style="width:' + (100 * it.n / max).toFixed(1) +
+             '%"></i></span><span class="v">' + ivNum(it.n) + (unit ? " <small>" + unit + "</small>" : "") + "</span>";
+    }).join("") + "</div></div>";
+  }
+  // "Today so far" against the same weekday's history, for the main page.
+  let _todayNormKey = "";
+  function renderTodayNorm() {
+    const el = document.getElementById("todayNorm");
+    if (!el) return;
+    const now = new Date(), nowMin = now.getHours() * 60 + now.getMinutes();
+    const cacheKey = INCIDENTS.length + "|" + ivKey(now) + "|" + Math.floor(nowMin / 5);
+    if (cacheKey === _todayNormKey) return;
+    _todayNormKey = cacheKey;
+    const prep = ivPrep(), cov = dataCoverage(), today = ivKey(now), dow = now.getDay();
+    const perDay = new Map();
+    let todayN = 0;
+    for (const c of prep.crashes) {
+      if (c.dow !== dow || c.min > nowMin) continue;
+      if (c.key === today) todayN++;
+      else if (cov.full.has(c.key)) perDay.set(c.key, (perDay.get(c.key) || 0) + 1);
+    }
+    const hist = [];
+    cov.full.forEach(function (k) { if (ivKeyDate(k).getDay() === dow) hist.push(perDay.get(k) || 0); });
+    // Stale data would make "today" look falsely quiet.
+    const fresh = prep.maxMs && (now.getTime() - prep.maxMs) < 6 * 3600000;
+    if (hist.length < 6 || !fresh || nowMin < 60) { el.style.display = "none"; return; }
+    hist.sort(function (a, b) { return a - b; });
+    const med = ivMedian(hist), lo = ivQuantile(hist, 0.1), hi = ivQuantile(hist, 0.9);
+    const verdict = todayN > hi ? ["above", "Busier than usual"] : todayN < lo ? ["below", "Quieter than usual"] : ["", "About normal"];
+    el.className = "today-norm " + verdict[0];
+    el.style.display = "";
+    el.innerHTML = "<b>" + verdict[1] + "</b> · " + todayN + " crash" + (todayN === 1 ? "" : "es") + " so far today; a typical " +
+                   IV_DOW[dow] + " has " + ivNum(med) + " by " + fmtHour(now.getHours()) + " (usually " + lo + "–" + hi + ")";
+    el.title = "Compared with " + hist.length + " earlier " + IV_DOW[dow] + "s up to this time of day";
+  }
+
   function ivRender() {
     const body = document.getElementById("ivBody");
     const prep = ivPrep(), cov = dataCoverage();
@@ -410,7 +612,15 @@ INSIGHTS_JS = r"""
     const fromMs = days ? endMs - days * DAY_MS : 0;
     const prevFrom = days ? fromMs - days * DAY_MS : 0;
     const inP = function (ms) { return ms > fromMs; };
-    const rows = prep.crashes.filter(function (c) { return inP(c.ms); });
+    const road = IV.road;
+    const onRoad = function (c) { return !road || c.cids.indexOf(road) !== -1; };
+    const rows = prep.crashes.filter(function (c) { return inP(c.ms) && onRoad(c); });
+    document.getElementById("ivTitleText").textContent = road ? titleCase(road) : "Crash insights";
+    if (!rows.length) {
+      body.innerHTML = '<p class="iv-empty">No crashes on record ' + (road ? "for " + esc(titleCase(road)) + " " : "") +
+                       'in this period. <button type="button" class="iv-link" data-road="">Show all roads</button></p>';
+      return;
+    }
 
     // Exposure: full collected days in the period, overall and per weekday.
     let fullDays = 0, prevFullDays = 0;
@@ -449,13 +659,13 @@ INSIGHTS_JS = r"""
       L_.n++; if (c.severe) L_.sev++; if (c.hitrun) L_.hit++; L_.lat += c.row[IDX_LAT]; L_.lng += c.row[IDX_LNG]; L_.hrs[c.hh]++;
       for (const cid of corridorsOf(c.row)) {
         let C_ = cors.get(cid);
-        if (!C_) { C_ = { n: 0, sev: 0, hit: 0, vis: [], hrs: new Array(24).fill(0), recent: 0, earlier: 0, id: cid }; cors.set(cid, C_); }
-        C_.n++; if (c.severe) C_.sev++; if (c.hitrun) C_.hit++; if (c.vis != null) C_.vis.push(c.vis); C_.hrs[c.hh]++;
+        if (!C_) { C_ = { n: 0, nf: 0, sev: 0, hit: 0, vis: [], hrs: new Array(24).fill(0), recent: 0, earlier: 0, id: cid }; cors.set(cid, C_); }
+        C_.n++; if (full) C_.nf++; if (c.severe) C_.sev++; if (c.hitrun) C_.hit++; if (c.vis != null) C_.vis.push(c.vis); C_.hrs[c.hh]++;
         if (full) { if (c.ms > recentCut) C_.recent++; else C_.earlier++; }
       }
     }
     let prevOnFull = 0;
-    if (days) for (const c of prep.crashes) if (c.ms <= fromMs && c.ms > prevFrom && cov.full.has(c.key)) prevOnFull++;
+    if (days) for (const c of prep.crashes) if (c.ms <= fromMs && c.ms > prevFrom && cov.full.has(c.key) && onRoad(c)) prevOnFull++;
     let recentDays = 0, earlierDays = 0;
     cov.full.forEach(function (k) {
       const ms = ivKeyDate(k).getTime() + DAY_MS / 2;
@@ -481,6 +691,15 @@ INSIGHTS_JS = r"""
     const periodFrom = days ? new Date(fromMs) : firstDay;
     document.getElementById("ivSubtitle").textContent =
       ivNum(rows.length) + " crashes · " + ivFmtDay(periodFrom, true) + " – " + ivFmtDay(lastDay, true);
+    // Length and traffic of a road, from the one-off DOTD import.
+    const yearsOfData = fullDays / 365.25;
+    function roadRates(cid, nFull) {
+      const st = ROAD_STATS[cid];
+      if (!st || !(st[0] > 0)) return null;
+      return { miles: st[0], daily: st[1] > 0 ? st[1] / st[0] : null,
+               perMile: nFull / st[0] / yearsOfData,
+               perMvm: st[1] > 0 ? nFull / (st[1] * fullDays / 1e6) : null };
+    }
     let note = "Averages use the <b>" + ivNum(fullDays) + " full days</b> the collector was running in this period.";
     const gapsIn = cov.gaps.filter(function (g) { return g.days >= 3 && g.to.getTime() > fromMs; });
     if (gapsIn.length) {
@@ -505,7 +724,15 @@ INSIGHTS_JS = r"""
     function kpi(label, val, sub) {
       return '<div class="iv-kpi"><div class="k-label">' + label + '</div><div class="k-val">' + val + '</div><div class="k-sub">' + sub + '</div></div>';
     }
-    let html = '<p class="iv-note">' + note + '</p><div class="iv-kpis">' +
+    let roadBar = "";
+    if (road) {
+      const rr = roadRates(road, onFull);
+      const showAct = IV.actions.push({ t: "cor", id: road }) - 1;
+      roadBar = '<div class="iv-roadbar"><button type="button" class="iv-x" data-road="">\u2039 All roads</button>' +
+                '<button type="button" class="iv-x" data-act="' + showAct + '">Show this road on the map</button>' +
+                (rr ? '<span>' + ivNum(rr.miles, 1) + " miles" + (rr.daily ? " \u00b7 about " + ivNum(Math.round(rr.daily / 100) * 100) + " vehicles a day" : "") + "</span>" : "") + "</div>";
+    }
+    let html = roadBar + '<p class="iv-note">' + note + '</p><div class="iv-kpis">' +
       kpi("Crashes per day", ivNum(perDayAvg, 1), deltaHtml) +
       kpi("Major or with injuries", ivPct(severe, rows.length) + "<small>%</small>", ivNum(severe) + " of " + ivNum(rows.length) + " crashes") +
       kpi("Hit-and-run", ivPct(hitrun, rows.length) + "<small>%</small>", ivNum(hitrun) + " crashes where a driver left") +
@@ -513,6 +740,12 @@ INSIGHTS_JS = r"""
           ivNum(best.r, 1) + " crashes in that hour, " + (cellAvg ? ivNum(best.r / cellAvg, 1) + "× the average hour" : "")) +
       kpi("Time on the 911 feed", medVis == null ? "–" : ivMins(medVis),
           medVis == null ? "not measured in this period" : "median for a crash (" + ivNum(visAll.length) + " measured)") +
+      (function () {
+        const rr = road ? roadRates(road, onFull) : null;
+        if (!rr) return "";
+        return kpi("Crashes per mile, per year", ivNum(rr.perMile, 1), "over " + ivNum(rr.miles, 1) + " miles of road") +
+               (rr.perMvm != null ? kpi("Per million vehicle-miles", ivNum(rr.perMvm, 2), "crashes for the traffic it carries") : "");
+      })() +
       "</div>";
 
     /* ── findings ── */
@@ -540,37 +773,91 @@ INSIGHTS_JS = r"""
                  ivPct(hourHit[hitPeak], hourAll[hitPeak]) + "% around " + fmtHour(hitPeak) + ".");
     }
     const corList = Array.from(cors.values()).sort(function (a, b) { return b.n - a.n; });
-    if (corList.length >= 3) {
+    if (!road && corList.length >= 3) {
       const top3 = corList[0].n + corList[1].n + corList[2].n;
       finds.push("<b>Three roads carry " + ivPct(top3, rows.length) + "% of all crashes</b>: " +
                  corList.slice(0, 3).map(function (c) { return esc(titleCase(c.id)); }).join(", ") + ".");
     }
-    // Wet days vs dry days (weekdays only, so the weekend dip can't pose as weather).
-    const wx = new Map();
-    for (const c of rows) {
-      if (!cov.full.has(c.key) || c.dow === 0 || c.dow === 6) continue;
-      const p = c.row[IDX_PRECIP_IN];
-      if (c.row[IDX_TEMP_F] == null) continue;
-      let w = wx.get(c.key);
-      if (!w) { w = { n: 0, wet: 0 }; wx.set(c.key, w); }
-      w.n++; if (p != null && p >= 0.01) w.wet++;
+    // Rain, from the hourly log of what the airport actually observed.
+    let wetHtml = "", wxCard = "";
+    const wfx = ivWeatherEffect(rows, cov, fromMs);
+    function pctMore(r) { const p = Math.round(100 * (r - 1)); return (p >= 0 ? "+" : "−") + Math.abs(p) + "%"; }
+    if (wfx && wfx.wet.hours >= 40 && wfx.wet.exp >= 30 && wfx.wet.ratio != null) {
+      const r = wfx.wet.ratio;
+      finds.push(Math.abs(r - 1) < 0.07
+        ? "<b>Rain makes little difference here</b>: wet hours see about as many crashes as the same hours dry."
+        : "<b>Rain means " + Math.abs(Math.round(100 * (r - 1))) + "% " + (r > 1 ? "more" : "fewer") + " crashes</b> than the same hour of the week when dry" +
+          (r > 1 && wfx.heavy.hours >= 15 && wfx.heavy.exp >= 15 && wfx.heavy.ratio > r ? ", and " + Math.round(100 * (wfx.heavy.ratio - 1)) + "% more in heavy rain" : "") + ".");
+      const wr = [["Rain", wfx.wet], ["Heavy rain", wfx.heavy], ["Fog", wfx.fog]].filter(function (x) { return x[1].hours >= 15 && x[1].exp >= 15 && x[1].ratio != null; });
+      const wmax = Math.max.apply(null, wr.map(function (x) { return x[1].ratio; }).concat([1.2]));
+      wxCard = '<section class="iv-card"><h3>What weather does</h3><p class="iv-sub">Crashes in each kind of hour, against the same hour of the same weekday when it was dry (the line).</p>' +
+        '<div class="iv-hbar">' + wr.map(function (x) {
+          const tip = "<b>" + x[0] + "</b><br>" + ivNum(x[1].hours) + " hours observed<br>" + ivNum(x[1].obs) + " crashes; " + ivNum(x[1].exp, 0) + " expected if dry";
+          return '<span class="l">' + x[0] + '</span><span class="t ref" tabindex="0" data-tip="' + esc(tip) + '" style="--ref:' + (100 / wmax).toFixed(1) +
+                 '%"><i style="width:' + (100 * x[1].ratio / wmax).toFixed(1) + '%"></i></span><span class="v">' + pctMore(x[1].ratio) +
+                 " <small>" + ivNum(x[1].hours) + " h</small></span>";
+        }).join("") + '</div><p class="iv-foot">Hourly observations from Lafayette Regional Airport (' + ivNum(wfx.logged) +
+        " hours in this period). One station cannot see a shower on the other side of the parish, which blurs the effect toward zero.</p></section>";
     }
-    let wetDays = 0, wetSum = 0, dryDays = 0, drySum = 0;
-    wx.forEach(function (w, k) {
-      if (w.n < 10) return;
-      const share = w.wet / w.n, total = perDay.get(k) || 0;
-      if (share >= 0.5) { wetDays++; wetSum += total; } else if (share <= 0.1) { dryDays++; drySum += total; }
+    // Darkness, separated from "late hours": only clock hours that are dark
+    // in one season and light in another, compared like for like.
+    const dl = [], dd = [];
+    for (let h = 0; h < 24; h++) { dl.push([0, 0, 0]); dd.push([0, 0, 0]); }   // [hours, crashes, severe]
+    cov.full.forEach(function (key) {
+      const d = ivKeyDate(key);
+      if (d.getTime() + DAY_MS / 2 <= fromMs) return;
+      for (let h = 0; h < 24; h++) { const k = ivDarkness(d, h); if (k === 1) dd[h][0]++; else if (k === 0) dl[h][0]++; }
     });
-    let wetHtml = "";
-    if (wetDays >= 8 && dryDays >= 8) {
-      const wa = wetSum / wetDays, da = drySum / dryDays, diff = Math.round(100 * (wa - da) / da);
-      finds.push(Math.abs(diff) < 8
-        ? "<b>Rain does not show up in the totals</b>: weekdays forecast wet average " + ivNum(wa, 1) + " crashes, dry weekdays " + ivNum(da, 1) + "."
-        : "<b>Wet weekdays see " + Math.abs(diff) + "% " + (diff > 0 ? "more" : "fewer") + " crashes</b> (" + ivNum(wa, 1) + " vs " + ivNum(da, 1) + " on dry weekdays).");
-      wetHtml = "Rain comparison: " + wetDays + " weekdays where most reports carried forecast rain against " + dryDays +
-                " dry weekdays. It uses the forecast attached to each report, not a rain gauge, so treat it as a rough check.";
+    for (const c of rows) {
+      if (!cov.full.has(c.key)) continue;
+      const k = ivDarkness(ivKeyDate(c.key), c.hh);
+      const t = k === 1 ? dd : k === 0 ? dl : null;
+      if (t) { t[c.hh][1]++; if (c.severe) t[c.hh][2]++; }
     }
-    if (corList.length && recentDays >= 20 && earlierDays >= 20) {
+    let dObs = 0, dExp = 0, dSev = 0, lN = 0, lSev = 0, swing = 0;
+    for (let h = 0; h < 24; h++) {
+      if (dd[h][0] < 20 || dl[h][0] < 20) continue;
+      swing++;
+      dObs += dd[h][1]; dExp += dd[h][0] * dl[h][1] / dl[h][0]; dSev += dd[h][2]; lN += dl[h][1]; lSev += dl[h][2];
+    }
+    if (swing && dExp >= 30 && lN >= 30 && dObs >= 30) {
+      const r = dObs / dExp, sa = ivPct(dSev, dObs), sb = ivPct(lSev, lN);
+      finds.push((Math.abs(r - 1) < 0.07
+        ? "<b>Darkness alone changes little</b>: in the clock hours that are dark in winter and light in summer, crash numbers are about the same"
+        : "<b>Darkness itself " + (r > 1 ? "adds " : "removes ") + Math.abs(Math.round(100 * (r - 1))) + "%</b>: in the clock hours that are dark in winter and light in summer, a dark hour sees " +
+          ivNum(r, 2) + "× the crashes of a daylight one") +
+        (Math.abs(sa - sb) >= 3 ? ", and " + sa + "% of them are major or with injuries against " + sb + "% in daylight." : ".") +
+        " Some of that may be the season rather than the light: those hours are dark in winter, when school is in.");
+    }
+    // Crashes that follow another one nearby.
+    if (rows.length >= 300) {
+      const sec = ivSecondary(rows);
+      if (sec.real >= 10 && sec.eligible >= 200) {
+        const share = 100 * sec.real / sec.n, base = 100 * sec.chance / sec.eligible;
+        finds.push("<b>" + ivNum(share, 1) + "% of crashes follow another one</b> within 45 minutes and 500 m" +
+                   (base > 0 ? " — " + ivNum(share / base, 1) + "× what the same spots produce by coincidence (" + ivNum(base, 1) + "%)." : "."));
+      }
+    }
+    // Reclassified while active: first logged as milder, later major / injuries.
+    let upgraded = 0, severeAll = 0;
+    for (const c of rows) {
+      if (!c.severe) continue;
+      severeAll++;
+      const ex = episodeExtrasOf(c.row);
+      if (!ex) continue;
+      for (const e of ex) {
+        const cause = String(e[0] || "").toUpperCase(), pe = parseReported(e[1]);
+        if (categoryOf(cause).id === "accident" && !(IV_SEVERE.test(cause) && cause.indexOf("NO INJ") === -1) && pe && pe.dt.getTime() < c.ms) { upgraded++; break; }
+      }
+    }
+    if (severeAll >= 100 && upgraded >= 5) {
+      finds.push("<b>" + ivNum(100 * upgraded / severeAll, 1) + "% of serious crashes started out as something milder</b> on the feed and were upgraded minutes later.");
+    }
+    if (!road && CHANGE_STATS && CHANGE_STATS.tracked >= 200) {
+      finds.push("<b>Another agency joins " + ivPct(CHANGE_STATS.agency_added, CHANGE_STATS.tracked) + "% of incidents</b> after the first report" +
+                 (CHANGE_STATS.fire_added ? "; in " + ivNum(CHANGE_STATS.fire_added) + " of them it was the fire department." : "."));
+    }
+    if (!road && corList.length && recentDays >= 20 && earlierDays >= 20) {
       // Only the busiest roads, and only with real counts on both sides:
       // among hundreds of small roads something always "doubles" by chance.
       const movers = corList.slice(0, 15).filter(function (c) { return c.recent >= 20 && c.earlier >= 20; }).map(function (c) {
@@ -644,19 +931,37 @@ INSIGHTS_JS = r"""
                  "%</td><td class='opt'>" + fmtHour(peakHour(l.hrs)) + "</td></tr>";
         }).join("") + "</tbody></table></div></section>";
     }
-    const corTop = corList.slice(0, 12);
+    const corTop = road ? [] : corList.slice(0, 12);
     if (corTop.length) {
       const cmax = corTop[0].n;
-      html += '<section class="iv-card"><h3>Roads with the most crashes</h3><p class="iv-sub">Tap a road to filter the map to it.</p><div class="iv-scroll"><table class="iv-table"><thead><tr>' +
-              "<th>Road</th><th>Crashes</th><th>Per week</th><th>Major / injury</th><th class='opt'>Median on feed</th></tr></thead><tbody>" +
+      html += '<section class="iv-card"><h3>Roads with the most crashes</h3><p class="iv-sub">Tap a road for its own profile: worst hours, blocks and trend.</p><div class="iv-scroll"><table class="iv-table"><thead><tr>' +
+              "<th>Road</th><th>Crashes</th><th>Per week</th><th>Per mile / yr</th><th class='opt'>Major / injury</th></tr></thead><tbody>" +
         corTop.map(function (c, i) {
-          const a = IV.actions.push({ t: "cor", id: c.id }) - 1;
-          c.vis.sort(function (x, y) { return x - y; });
-          return '<tr><td><span class="rk">' + (i + 1) + '</span><button type="button" class="iv-link" data-act="' + a + '">' + esc(titleCase(c.id)) +
+          const rr = roadRates(c.id, c.nf);
+          return '<tr><td><span class="rk">' + (i + 1) + '</span><button type="button" class="iv-link" data-road="' + esc(c.id) + '">' + esc(titleCase(c.id)) +
                  '</button></td><td class="n"><span class="iv-mini"><i style="width:' + Math.round(100 * c.n / cmax) + '%"></i></span>' + ivNum(c.n) +
-                 "</td><td>" + ivNum(7 * c.n / Math.max(1, fullDays), 1) + "</td><td>" + ivPct(c.sev, c.n) + "%</td><td class='opt'>" +
-                 (c.vis.length >= 10 ? ivMins(ivMedian(c.vis)) : "–") + "</td></tr>";
-        }).join("") + "</tbody></table></div><p class=\"iv-foot\">A crash is counted on the road dispatch logged it on, not on the cross street named beside it.</p></section>";
+                 "</td><td>" + ivNum(7 * c.nf / Math.max(1, fullDays), 1) + "</td><td>" + (rr ? ivNum(rr.perMile, 1) : "–") + "</td><td class='opt'>" + ivPct(c.sev, c.n) + "%</td></tr>";
+        }).join("") + '</tbody></table></div><p class="iv-foot">A crash is counted on the road dispatch logged it on, not on the cross street named beside it.</p></section>';
+
+      // The same roads ranked by risk rather than by volume.
+      const rated = corList.filter(function (c) { return c.nf >= 40; }).map(function (c) {
+        const rr = roadRates(c.id, c.nf);
+        // Low-volume streets are left out: their traffic figures are modelled
+        // estimates, and a tiny denominator turns a handful of crashes into
+        // an absurd rate.
+        return rr && rr.perMvm != null && rr.miles >= 1 && rr.daily >= 5000 ? { c: c, rr: rr } : null;
+      }).filter(Boolean).sort(function (x, y) { return y.rr.perMvm - x.rr.perMvm; }).slice(0, 12);
+      if (rated.length >= 3) {
+        const rmax = rated[0].rr.perMvm;
+        html += '<section class="iv-card wide"><h3>Most dangerous for the traffic they carry</h3><p class="iv-sub">Crashes per million vehicle-miles driven: the count divided by how long the road is and how many vehicles use it. A busy road with few crashes per vehicle ranks low here even when its total is high.</p><div class="iv-scroll"><table class="iv-table"><thead><tr>' +
+                "<th>Road</th><th>Per million vehicle-miles</th><th>Crashes</th><th>Miles</th><th>Vehicles a day</th><th class='opt'>Per mile / yr</th></tr></thead><tbody>" +
+          rated.map(function (x, i) {
+            return '<tr><td><span class="rk">' + (i + 1) + '</span><button type="button" class="iv-link" data-road="' + esc(x.c.id) + '">' + esc(titleCase(x.c.id)) +
+                   '</button></td><td class="n"><span class="iv-mini"><i style="width:' + Math.round(100 * x.rr.perMvm / rmax) + '%"></i></span>' + ivNum(x.rr.perMvm, 2) +
+                   "</td><td>" + ivNum(x.c.nf) + "</td><td>" + ivNum(x.rr.miles, 1) + "</td><td>" + ivNum(Math.round(x.rr.daily / 100) * 100) +
+                   "</td><td class='opt'>" + ivNum(x.rr.perMile, 1) + "</td></tr>";
+          }).join("") + '</tbody></table></div><p class="iv-foot">Road length and average daily traffic: Louisiana DOTD open data, for the whole named road inside Lafayette Parish. Only roads with at least 40 crashes, a mile of length and 5,000 vehicles a day, because traffic figures for quieter streets are modelled estimates. A name shared by streets in two towns is treated as one road, so read this as a ranking, not a precise rate.</p></section>';
+      }
     }
 
     /* ── severity by hour (two small multiples, one measure each) ── */
@@ -671,6 +976,114 @@ INSIGHTS_JS = r"""
     }
     html += shareBars(hourSev, "How serious, by hour", "Share of crashes logged as major or with injuries.", "major or with injuries");
     html += shareBars(hourHit, "Hit-and-runs, by hour", "Share of crashes where a driver left the scene.", "hit-and-run");
+
+    html += wxCard;
+
+    /* ── holidays and events ── */
+    const evAgg = new Map();
+    const years = new Set();
+    cov.keys.forEach(function (k) { years.add(Math.floor(k / 10000)); });
+    years.forEach(function (y) {
+      ivEventsFor(y).forEach(function (ev) {
+        ev[1].forEach(function (d) {
+          const k = ivKey(d);
+          if (!cov.full.has(k) || d.getTime() + DAY_MS / 2 <= fromMs || dowRate[d.getDay()] == null) return;
+          let e = evAgg.get(ev[0]);
+          if (!e) { e = { name: ev[0], days: 0, n: 0, exp: 0, dates: [] }; evAgg.set(ev[0], e); }
+          e.days++; e.n += perDay.get(k) || 0; e.exp += dowRate[d.getDay()]; e.dates.push(d);
+        });
+      });
+    });
+    let schoolD = 0, schoolN = 0, offD = 0, offN = 0;
+    cov.full.forEach(function (k) {
+      const d = ivKeyDate(k);
+      if (d.getTime() + DAY_MS / 2 <= fromMs || d.getDay() === 0 || d.getDay() === 6) return;
+      if (isSchoolDayJS(d)) { schoolD++; schoolN += perDay.get(k) || 0; } else { offD++; offN += perDay.get(k) || 0; }
+    });
+    const evRows = Array.from(evAgg.values()).filter(function (e) { return e.days > 0 && e.exp > 0; });
+    const schoolOk = schoolD >= 10 && offD >= 10 && offN > 0;
+    if (evRows.length || schoolOk) {
+      evRows.sort(function (a, b) { return (b.n / b.exp) - (a.n / a.exp); });
+      const cell = function (ratio) {
+        const p = Math.round(100 * (ratio - 1));
+        return '<span class="iv-delta">' + (p > 0 ? "▲ " : p < 0 ? "▼ " : "") + Math.abs(p) + "%</span>";
+      };
+      html += '<section class="iv-card"><h3>Holidays, festivals and school</h3><p class="iv-sub">Crashes per day against a normal day of the same weekday' + (road ? " on this road" : "") + ".</p>" +
+        '<div class="iv-scroll"><table class="iv-table"><thead><tr><th>Occasion</th><th>Crashes / day</th><th>Normal</th><th>Difference</th></tr></thead><tbody>' +
+        (schoolOk
+          ? '<tr><td>School days<span class="loc-sub">' + schoolD + ' weekdays in session, against ' + offD + ' out</span></td><td class="n">' + ivNum(schoolN / schoolD, 1) +
+            "</td><td>" + ivNum(offN / offD, 1) + "</td><td>" + cell((schoolN / schoolD) / (offN / offD)) + "</td></tr>" : "") +
+        evRows.map(function (e) {
+          const when = e.dates.length <= 2 ? e.dates.map(function (d) { return ivFmtDay(d, true); }).join(", ") : e.days + " days on record";
+          return "<tr><td>" + e.name + '<span class="loc-sub">' + when + '</span></td><td class="n">' + ivNum(e.n / e.days, 1) + "</td><td>" + ivNum(e.exp / e.days, 1) +
+                 "</td><td>" + cell(e.n / e.exp) + "</td></tr>";
+        }).join("") + '</tbody></table></div><p class="iv-foot">School days are compared with weekdays out of session (parish calendar, approximated). Most occasions have only one or two days on record, so a single bad day moves them a lot.</p></section>';
+    }
+
+    /* ── beyond crashes, and who responds ── */
+    const sig = new Map(), stall = new Map(), haz = new Map();
+    let othersN = 0;
+    const agHour = [new Array(24).fill(0), new Array(24).fill(0), new Array(24).fill(0)];
+    const towns = new Map();
+    function tally(o, isCrash) {
+      const full = cov.full.has(o.key);
+      for (let a = 0; a < 3; a++) if ((o.mask & AGENCIES[a].bit) && full) agHour[a][o.hh]++;
+      const tn = ivTown(o.row[IDX_LOCATION]);
+      let T_ = towns.get(tn);
+      if (!T_) { T_ = { name: tn, n: 0, crash: 0, ag: [0, 0, 0] }; towns.set(tn, T_); }
+      T_.n++; if (isCrash) T_.crash++;
+      for (let a = 0; a < 3; a++) if (o.mask & AGENCIES[a].bit) T_.ag[a]++;
+    }
+    for (const c of rows) tally(c, true);
+    const bump = function (m, key, extra) { let x = m.get(key); if (!x) { x = Object.assign({ n: 0 }, extra); m.set(key, x); } x.n++; };
+    for (const o of prep.others) {
+      if (!inP(o.ms) || !onRoad(o)) continue;
+      othersN++;
+      tally(o, false);
+      if (o.cat === "control" && o.cause.indexOf("SIGNAL") !== -1) {
+        bump(sig, String(o.row[IDX_LOCATION] || "").replace(/\s+/g, " ").trim().toUpperCase(), { lat: o.row[IDX_LAT], lng: o.row[IDX_LNG] });
+      } else if (o.cat === "vehicle") { for (const cid of o.cids) bump(stall, cid, {}); }
+      else if (o.cat === "hazard") { for (const cid of o.cids) bump(haz, cid, {}); }
+    }
+    function topOf(m, n) { return Array.from(m.entries()).sort(function (a, b) { return b[1].n - a[1].n; }).slice(0, n); }
+    const sigList = topOf(sig, 6).filter(function (e) { return e[1].n >= 2; }).map(function (e) {
+      const p = ivPlace(e[0]);
+      return { label: p.main, sub: p.sub, n: e[1].n, act: IV.actions.push({ t: "loc", lat: e[1].lat, lng: e[1].lng, name: p.main }) - 1 };
+    });
+    const roadItems = function (m) { return topOf(m, 6).filter(function (e) { return e[1].n >= 2; }).map(function (e) { return { label: titleCase(e[0]), n: e[1].n }; }); };
+    const beyond = ivRankList("Signals that fail most", "Traffic-signal malfunction calls, by location.", sigList) +
+                   ivRankList("Where vehicles stall", "Stalled or disabled vehicles, by road.", roadItems(stall)) +
+                   ivRankList("Recurring road hazards", "Debris, wires down, flooding and the like, by road.", roadItems(haz));
+    if (beyond) {
+      html += '<section class="iv-card wide"><h3>Beyond crashes</h3><p class="iv-sub">The other ' + ivNum(othersN) + " incidents in this period" +
+              (road ? " on this road" : "") + '.</p><div class="iv-cols">' + beyond + "</div></section>";
+    }
+
+    const agMax = Math.max.apply(null, agHour.map(function (r) { return Math.max.apply(null, r); })) / fullDays;
+    if (agMax > 0) {
+      const cw = 20, ch = 22, left = 44, W = left + 24 * cw, H = 3 * ch + 18;
+      let svg = '<svg class="iv-svg" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Calls per hour of day for each agency">';
+      for (let a = 0; a < 3; a++) {
+        svg += '<text class="ax" x="0" y="' + (a * ch + ch / 2 + 4) + '">' + AGENCIES[a].label + "</text>";
+        for (let h = 0; h < 24; h++) {
+          const v = agHour[a][h] / fullDays;
+          svg += '<rect class="' + (v > 0 ? "hm" : "hm0") + '" tabindex="0" data-tip="' + esc("<b>" + AGENCIES[a].label + " · " + ivHourSpan(h) + "</b><br>" + ivNum(v, 2) + " calls in this hour on an average day") +
+                 '" x="' + (left + h * cw) + '" y="' + (a * ch) + '" width="' + cw + '" height="' + ch + '" rx="4"' +
+                 (v > 0 ? ' style="fill-opacity:' + (0.16 + 0.84 * v / agMax).toFixed(3) + '"' : "") + "/>";
+        }
+      }
+      for (let h = 0; h < 24; h += 3) svg += '<text class="ax" text-anchor="middle" x="' + (left + h * cw + cw / 2) + '" y="' + (H - 3) + '">' + fmtHour(h) + "</text>";
+      svg += "</svg>";
+      const townList = Array.from(towns.values()).filter(function (t) { return t.n >= 20; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 8);
+      html += '<section class="iv-card wide"><h3>Who responds</h3><p class="iv-sub">Calls each agency is sent to, by hour of the day (all incident types' + (road ? " on this road" : "") +
+              '). Darker is busier.</p><div class="iv-scroll"><div class="iv-hm">' + svg + "</div></div>" +
+              (townList.length > 1 ? '<div class="iv-scroll" style="margin-top:14px"><table class="iv-table"><thead><tr><th>Area</th><th>Incidents</th><th>Crashes</th><th>Police</th><th>Sheriff</th><th>Fire</th></tr></thead><tbody>' +
+                townList.map(function (t) {
+                  return "<tr><td>" + esc(t.name) + '</td><td class="n">' + ivNum(t.n) + "</td><td>" + ivNum(t.crash) + "</td><td>" + ivPct(t.ag[0], t.n) + "%</td><td>" +
+                         ivPct(t.ag[1], t.n) + "%</td><td>" + ivPct(t.ag[2], t.n) + "%</td></tr>";
+                }).join("") + '</tbody></table></div><p class="iv-foot">Area is the town dispatch attached to the address. Shares can add to more than 100% because several agencies attend one incident.</p>' : "") +
+              "</section>";
+    }
 
     /* ── time on feed ── */
     const groups = new Map();
@@ -745,6 +1158,8 @@ INSIGHTS_JS = r"""
   function insightsDataReplaced() {
     _coverage = null;
     IV.prep = null;
+    _todayNormKey = "";
+    renderTodayNorm();
     if (document.getElementById("insightsView").classList.contains("open")) ivRender();
   }
 
@@ -759,6 +1174,13 @@ INSIGHTS_JS = r"""
       ivRender();
     });
     view.addEventListener("click", function (e) {
+      const r = e.target.closest("[data-road]");
+      if (r) {
+        IV.road = r.getAttribute("data-road") || null;
+        ivRender();
+        view.scrollTop = 0;
+        return;
+      }
       const b = e.target.closest("[data-act]");
       if (b) ivAct(IV.actions[parseInt(b.getAttribute("data-act"), 10)]);
     });
