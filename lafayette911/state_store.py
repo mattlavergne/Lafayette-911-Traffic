@@ -102,6 +102,37 @@ class StateStore:
             )
             """
         )
+        # Feed-check log, rolled up to one row per local hour: how many
+        # sweeps of the feed succeeded and failed. This is what makes "was the
+        # collector running?" a fact instead of an inference from days with no
+        # incidents — and at ~8,800 short rows a year it costs about 0.3 MB.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feed_checks (
+                hour_local TEXT PRIMARY KEY,
+                ok INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0
+            ) WITHOUT ROWID
+            """
+        )
+        # What changed about an incident while the feed listed it. The feed
+        # row for a crash gains agencies as units are sent ("POLICE" becomes
+        # "POLICE FIRE"); only the first sighting used to be kept.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS incident_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_number TEXT NOT NULL,
+                changed_at TEXT NOT NULL,
+                field TEXT NOT NULL,
+                old_value TEXT,
+                new_value TEXT
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS incident_changes_num ON incident_changes (incident_number)"
+        )
         self._ensure_incidents_columns()
         self.conn.commit()
 
@@ -699,6 +730,64 @@ class StateStore:
         self._meta_set(self.FEED_ACTIVE_IDS_META_KEY, active_json)
         self._meta_set(self.FEED_SWEEP_META_KEY, now)
         return touched, changed
+
+    def record_feed_check(self, ok: bool, now: Optional[datetime] = None) -> None:
+        """Count one sweep of the feed in the hourly roll-up."""
+        key = (now or datetime.now()).strftime("%Y-%m-%dT%H")
+        column = "ok" if ok else "failed"
+        self.conn.execute(
+            f"INSERT INTO feed_checks (hour_local, {column}) VALUES (?, 1) "
+            f"ON CONFLICT(hour_local) DO UPDATE SET {column} = {column} + 1",
+            (key,),
+        )
+        self.conn.commit()
+
+    def record_assisting_changes(self, incidents: Sequence[Dict]) -> int:
+        """Keep the agencies on stored incidents up to date with the feed.
+
+        For every listed incident we already hold, compare the feed's
+        ``assisting`` text with ours. Agencies only accumulate: a unit that
+        drops off the listing still responded, so the stored value becomes
+        the union (first-seen order, then additions) and each addition is
+        logged in ``incident_changes`` with its time. Returns incidents
+        changed. The CSV keeps the first sighting; the database is the
+        current picture.
+        """
+        wanted = {}
+        for inc in incidents:
+            num = str(inc.get("incident_number") or "").strip()
+            if num:
+                wanted[num] = str(inc.get("assisting") or "")
+        if not wanted:
+            return 0
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        changed = 0
+        nums = sorted(wanted)
+        for i in range(0, len(nums), 900):
+            chunk = nums[i : i + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.conn.execute(
+                f"SELECT incident_number, assisting FROM incidents WHERE incident_number IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for num, stored in rows:
+                have = str(stored or "").split()
+                added = [t for t in wanted[num].split() if t not in have]
+                if not added:
+                    continue
+                merged = " ".join(have + added)
+                self.conn.execute(
+                    "UPDATE incidents SET assisting = ? WHERE incident_number = ?", (merged, num)
+                )
+                self.conn.execute(
+                    "INSERT INTO incident_changes (incident_number, changed_at, field, old_value, new_value)"
+                    " VALUES (?, ?, 'assisting', ?, ?)",
+                    (num, now, str(stored or ""), merged),
+                )
+                changed += 1
+        if changed:
+            self.conn.commit()
+        return changed
 
     def get_last_feed_sweep_at(self) -> Optional[str]:
         """Timestamp of the most recent successful feed sweep, or None."""

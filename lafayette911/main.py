@@ -30,6 +30,7 @@ from lafayette911.fetch_incidents import build_session
 from lafayette911.map_render import backfill_road_types, create_map_from_csv, create_map_from_db
 from lafayette911.state_store import StateStore
 from lafayette911.utils import get_rss_bytes, log_event, setup_logging, trim_memory
+from lafayette911.weather_log import maybe_update_weather_log
 
 # Re-exported for backward compatibility: these helpers lived in this module
 # before the collection core was extracted, and external scripts/tests may
@@ -215,6 +216,10 @@ def main(base_dir: Optional[str] = None) -> int:
             cycle += 1
             start = time.monotonic()
             try:
+                # Hourly observed weather (at most one small request an hour;
+                # never raises). Before the cycle so a render sees it.
+                if config.mode in {"all", "fetcher"}:
+                    maybe_update_weather_log(store, session, logger)
                 run_once(config, store, session, logger)
                 duration = time.monotonic() - start
                 rss = get_rss_bytes()

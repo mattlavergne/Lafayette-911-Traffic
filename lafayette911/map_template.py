@@ -1113,6 +1113,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="stat-tile" data-range="all" type="button"><b id="tileTotalVal">–</b><span>All time</span></button>
   </div>
 
+  <div class="today-norm" id="todayNorm" style="display:none" role="status"></div>
+
   <div class="legend-chips" id="legendChips" aria-label="Incident categories (tap to toggle)"></div>
 
   <div class="tabs" role="tablist">
@@ -1667,6 +1669,11 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
   let UNLOCATED_COUNT = window.INCIDENTS_UNLOCATED_COUNT || 0;
   let UNLOCATED_LIST = window.INCIDENTS_UNLOCATED_LIST || [];
   let UNMAPPABLE_COUNT = window.INCIDENTS_UNMAPPABLE_COUNT || 0;
+  // Optional side tables for the insights view (absent in older data files).
+  let ROAD_STATS = window.ROAD_STATS || {};        // road id -> [miles, vehicle-miles/day]
+  let WEATHER_HOURS = window.WEATHER_HOURS || null; // {start, codes}: observed weather per hour
+  let FEED_HOURS = window.FEED_HOURS || {};        // "YYYY-MM-DD" -> hours the feed was reached
+  let CHANGE_STATS = window.CHANGE_STATS || {};
 
   const IDX_LAT = 0, IDX_LNG = 1, IDX_REPORTED = 2, IDX_LOCATION = 3, IDX_CAUSE = 4,
         IDX_ASSIST = 5, IDX_WEIGHT = 6, IDX_COUNT = 7, IDX_TEMP_F = 8, IDX_PRECIP_PROB = 9,
@@ -5104,6 +5111,10 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
       UNLOCATED_COUNT = window.INCIDENTS_UNLOCATED_COUNT || 0;
       UNLOCATED_LIST = window.INCIDENTS_UNLOCATED_LIST || [];
       UNMAPPABLE_COUNT = window.INCIDENTS_UNMAPPABLE_COUNT || 0;
+      ROAD_STATS = window.ROAD_STATS || {};
+      WEATHER_HOURS = window.WEATHER_HOURS || null;
+      FEED_HOURS = window.FEED_HOURS || {};
+      CHANGE_STATS = window.CHANGE_STATS || {};
       onDataReplaced();
       const delta = INCIDENTS.length - prevCount;
       if (delta > 0) toast(delta + " new incident" + (delta === 1 ? "" : "s") + " loaded");
@@ -6320,6 +6331,8 @@ MAP_HTML_TEMPLATE = r"""<!DOCTYPE html>
     $("locBtn").addEventListener("click", locateMe);
 
     wireInsights();
+    renderTodayNorm();
+    setInterval(renderTodayNorm, 5 * 60000);
     els.aboutBtn.addEventListener("click", openAbout);
     els.aboutClose.addEventListener("click", closeAbout);
     els.aboutModal.addEventListener("click", function (e) {

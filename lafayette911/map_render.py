@@ -186,6 +186,86 @@ def _stream_jsonjs_incident(handle, incident, first: bool) -> bool:
     return False
 
 
+_ROAD_STATS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "road_stats.json")
+# Roads with fewer incidents than this are never ranked, so their length and
+# traffic figures would only be dead weight in the data file.
+ROAD_STATS_MIN_INCIDENTS = 10
+
+
+def _load_road_stats() -> dict:
+    """{road id: [miles, vehicle-miles per day]} from the one-off DOTD import
+    (scripts/build_road_stats.py). Empty when the file is missing."""
+    try:
+        with open(_ROAD_STATS_PATH, encoding="utf-8") as handle:
+            roads = json.load(handle).get("roads", {})
+        return roads if isinstance(roads, dict) else {}
+    except Exception:
+        return {}
+
+
+def _feed_hours_by_day(db_path: str) -> dict:
+    """{"YYYY-MM-DD": hours with at least one successful feed check} from the
+    feed-check log, so the page knows exactly which days were fully covered."""
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT substr(hour_local, 1, 10), COUNT(1) FROM feed_checks WHERE ok > 0 GROUP BY 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {day: int(n) for day, n in rows}
+    except Exception:
+        return {}
+
+
+def _change_stats(db_path: str) -> dict:
+    """How often agencies join an incident after its first report, counted
+    only over incidents collected since change tracking began."""
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+        try:
+            since = conn.execute("SELECT MIN(changed_at) FROM incident_changes").fetchone()[0]
+            if not since:
+                return {}
+            tracked = conn.execute(
+                "SELECT COUNT(1) FROM incidents WHERE created_at >= ?", (since,)).fetchone()[0]
+            added = conn.execute(
+                "SELECT COUNT(DISTINCT incident_number) FROM incident_changes WHERE field = 'assisting'"
+            ).fetchone()[0]
+            fire = conn.execute(
+                "SELECT COUNT(DISTINCT incident_number) FROM incident_changes WHERE field = 'assisting'"
+                " AND new_value LIKE '%FIRE%' AND COALESCE(old_value, '') NOT LIKE '%FIRE%'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        return {"since": since, "tracked": int(tracked), "agency_added": int(added), "fire_added": int(fire)}
+    except Exception:
+        return {}
+
+
+def _stream_jsonjs_extras(handle, db_path: str, corridor_counts: dict) -> None:
+    """Small side tables for the insights view: road length/traffic for the
+    roads that matter, observed weather by hour, exact collection coverage,
+    and change-tracking totals. Each is optional and independently safe."""
+    from lafayette911.weather_log import export_hours
+
+    stats = _load_road_stats()
+    roads = {cid: stats[cid] for cid, n in corridor_counts.items()
+             if n >= ROAD_STATS_MIN_INCIDENTS and cid in stats}
+    extras = (
+        ("ROAD_STATS", roads),
+        ("WEATHER_HOURS", export_hours(db_path)),
+        ("FEED_HOURS", _feed_hours_by_day(db_path)),
+        ("CHANGE_STATS", _change_stats(db_path)),
+    )
+    for name, value in extras:
+        try:
+            handle.write("\nwindow.%s=%s;" % (name, json.dumps(value, ensure_ascii=False, separators=(",", ":"))))
+        except Exception:
+            continue
+
+
 def _stream_jsonjs_footer(
     handle, osm_intersections, hot_spots=None, unlocated_count: int = 0, unlocated_list=None,
     unmappable_count: int = 0,
@@ -1471,6 +1551,7 @@ def _write_streaming_datajs(
 
     conn = sqlite3.connect(db_path)
     tc_groups: Dict[str, Dict[str, object]] = {}
+    corridor_counts: Dict[str, int] = {}
 
     lat_min = None
     lat_max = None
@@ -1628,6 +1709,9 @@ def _write_streaming_datajs(
                     or None
                 )
                 highway_type = _resolve_highway_type(raw_hw or "", loc)
+                row_corridors = incident_corridors(loc)
+                for cid in row_corridors:
+                    corridor_counts[cid] = corridor_counts.get(cid, 0) + 1
                 incident = [
                     lat_r,
                     lon_r,
@@ -1661,7 +1745,7 @@ def _write_streaming_datajs(
                     _safe_int(is_holiday),
                     # canonical corridor ids (index 26) — an intersection
                     # legitimately lists both roads
-                    incident_corridors(loc),
+                    row_corridors,
                     # v4 fields — geocode confidence (27), minutes visible in
                     # the public feed (28, NOT clearance time), currently
                     # listed in the feed (29), feed checks that listed it (30)
@@ -1768,6 +1852,7 @@ def _write_streaming_datajs(
                 handle, osm_intersections, hot_spots, unlocated_count, unlocated_rows[:50],
                 unmappable_count,
             )
+            _stream_jsonjs_extras(handle, db_path, corridor_counts)
     finally:
         conn.close()
 

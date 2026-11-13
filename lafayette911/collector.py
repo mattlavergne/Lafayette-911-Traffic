@@ -367,7 +367,18 @@ def collect_once(config: Config, store: StateStore, session, logger) -> bool:
     # marks everything as gone. A change in WHICH incidents are listed
     # triggers a re-render so the page's "currently in feed" markers and
     # visibility durations stay honest even when nothing new arrived.
+    try:
+        store.record_feed_check(raw is not None)
+    except Exception:
+        pass
     if raw is not None:
+        try:
+            # Agencies added to an incident since we first saw it. A change
+            # re-renders the page so its agency figures stay current.
+            if store.record_assisting_changes(incidents):
+                has_new_incidents = True
+        except Exception:
+            pass
         try:
             touched, active_changed = store.touch_feed_observations(incidents)
             if active_changed:
