@@ -53,17 +53,17 @@ import html as _html
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set
 
 from lafayette911.corridors import corridor_ids, normalize_corridor
 from lafayette911.daily_digest import (
     DigestConfig,
-    _REPORTED_RE,
     categorize,
     load_digest_config,
     send_digest,
 )
+from lafayette911.enrichment import _parse_reported_dt
 
 # Category → (emoji, severity rank). Lower rank sorts first (accidents on top).
 _CAT_META = {
@@ -291,17 +291,42 @@ def load_route_config(store=None) -> RouteConfig:
 
 
 def _parse_reported_local(reported: str) -> Optional[datetime]:
-    """Parse the feed's 'MM/DD/YYYY HH:MM AM/PM' as a naïve LOCAL datetime."""
-    m = _REPORTED_RE.search(str(reported or ""))
-    if not m:
+    """Parse the feed's reported time as a naïve LOCAL datetime.
+
+    The live feed writes 24-hour times with no AM/PM ("11/13/2026 08:32").
+    This used to accept only the 12-hour "8:32 AM" form, so every real
+    incident failed to parse and was dropped before matching — the email
+    said "route clear" no matter what was on the road. The shared parser
+    handles both forms (and seconds)."""
+    text = str(reported or "").strip()
+    if not re.search(r"\d{1,2}:\d{2}", text):
+        return None            # a bare date is not a usable incident time
+    return _parse_reported_dt(text)
+
+
+def _utc_iso_to_local(value) -> Optional[datetime]:
+    """The store's UTC stamps ("2026-11-13T14:38:55Z") as naïve local time."""
+    text = str(value or "").strip()
+    if not text:
         return None
-    hh = int(m.group(4)) % 12
-    if m.group(6).upper() == "PM":
-        hh += 12
     try:
-        return datetime(int(m.group(3)), int(m.group(1)), int(m.group(2)), hh, int(m.group(5)))
+        dt = datetime.strptime(text.rstrip("Z")[:19], "%Y-%m-%dT%H:%M:%S")
     except ValueError:
         return None
+    return dt.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+
+
+# The feed lists an incident until dispatch clears it. An incident still
+# listed stays relevant however long ago it was reported (a long closure is
+# exactly what a commuter needs to hear about) — up to this many hours, so a
+# stuck feed entry can't alert forever.
+_ACTIVE_MAX_AGE_HOURS = 12
+# The collector sweeps the feed every cycle (5 min). When the last successful
+# sweep is older than this, "nothing on your route" is unverified, not clear.
+FEED_STALE_AFTER_MIN = 20
+# Slack around a replayed moment when deciding whether an incident was listed
+# then (one collection cycle either side).
+_SEEN_SLACK = timedelta(minutes=6)
 
 
 class _PathIndex:
@@ -344,19 +369,12 @@ class _PathIndex:
         return best
 
 
-# Dispatch often writes a crash at an intersection as "block number + cross
-# street" ("600 E BROUSSARD/DUHON RD"), which geocodes to that block of the
-# FIRST road — up to a block or two from the intersection itself. When such a
+# The feed writes locations as "block number + road / cross street"
+# ("600 E BROUSSARD/DUHON RD"), which geocodes to that block or building —
+# up to a block or two from the centre line a route is drawn on. When a
 # location names a road the route runs along, it matches within this wider
 # distance instead of the route's own radius.
 _CROSS_STREET_RADIUS_M = 400
-_INTERSECTION_TEXT = re.compile(r"/|&|@|\bAT\b|\bNEAR\b")
-
-
-def _is_intersection(location: str) -> bool:
-    return bool(_INTERSECTION_TEXT.search(str(location or "").upper()))
-
-
 # A road counts as "driven" when past incidents on it line up along at least
 # this much of the drawn line. A cross street only touches the line at one
 # point (span ≈ 0), so it never qualifies.
@@ -430,10 +448,40 @@ def route_roads(db_path: str, route: Route) -> Set[str]:
     return roads
 
 
+def _load_route_rows(db_path: str):
+    """(rows, last_feed_sweep_at). Rows are dicts; the feed-visibility columns
+    are optional so an older database (or a test fixture) still works."""
+    import sqlite3
+
+    conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(incidents)").fetchall()}
+        wanted = ["location", "cause", "reported", "latitude", "longitude",
+                  "weather_precip_prob", "weather_precip_in", "incident_number",
+                  "created_at", "first_seen_at", "last_seen_at"]
+        select = ", ".join(c if c in cols else "NULL AS " + c for c in wanted)
+        rows = [dict(zip(wanted, r)) for r in conn.execute("SELECT %s FROM incidents" % select)]
+        try:
+            row = conn.execute("SELECT value FROM app_meta WHERE key = 'last_feed_sweep_at'").fetchone()
+            sweep = row[0] if row else None
+        except Exception:
+            sweep = None
+    finally:
+        conn.close()
+    return rows, sweep
+
+
 def find_route_incidents(db_path: str, route: Route, window_min: int,
                          now: Optional[datetime] = None,
-                         diagnostics: Optional[List[Dict]] = None) -> List[Dict]:
-    """Current incidents on the route, within the freshness window.
+                         diagnostics: Optional[List[Dict]] = None,
+                         feed_info: Optional[Dict] = None) -> List[Dict]:
+    """Current incidents on the route.
+
+    "Current" means either reported within ``window_min`` minutes, or still
+    listed in the 911 feed (the collector records every sweep) even when it
+    was reported earlier than that. Each result carries ``status``:
+    ``"active"`` (listed in the feed at ``now``), ``"cleared"`` (dropped out
+    of the feed since) or ``None`` (no visibility data — treated as active).
 
     Section-precise when the route carries a traced ``path``: located
     incidents must be within ``route.radius_m`` of the line, so an accident
@@ -444,53 +492,89 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
     :func:`route_roads`) and are flagged ``approx`` so the email says "may be
     outside your section" — a possible false alarm beats a false all-clear.
     Without a path (roads-only config), everything matches by corridor.
-    Sorted by severity, then most-recent first.
+    Sorted active-first, then by severity, then most-recent first.
 
-    ``diagnostics``, when given, collects one entry per fresh incident with
-    the verdict and reason (used by ``--diagnose``).
+    ``diagnostics``, when given, collects one entry per candidate incident
+    with the verdict and reason (used by ``--diagnose``). ``feed_info``, when
+    given, is filled with ``last_sweep`` (local datetime or None),
+    ``age_min`` and ``stale`` so callers can say when the data is too old to
+    call a route clear.
     """
-    import sqlite3
-
     from lafayette911.episodes import find_episode_duplicates
 
-    now = now or datetime.now()
+    real_now = datetime.now()
+    now = now or real_now
+    live = abs((now - real_now).total_seconds()) <= 600
     cutoff = now - timedelta(minutes=window_min)
-    conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
-    try:
-        rows = conn.execute(
-            "SELECT location, cause, reported, latitude, longitude,"
-            " weather_precip_prob, weather_precip_in, incident_number FROM incidents"
-        ).fetchall()
-    finally:
-        conn.close()
+    active_cutoff = now - timedelta(hours=_ACTIVE_MAX_AGE_HOURS)
+    rows, sweep_raw = _load_route_rows(db_path)
+    sweep = _utc_iso_to_local(sweep_raw)
+
+    stale = False
+    age_min = None
+    if live and sweep is not None:
+        age_min = max(0, int((now - sweep).total_seconds() // 60))
+        stale = age_min > FEED_STALE_AFTER_MIN
+    if feed_info is not None:
+        feed_info.update({"last_sweep": sweep if live else None, "age_min": age_min, "stale": stale})
+
+    def note(row, dt, verdict, reason, dist=None):
+        if diagnostics is not None:
+            diagnostics.append({"location": str(row["location"] or "").strip(),
+                                "cause": str(row["cause"] or "").strip(),
+                                "reported_dt": dt, "verdict": verdict, "reason": reason,
+                                "dist_m": dist})
+
+    def status_of(row):
+        """active / cleared / None for one row at ``now``."""
+        last = _utc_iso_to_local(row["last_seen_at"])
+        if last is None:
+            return None
+        if live:
+            if sweep is None or stale:
+                return None                     # can't tell what cleared
+            return "active" if str(row["last_seen_at"]) >= str(sweep_raw) else "cleared"
+        first = _utc_iso_to_local(row["first_seen_at"]) or last
+        if first > now + _SEEN_SLACK:
+            return None
+        return "active" if last >= now - _SEEN_SLACK else "cleared"
+
+    # Candidates: fresh by report time, or still listed in the feed.
+    candidates = []
+    for row in rows:
+        dt = _parse_reported_local(row["reported"])
+        if dt is None:
+            # Never drop an incident silently over an unreadable timestamp:
+            # fall back to when the collector first saw it.
+            dt = _utc_iso_to_local(row["first_seen_at"]) or _utc_iso_to_local(row["created_at"])
+            if dt is None:
+                continue
+        if dt > now + timedelta(minutes=5) or dt < active_cutoff:
+            continue
+        status = status_of(row)
+        if dt < cutoff and status != "active":
+            continue
+        candidates.append((row, dt, status))
 
     # One crash is often logged twice within minutes (reclassification,
     # hit-and-run + accident type). Fold those into one alert line — and one
     # follow-up identity — instead of emailing the same event twice.
-    fresh = [r for r in rows
-             if (lambda d: d is not None and d >= cutoff)(_parse_reported_local(r[2]))]
     secondary_ids, extras_by_primary = find_episode_duplicates([
-        {"id": str(r[7] or ""), "location": r[0], "cause": r[1],
-         "reported": r[2], "located": r[3] is not None and r[4] is not None}
-        for r in fresh
+        {"id": str(r["incident_number"] or ""), "location": r["location"], "cause": r["cause"],
+         "reported": dt.strftime("%m/%d/%Y %H:%M"),
+         "located": r["latitude"] is not None and r["longitude"] is not None}
+        for r, dt, _ in candidates
     ])
 
     drawn = bool(route.path and len(route.path) >= 2)
     roads = route_roads(db_path, route) if drawn else route.corridors
 
-    def note(loc, cause, dt, verdict, reason, dist=None):
-        if diagnostics is not None:
-            diagnostics.append({"location": str(loc or "").strip(), "cause": str(cause or "").strip(),
-                                "reported_dt": dt, "verdict": verdict, "reason": reason,
-                                "dist_m": dist})
-
     out: List[Dict] = []
-    for loc, cause, reported, lat, lng, pprob, pin, inum in rows:
-        dt = _parse_reported_local(reported)
-        if dt is None or dt < cutoff or dt > now + timedelta(minutes=5):
-            continue
-        if str(inum or "") in secondary_ids:
-            note(loc, cause, dt, "merged", "duplicate listing of another incident")
+    for row, dt, status in candidates:
+        loc, cause, lat, lng = row["location"], row["cause"], row["latitude"], row["longitude"]
+        inum = str(row["incident_number"] or "")
+        if inum in secondary_ids:
+            note(row, dt, "merged", "duplicate listing of another incident")
             continue
         located = lat is not None and lng is not None
         approx = False
@@ -501,38 +585,47 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
             if located:
                 dist_m = dist_to_path_m(float(lat), float(lng), route.path)
                 if dist_m > route.radius_m:
-                    cross = sorted(set(loc_roads) & roads) if _is_intersection(loc) else []
+                    # The map pin is the address's building or block, which
+                    # can sit well back from the centre line the route was
+                    # drawn on. An incident NAMING a road the route runs
+                    # along still matches inside this wider distance.
+                    cross = sorted(set(loc_roads) & roads)
                     if not cross or dist_m > max(_CROSS_STREET_RADIUS_M, 2 * route.radius_m):
-                        note(loc, cause, dt, "skipped", "%d m from your line (limit %d m)" % (dist_m, route.radius_m), dist_m)
+                        note(row, dt, "skipped", "%d m from your line (limit %d m)" % (dist_m, route.radius_m), dist_m)
                         continue
                     cross_street = True
                 matched = sorted(set(loc_roads) & roads) or loc_roads[:1]
             else:
                 matched = sorted(set(loc_roads) & roads)
                 if not matched:
-                    note(loc, cause, dt, "skipped", "not located yet, and not on a road this route runs along")
+                    note(row, dt, "skipped", "not located yet, and not on a road this route runs along")
                     continue
                 approx = True
         else:
             matched = sorted(set(loc_roads) & route.corridors)
             if not matched:
-                note(loc, cause, dt, "skipped", "not on one of your roads")
+                note(row, dt, "skipped", "not on one of your roads")
                 continue
         if approx:
             reason = "not located yet — on %s" % ", ".join(matched)
         elif cross_street:
-            reason = ("intersection with %s, placed %d m from your line (intersection addresses "
-                      "are placed approximately)" % (", ".join(matched), dist_m))
+            reason = ("on %s, map pin %d m from your line (pins sit on the address, "
+                      "not the road centre)" % (", ".join(matched), dist_m))
         elif dist_m is not None:
             reason = "%d m from your line" % dist_m
         else:
             reason = "on %s" % ", ".join(matched)
-        note(loc, cause, dt, "ALERT", reason, dist_m)
+        if status == "cleared":
+            reason += " — no longer in the 911 feed"
+        elif status == "active" and dt < cutoff:
+            reason += " — older than the window but still in the 911 feed"
+        note(row, dt, "ALERT" if status != "cleared" else "cleared", reason, dist_m)
         cat = categorize(cause)
         emoji, rank = _CAT_META.get(cat, ("📋", 5))
-        extras = extras_by_primary.get(str(inum or ""), [])
+        extras = extras_by_primary.get(inum, [])
+        pprob, pin = row["weather_precip_prob"], row["weather_precip_in"]
         out.append({
-            "location": str(loc or "").strip(),
+            "location": re.sub(r"\s+", " ", str(loc or "")).strip(),
             "cause": str(cause or "").strip(),
             "category": cat,
             "emoji": emoji,
@@ -547,14 +640,21 @@ def find_route_incidents(db_path: str, route: Route, window_min: int,
             "lat": float(lat) if located else None,
             "lng": float(lng) if located else None,
             "rain": (pprob is not None and pprob >= 20) or (pin is not None and pin > 0.005),
+            "status": status,
             # Duplicate feed listings folded into this line, and the full id
             # set of the episode — the follow-up watcher keys on these so a
             # re-listing of an already-emailed crash is never "new".
             "also": [x["cause"] for x in extras],
-            "episode_ids": [str(inum or "")] + [x["id"] for x in extras],
+            "episode_ids": [inum] + [x["id"] for x in extras],
         })
-    out.sort(key=lambda r: (r["rank"], r["minutes_ago"]))
+    out.sort(key=lambda r: (r["status"] == "cleared", r["rank"], r["minutes_ago"]))
     return out
+
+
+def split_cleared(incidents: List[Dict]):
+    """(still relevant, dropped out of the feed)."""
+    return ([i for i in incidents if i.get("status") != "cleared"],
+            [i for i in incidents if i.get("status") == "cleared"])
 
 
 def fetch_traffic_flow(route: Route):  # pragma: no cover - optional hook
@@ -584,8 +684,11 @@ def _fmt_depart(minutes: int) -> str:
 def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                        window_min: int, alerts: Optional[Dict] = None,
                        map_url: str = "", followup: bool = False,
-                       map_cid: str = "", test_note: str = "") -> str:
+                       map_cid: str = "", test_note: str = "",
+                       feed_info: Optional[Dict] = None) -> str:
     e = _html.escape
+    incidents, cleared = split_cleared(incidents)
+    stale = bool(feed_info and feed_info.get("stale"))
     if route.corridor_labels:
         route_line = " → ".join(e(c.title()) for c in route.corridor_labels)
     else:
@@ -603,10 +706,23 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
         header_emoji = "🚧"
         headline = "%d active incident%s on your route" % (len(incidents), "" if len(incidents) == 1 else "s")
         head_bg = "#b45309"
+    elif stale:
+        # No fresh data is not the same thing as a clear road.
+        header_emoji = "❓"
+        headline = "Couldn't check your route"
+        head_bg = "#6b7280"
     else:
         header_emoji = "✅"
         headline = "Your route looks clear"
         head_bg = "#047857"
+
+    stale_html = ""
+    if stale:
+        stale_html = ('<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:12px;'
+                      'padding:10px 14px;margin:0 0 12px 0;font-size:12.5px;color:#7f1d1d;line-height:1.5;">'
+                      '⚠️ <b>The 911 feed has not updated for %d minutes.</b> The Pi could not reach '
+                      'lafayette911.org, so anything reported since then is missing from this email.</div>'
+                      % int(feed_info.get("age_min") or 0))
 
     test_html = ""
     if test_note:
@@ -623,9 +739,10 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                           '📢 <b>NWS alert:</b> ' + e(", ".join(active)) + '</div>')
 
     window_txt = str(int(window_min))
-    rows_html = ""
-    if incidents:
-        for inc in incidents:
+
+    def incident_rows(items, muted=False):
+        rows_html = ""
+        for inc in items:
             loc_txt = inc["location"].title() if inc["location"] else "Unknown location"
             on_roads = ", ".join(c.title() for c in inc["matched"])
             badges = ""
@@ -633,8 +750,7 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                 badges += (' <span style="font-size:10.5px;color:#b45309;">(not on the map yet — '
                            'somewhere on this road, may be outside your section)</span>')
             elif inc.get("cross_street"):
-                badges += (' <span style="font-size:10.5px;color:#b45309;">(reported at an intersection '
-                           'with your road — the map pin for these is approximate)</span>')
+                badges += (' <span style="font-size:10.5px;color:#b45309;">(on your road — the map pin sits a little off your line)</span>')
             elif not inc["located"]:
                 badges += ' <span style="font-size:10.5px;color:#8a919e;">(locating…)</span>'
             if inc["rain"]:
@@ -642,10 +758,13 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
             if inc.get("also"):
                 badges += (' <span style="font-size:10.5px;color:#8a919e;">(also logged as: ' +
                            e(", ".join(c.title() for c in inc["also"])) + ')</span>')
-            ago_color = "#b45309" if inc["minutes_ago"] <= 30 else "#8a919e"
+            if inc.get("status") == "active" and inc["minutes_ago"] > window_min:
+                badges += ' <span style="font-size:10.5px;color:#b45309;">(still listed in the 911 feed)</span>'
+            ago_color = "#b45309" if inc["minutes_ago"] <= 30 and not muted else "#8a919e"
+            title_color = "#8a919e" if muted else "#171a21"
             rows_html += (
                 '<tr><td style="padding:9px 0;border-bottom:1px solid #eef0f4;">'
-                '<div style="font-size:14px;font-weight:700;color:#171a21;">' + inc["emoji"] + " " +
+                '<div style="font-size:14px;font-weight:700;color:' + title_color + ';">' + inc["emoji"] + " " +
                 e(inc["cause"] or inc["category"]) +
                 '<span style="float:right;font-weight:600;color:' + ago_color + ';font-size:12.5px;">' +
                 e(_fmt_ago(inc["minutes_ago"])) + '</span></div>'
@@ -654,21 +773,39 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
                 ((' · ~%d ft from your line' % (inc["dist_m"] * 3.281)) if inc.get("dist_m") is not None else '') + '</div>'
                 '</td></tr>'
             )
+        return rows_html
+
+    cleared_html = ""
+    if cleared and not followup:
+        cleared_html = ('<div style="font-size:11px;font-weight:700;color:#8a919e;text-transform:uppercase;'
+                        'letter-spacing:.04em;padding:14px 0 0 0;">No longer in the 911 feed — likely cleared</div>'
+                        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' +
+                        incident_rows(cleared, muted=True) + '</table>')
+
+    if incidents:
+        rows_html = incident_rows(incidents)
         note = ('Reported AFTER your departure email — sent because it may affect the drive '
                 'you are on right now. Do not read this while driving.'
                 if followup else
-                'Incidents reported within the last ' + window_txt + ' minutes. The feed shows when an '
-                'incident was reported, not when it clears — minor ones are often already cleared.')
+                'Incidents reported within the last ' + window_txt + ' minutes, plus older ones the 911 feed '
+                'still lists. The feed drops an incident when dispatch closes it, which can lag the road '
+                'actually reopening.')
         body = ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + rows_html + '</table>'
                 '<div style="font-size:11px;color:#8a919e;padding-top:10px;line-height:1.5;">' +
-                note + ' Drive safely and defer to what you see on the road.</div>')
+                note + ' Drive safely and defer to what you see on the road.</div>' + cleared_html)
+    elif stale:
+        body = ('<div style="text-align:center;padding:18px 6px;">'
+                '<div style="font-size:40px;">📡</div>'
+                '<div style="font-size:14px;color:#5c6470;padding-top:6px;">'
+                'No incidents are on record for your route, but the data is out of date — '
+                'check the live map or lafayette911.org before you leave.</div></div>' + cleared_html)
     else:
         body = ('<div style="text-align:center;padding:18px 6px;">'
                 '<div style="font-size:40px;">🛣️</div>'
                 '<div style="font-size:14px;color:#5c6470;padding-top:6px;">'
                 'No 911 incidents reported on your route in the last ' + window_txt + ' minutes.</div>'
                 '<div style="font-size:11px;color:#8a919e;padding-top:6px;">'
-                'Absence of a report isn&#39;t a guarantee the road is clear — drive safely.</div></div>')
+                'Absence of a report isn&#39;t a guarantee the road is clear — drive safely.</div></div>' + cleared_html)
 
     route_img = ""
     if map_cid:
@@ -699,6 +836,7 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
   <tr><td style="background:#f9fafb;border:1px solid #e7e9ee;border-top:none;border-radius:0 0 20px 20px;padding:16px 18px 20px 18px;">
     <div style="font-size:12px;color:#8a919e;padding-bottom:10px;">🧭 __ROUTE_LINE__</div>
     __TEST__
+    __STALE__
     __ROUTE_IMG__
     __ALERTS__
     __BODY__
@@ -722,6 +860,7 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
         "__WHEN__": e(when),
         "__ROUTE_LINE__": route_line,
         "__TEST__": test_html,
+        "__STALE__": stale_html,
         "__ROUTE_IMG__": route_img,
         "__ALERTS__": alert_html,
         "__BODY__": body,
@@ -733,14 +872,21 @@ def render_route_email(route: Route, incidents: List[Dict], now: datetime,
 
 
 def _subject_for(route: Route, incidents: List[Dict], followup: bool = False,
-                 now: Optional[datetime] = None) -> str:
+                 now: Optional[datetime] = None, feed_info: Optional[Dict] = None) -> str:
+    incidents, cleared = split_cleared(incidents)
+    when = (now or datetime.now()).strftime("%-I:%M %p")
+    if not incidents and not followup and feed_info and feed_info.get("stale"):
+        return "❓ %s: couldn't check your route — 911 feed is %d min old (%s)" % (
+            route.name, int(feed_info.get("age_min") or 0), when)
+    if not incidents and cleared and not followup:
+        return "✅ %s: route clear — %d cleared in the last while (%s)" % (route.name, len(cleared), when)
     if followup:
         top = incidents[0]
         return "🚨 %s: NEW on your route — %s %s (%s)" % (
             route.name, top["emoji"],
             (top["cause"] or top["category"]).title(), _fmt_ago(top["minutes_ago"]))
     if not incidents:
-        return "✅ %s: route clear (%s)" % (route.name, (now or datetime.now()).strftime("%-I:%M %p"))
+        return "✅ %s: route clear (%s)" % (route.name, when)
     top = incidents[0]
     return "🚧 %s: %d on your route — %s %s (%s)" % (
         route.name, len(incidents), top["emoji"],
@@ -782,14 +928,16 @@ def _route_map_images(config, route: Route, incidents: List[Dict], session) -> D
 
 
 def _send_route_email(send, cfg, config, route, incidents, now, rcfg, session, logger,
-                      followup: bool = False, test_note: str = "") -> None:
-    images = _route_map_images(config, route, incidents, session)
+                      followup: bool = False, test_note: str = "",
+                      feed_info: Optional[Dict] = None) -> None:
+    images = _route_map_images(config, route, split_cleared(incidents)[0], session)
     html = render_route_email(route, incidents, now, rcfg.window_min,
                               # Live NWS alerts would be misleading in a replay.
                               alerts=None if test_note else _fetch_alerts_best_effort(session, logger),
                               map_url=cfg.map_url, followup=followup,
-                              map_cid=ROUTE_MAP_CID if images else "", test_note=test_note)
-    subject = _subject_for(route, incidents, followup=followup, now=now)
+                              map_cid=ROUTE_MAP_CID if images else "", test_note=test_note,
+                              feed_info=feed_info)
+    subject = _subject_for(route, incidents, followup=followup, now=now, feed_info=feed_info)
     if test_note:
         subject = "🧪 TEST · " + subject
     if images:
@@ -824,9 +972,12 @@ def run_route_test(config, store, session, logger, slot: int, at: datetime,
     try:
         diag: List[Dict] = []
         incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=at, diagnostics=diag)
-        summary["incidents"] = len(incidents)
-        summary["headline"] = ("%d incident%s on the route" % (len(incidents), "" if len(incidents) == 1 else "s")
-                               if incidents else "Route clear")
+        current, cleared = split_cleared(incidents)
+        summary["incidents"] = len(current)
+        summary["headline"] = ("%d incident%s on the route" % (len(current), "" if len(current) == 1 else "s")
+                               if current else "Route clear")
+        if cleared:
+            summary["headline"] += " (+%d already cleared)" % len(cleared)
         skipped_near = [d for d in diag if d["verdict"] == "skipped" and d.get("dist_m") is not None
                         and d["dist_m"] <= 3 * route.radius_m]
         if skipped_near:
@@ -889,8 +1040,11 @@ def maybe_send_route_alerts(config, store, session, logger,
         # lead_min minutes, several cycles — but never after departure.
         if not sent_today and target <= now_min < depart:
             try:
-                incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=now)
-                _send_route_email(send, cfg, config, route, incidents, now, rcfg, session, logger)
+                finfo: Dict = {}
+                incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=now,
+                                                 feed_info=finfo)
+                _send_route_email(send, cfg, config, route, incidents, now, rcfg, session, logger,
+                                  feed_info=finfo)
                 store._meta_set(sent_key, today)
                 store._meta_set(fail_key + "_count", "0")
                 # Arm the post-departure watch: remember when we sent and
@@ -903,7 +1057,10 @@ def maybe_send_route_alerts(config, store, session, logger,
                 sent += 1
                 # Logging must never turn a delivered email into a "failure".
                 try:
-                    log_event(logger, "route_alert_sent", route=route.name, incidents=len(incidents))
+                    log_event(logger, "route_alert_sent", route=route.name,
+                              incidents=len(split_cleared(incidents)[0]),
+                              cleared=len(split_cleared(incidents)[1]),
+                              feed_age_min=finfo.get("age_min"), feed_stale=bool(finfo.get("stale")))
                 except Exception:
                     pass
             except Exception as exc:
@@ -933,8 +1090,10 @@ def maybe_send_route_alerts(config, store, session, logger,
             try:
                 known = set(_json.loads(store._meta_get("route_%d_reported_ids" % route.index) or "[]"))
                 incidents = find_route_incidents(config.db_path, route, rcfg.window_min, now=now)
+                # Something that already left the feed is not news to a driver.
                 fresh = [inc for inc in incidents
-                         if not (set(inc.get("episode_ids", [])) & known)]
+                         if inc.get("status") != "cleared"
+                         and not (set(inc.get("episode_ids", [])) & known)]
                 if not fresh:
                     continue
                 _send_route_email(send, cfg, config, route, fresh, now, rcfg, session, logger,
@@ -978,8 +1137,10 @@ def _print_diagnosis(db_path: str, route: Route, window_min: int, at: datetime) 
             ", ".join(sorted(roads)) or "NONE FOUND — only located incidents can match"))
     else:
         print("  roads: %s" % ", ".join(sorted(route.corridors)))
-    print("  → email would say: %s" % (
-        "%d incident(s) on your route" % len(found) if found else "route clear"))
+    current, cleared = split_cleared(found)
+    print("  → email would say: %s%s" % (
+        "%d incident(s) on your route" % len(current) if current else "route clear",
+        " (+%d listed as already cleared)" % len(cleared) if cleared else ""))
     # Everything except located incidents clearly elsewhere in the parish.
     near = [d for d in diag if d["dist_m"] is None or d["dist_m"] <= 2000]
     far = len(diag) - len(near)
